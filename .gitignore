@@ -1,0 +1,23 @@
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+.Python
+backend/.venv/
+.venv/
+venv/
+
+# Environment files
+.env
+.env.*
+!.env.example
+
+# Frontend dependencies and build output
+node_modules/
+dist/
+build/
+
+# OS and editor files
+.DS_Store
+.vscode/
+*.swp
