@@ -1,0 +1,15 @@
+services:
+  postgres:
+    image: postgres:17
+    container_name: openci-postgres
+    environment:
+      POSTGRES_DB: openci
+      POSTGRES_USER: openci
+      POSTGRES_PASSWORD: openci_password
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+
+volumes:
+  postgres_data:
