@@ -9,13 +9,17 @@ from app.services.investigation import (
     update_investigation,
     )
 
+from app.workers.tasks import process_investigation
+
 from fastapi import HTTPException
 
-def create(
-    db: Session,
-    data: InvestigationCreate,
-):
-    return create_investigation(db, data)
+def create(db: Session, data: InvestigationCreate):
+    investigation = create_investigation(db, data)
+
+    process_investigation.delay(investigation.id)
+
+    return investigation
+next
 
 def get_all(db: Session):
     return get_investigations(db)

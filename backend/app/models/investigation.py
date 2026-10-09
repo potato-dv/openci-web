@@ -1,6 +1,6 @@
 from datetime import datetime
 
-from sqlalchemy import DateTime, Integer, String
+from sqlalchemy import DateTime, ForeignKey, Integer, String
 from sqlalchemy.orm import Mapped, mapped_column
 
 from app.database import Base
@@ -15,7 +15,12 @@ class Investigation(Base):
     address: Mapped[str] = mapped_column(String(500))
     status: Mapped[str] = mapped_column(String(50), default="pending")
     priority: Mapped[str] = mapped_column(String(50), default="normal")
+    assigned_agent_id: Mapped[int | None] = mapped_column(
+    ForeignKey("users.id"), 
+    nullable=True,
+    index=True,
+)
     created_at: Mapped[datetime] = mapped_column(
         DateTime,
         default=datetime.utcnow,
-    )
+    )   
