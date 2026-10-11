@@ -1,25 +1,24 @@
-
-import { useEffect, useState } from "react";
+import { useState } from "react";
 import type { FormEvent } from "react";
 import "./App.css";
 
-const API_URL = "http://localhost:8000";
-
-type User = {
-  id: number;
-  name: string;
-  email: string;
-  role: string;
-};
-
-type Investigation = {
-  id: number;
-  reference_number: string;
-  subject_name: string;
-  status: string;
-  priority: string;
-  assigned_agent_id?: number | null;
-};
+import { useAuth } from "./hooks/useAuth";
+import { useWorkspaceData } from "./hooks/useWorkspaceData";
+import { createInvestigation, updateUserActivation } from "./services/api";
+import type {
+  InvestigationPriority,
+  InvestigationStatus,
+  NewInvestigation,
+} from "./types/api";
+import { InvestigationTable } from "./components/data/InvestigationTable";
+import { InvestigationFilters } from "./components/data/InvestigationFilters";
+import { InvestigationDetailsPage } from "./pages/InvestigationDetailsPage";
+import { Sidebar } from "./components/layout/Sidebar";
+import { SectionToolbar } from "./components/layout/SectionToolbar";
+import { Topbar } from "./components/layout/Topbar";
+import { Notice } from "./components/ui/Notice";
+import { RoleBadge } from "./components/ui/RoleBadge";
+import { UserCreateForm } from "./components/users/UserCreateForm";
 
 type Page = "overview" | "users" | "investigations";
 
@@ -29,24 +28,56 @@ function App() {
   const [error, setError] = useState("");
   const [loading, setLoading] = useState(false);
 
-  const [user, setUser] = useState<User | null>(null);
   const [showCreateForm, setShowCreateForm] = useState(false);
   const [creating, setCreating] = useState(false);
   const [createError, setCreateError] = useState("");
+  const [userStatusError, setUserStatusError] = useState("");
+  const [updatingUserId, setUpdatingUserId] = useState<number | null>(null);
 
-  const [newInvestigation, setNewInvestigation] = useState({
-  reference_number: "",
-  subject_name: "",
-  address: "",
-  priority: "normal",
-});
-  const [accessToken, setAccessToken] = useState("");
+  const [newInvestigation, setNewInvestigation] = useState<NewInvestigation>({
+    reference_number: "",
+    subject_name: "",
+    address: "",
+    priority: "normal",
+  });
   const [activePage, setActivePage] = useState<Page>("overview");
+  const [refreshKey, setRefreshKey] = useState(0);
+  const [selectedInvestigationId, setSelectedInvestigationId] = useState<
+    number | null
+  >(null);
+  const [investigationQuery, setInvestigationQuery] = useState("");
+  const [investigationStatus, setInvestigationStatus] = useState<
+    InvestigationStatus | "all"
+  >("all");
+  const [investigationPriority, setInvestigationPriority] = useState<
+    InvestigationPriority | "all"
+  >("all");
 
-  const [users, setUsers] = useState<User[]>([]);
-  const [investigations, setInvestigations] = useState<Investigation[]>([]);
-  const [dataLoading, setDataLoading] = useState(false);
-  const [dataError, setDataError] = useState("");
+  const { accessToken, user, isInitializing, login, logout } = useAuth();
+  const {
+    users,
+    investigations,
+    isLoading: dataLoading,
+    error: dataError,
+    setUsers,
+    setInvestigations,
+  } = useWorkspaceData(user, accessToken, refreshKey);
+
+  const filteredInvestigations = investigations.filter((item) => {
+    const query = investigationQuery.trim().toLowerCase();
+    const matchesQuery =
+      query.length === 0 ||
+      [item.reference_number, item.subject_name, item.address].some((value) =>
+        value.toLowerCase().includes(query),
+      );
+    const matchesStatus =
+      investigationStatus === "all" || item.status === investigationStatus;
+    const matchesPriority =
+      investigationPriority === "all" ||
+      item.priority === investigationPriority;
+
+    return matchesQuery && matchesStatus && matchesPriority;
+  });
 
   async function handleLogin(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
@@ -54,216 +85,120 @@ function App() {
     setLoading(true);
 
     try {
-      const response = await fetch(`${API_URL}/users/login`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ email, password }),
-      });
-
-      const data = await response.json();
-
-      if (!response.ok) {
-        throw new Error(data.detail || "Login failed");
-      }
-
-      const token: string = data.access_token;
-
-      const profileResponse = await fetch(`${API_URL}/users/me`, {
-        headers: { Authorization: `Bearer ${token}` },
-      });
-
-      const profile = await profileResponse.json();
-
-      if (!profileResponse.ok) {
-        throw new Error(profile.detail || "Could not load profile");
-      }
-
-      sessionStorage.setItem("access_token", token);
-      setAccessToken(token);
-      setUser(profile);
+      await login(email, password);
+      setEmail("");
+      setPassword("");
       setActivePage("overview");
     } catch (err) {
       setError(
-        err instanceof Error
-          ? err.message
-          : "Unable to connect to the server.",
+        err instanceof Error ? err.message : "Unable to connect to the server.",
       );
     } finally {
       setLoading(false);
     }
   }
 
-  useEffect(() => {
-    if (!user || !accessToken) return;
+  async function handleCreateInvestigation(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    setCreating(true);
+    setCreateError("");
 
-    let cancelled = false;
+    try {
+      const data = await createInvestigation(accessToken, newInvestigation);
 
-    async function loadDashboardData() {
-      setDataLoading(true);
-      setDataError("");
+      setInvestigations((current) => [data, ...current]);
 
-      const headers = {
-        Authorization: `Bearer ${accessToken}`,
-      };
+      setNewInvestigation({
+        reference_number: "",
+        subject_name: "",
+        address: "",
+        priority: "normal",
+      });
 
-      try {
-        const response = await fetch(
-          `${API_URL}/investigations/`,
-          { headers },
-        );
-
-        const data = await response.json();
-
-        if (!response.ok) {
-          throw new Error(
-            data.detail || "Could not load investigations",
-          );
-        }
-
-        if (!Array.isArray(data)) {
-          throw new Error("Unexpected investigations response");
-        }
-
-        if (!cancelled) {
-          setInvestigations(data);
-        }
-
-        if (user.role === "admin") {
-          const usersResponse = await fetch(`${API_URL}/users/`, {
-            headers,
-          });
-
-          const usersData = await usersResponse.json();
-
-          if (!usersResponse.ok) {
-            throw new Error(usersData.detail || "Could not load users");
-          }
-
-          if (!cancelled) {
-            setUsers(usersData);
-          }
-        } else if (!cancelled) {
-          setUsers([]);
-        }
-      } catch (err) {
-        if (!cancelled) {
-          setDataError(
-            err instanceof Error
-              ? err.message
-              : "Could not load dashboard data.",
-          );
-        }
-      } finally {
-        if (!cancelled) {
-          setDataLoading(false);
-        }
-      }
+      setShowCreateForm(false);
+    } catch (err) {
+      setCreateError(
+        err instanceof Error ? err.message : "Unable to create investigation",
+      );
+    } finally {
+      setCreating(false);
     }
-
-    void loadDashboardData();
-
-    return () => {
-      cancelled = true;
-    };
-  }, [user, accessToken]);
-
-  async function handleCreateInvestigation(
-  event: FormEvent<HTMLFormElement>,
-) {
-  event.preventDefault();
-  setCreating(true);
-  setCreateError("");
-
-  try {
-    const response = await fetch(`${API_URL}/investigations/`, {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        Authorization: `Bearer ${accessToken}`,
-      },
-      body: JSON.stringify({
-        ...newInvestigation,
-        status: "pending",
-      }),
-    });
-
-    const data = await response.json();
-
-    if (!response.ok) {
-      throw new Error(data.detail || "Failed to create investigation");
-    }
-
-    setInvestigations((current) => [data, ...current]);
-
-    setNewInvestigation({
-      reference_number: "",
-      subject_name: "",
-      address: "",
-      priority: "normal",
-    });
-
-    setShowCreateForm(false);
-  } catch (err) {
-    setCreateError(
-      err instanceof Error
-        ? err.message
-        : "Unable to create investigation",
-    );
-  } finally {
-    setCreating(false);
   }
-}
+
+  async function handleUserActivation(userId: number, isActive: boolean) {
+    setUserStatusError("");
+    setUpdatingUserId(userId);
+
+    try {
+      const updatedUser = await updateUserActivation(
+        accessToken,
+        userId,
+        isActive,
+      );
+      setUsers((current) =>
+        current.map((item) => (item.id === updatedUser.id ? updatedUser : item)),
+      );
+    } catch (err) {
+      setUserStatusError(
+        err instanceof Error ? err.message : "Unable to update account status.",
+      );
+    } finally {
+      setUpdatingUserId(null);
+    }
+  }
 
   function handleLogout() {
-    sessionStorage.removeItem("access_token");
-    setAccessToken("");
-    setUser(null);
+    logout();
+    setEmail("");
     setPassword("");
-    setUsers([]);
-    setInvestigations([]);
     setActivePage("overview");
+    setSelectedInvestigationId(null);
+  }
+
+  if (isInitializing) {
+    return (
+      <main className="login-page">
+        <p className="muted">Restoring your session...</p>
+      </main>
+    );
   }
 
   if (!user) {
     return (
       <main className="login-page">
         <section className="login-card">
-          <div className="brand-mark">OC</div>
-          <p className="eyebrow">OPENCI OPERATIONS</p>
+          <img className="login-logo" src="/favicon.svg" alt="OpenCI" />
           <h1>Welcome back</h1>
-          <p className="muted">
-            Sign in to manage operations and investigations.
-          </p>
 
-          <form onSubmit={handleLogin}>
-            <label htmlFor="email">Email address</label>
+          <form className="login-form" onSubmit={handleLogin}>
             <input
               id="email"
               type="email"
               value={email}
               onChange={(event) => setEmail(event.target.value)}
+              placeholder="Email address"
+              aria-label="Email address"
               autoComplete="username"
               required
             />
 
-            <label htmlFor="password">Password</label>
             <input
               id="password"
               type="password"
               value={password}
               onChange={(event) => setPassword(event.target.value)}
+              placeholder="Password"
+              aria-label="Password"
               autoComplete="current-password"
               required
             />
 
             {error && <p className="error">{error}</p>}
 
-            <button className="primary-button" disabled={loading}>
-              {loading ? "Signing in..." : "Sign in"}
+            <button className="primary-button login-submit" disabled={loading}>
+              {loading ? "Signing in..." : "Continue"}
             </button>
           </form>
-
-          <p className="footer-note">Operations Management System</p>
         </section>
       </main>
     );
@@ -285,81 +220,29 @@ function App() {
 
   return (
     <div className="app-layout">
-      <aside className="sidebar">
-        <div className="sidebar-brand">
-          <div className="brand-mark">OC</div>
-          <div>
-            <strong>OpenCI</strong>
-            <span>Operations</span>
-          </div>
-        </div>
+      <Sidebar
+        user={user}
+        activePage={activePage}
+        onPageChange={setActivePage}
+        onLogout={handleLogout}
+      />
 
-        <p className="nav-label">WORKSPACE</p>
-
-        <button
-          className={`nav-item ${activePage === "overview" ? "active" : ""}`}
-          onClick={() => setActivePage("overview")}
-        >
-          Overview
-        </button>
-
-        <button
-          className={`nav-item ${activePage === "investigations" ? "active" : ""}`}
-          onClick={() => setActivePage("investigations")}
-        >
-          Investigations
-        </button>
-
-        {user.role === "admin" && (
-          <>
-            <p className="nav-label">ADMINISTRATION</p>
-            <button
-              className={`nav-item ${activePage === "users" ? "active" : ""}`}
-              onClick={() => setActivePage("users")}
-            >
-              User Management
-            </button>
-          </>
-        )}
-
-        <div className="sidebar-user">
-          <div className="avatar">
-            {user.name.charAt(0).toUpperCase()}
-          </div>
-          <div className="sidebar-user-info">
-            <strong>{user.name}</strong>
-            <span>{user.role}</span>
-          </div>
-          <button className="logout-button" onClick={handleLogout}>
-            Log out
-          </button>
-        </div>
-      </aside>
+      <Topbar
+        title={pageTitle}
+        isLoading={dataLoading}
+        onRefresh={() => setRefreshKey((current) => current + 1)}
+      />
 
       <main className="main-content">
-        <header className="topbar">
-          <div>
-            <p className="eyebrow">OPENCI OPERATIONS</p>
-            <h1>{pageTitle}</h1>
-          </div>
-          <span className="role-badge">{user.role}</span>
-        </header>
-
         {dataError && (
-          <div className="notice error-notice">
-            {dataError}
-            <button
-              className="text-button"
-              onClick={() => setAccessToken(accessToken)}
-            >
-              Retry
-            </button>
-          </div>
+          <Notice
+            message={dataError}
+            actionLabel="Retry"
+            onAction={() => setRefreshKey((current) => current + 1)}
+          />
         )}
 
-        {dataLoading && (
-          <p className="muted">Loading your workspace data...</p>
-        )}
+        {dataLoading && <p className="muted">Loading your workspace data...</p>}
 
         {!dataLoading && activePage === "overview" && (
           <>
@@ -367,9 +250,7 @@ function App() {
               <div>
                 <p className="eyebrow">WORKSPACE OVERVIEW</p>
                 <h2>Welcome, {user.name}</h2>
-                <p>
-                  Monitor investigation records and manage your operations.
-                </p>
+                <p>Monitor investigation records and manage your operations.</p>
               </div>
             </section>
 
@@ -402,27 +283,26 @@ function App() {
             </section>
 
             <section className="content-card">
-              <div className="section-heading">
-                <div>
-                  <h2>Recent Investigations</h2>
-                  <p>Latest records currently stored in the system.</p>
-                </div>
-                <button
-                  className="secondary-button"
-                  onClick={() => setActivePage("investigations")}
-                >
-                  View all
-                </button>
-              </div>
+              <SectionToolbar
+                title="Recent Investigations"
+                description="Latest records currently stored in the system."
+                actions={
+                  <button
+                    type="button"
+                    className="secondary-button toolbar-button"
+                    onClick={() => setActivePage("investigations")}
+                  >
+                    View all
+                  </button>
+                }
+              />
 
               {investigations.length === 0 ? (
                 <p className="empty-state">
                   No investigations found. Create one through your API for now.
                 </p>
               ) : (
-                <InvestigationTable
-                  items={investigations.slice(0, 5)}
-                />
+                <InvestigationTable items={investigations.slice(0, 5)} />
               )}
             </section>
           </>
@@ -430,13 +310,24 @@ function App() {
 
         {!dataLoading && activePage === "users" && (
           <section className="content-card">
-            <div className="section-heading">
-              <div>
-                <h2>Registered Users</h2>
-                <p>Accounts currently stored in PostgreSQL.</p>
-              </div>
-              <span className="count-badge">{users.length} users</span>
-            </div>
+            <UserCreateForm
+              token={accessToken}
+              onCreated={(createdUser) =>
+                setUsers((current) => [createdUser, ...current])
+              }
+            />
+
+            <SectionToolbar
+              title="Registered Users"
+              description="Accounts currently stored in PostgreSQL."
+              actions={
+                <span className="count-badge">{users.length} users</span>
+              }
+            />
+
+            {userStatusError && (
+              <Notice message={userStatusError} />
+            )}
 
             {users.length === 0 ? (
               <p className="empty-state">No users found.</p>
@@ -448,6 +339,8 @@ function App() {
                       <th>Name</th>
                       <th>Email</th>
                       <th>Role</th>
+                      <th>Account status</th>
+                      <th>Actions</th>
                     </tr>
                   </thead>
                   <tbody>
@@ -456,7 +349,31 @@ function App() {
                         <td>{item.name}</td>
                         <td>{item.email}</td>
                         <td>
-                          <span className="role-badge">{item.role}</span>
+                          <RoleBadge role={item.role} />
+                        </td>
+                        <td>
+                          <span
+                            className={`status-badge account-${item.is_active ? "active" : "inactive"}`}
+                          >
+                            {item.is_active ? "Active" : "Inactive"}
+                          </span>
+                        </td>
+                        <td>
+                          <button
+                            type="button"
+                            className="text-button user-status-button"
+                            disabled={updatingUserId === item.id || item.id === user.id}
+                            title={item.id === user.id ? "You cannot change your own account status" : undefined}
+                            onClick={() =>
+                              void handleUserActivation(item.id, !item.is_active)
+                            }
+                          >
+                            {updatingUserId === item.id
+                              ? "Updating..."
+                              : item.is_active
+                                ? "Deactivate"
+                                : "Activate"}
+                          </button>
                         </td>
                       </tr>
                     ))}
@@ -467,155 +384,159 @@ function App() {
           </section>
         )}
 
-        
-{!dataLoading && activePage === "investigations" && (
-  <section className="content-card">
-    {/* Section heading */}
-    <div className="section-heading">
-      <div>
-        <h2>All Investigations</h2>
-        <p>Investigation records stored in the system.</p>
-      </div>
+        {!dataLoading && activePage === "investigations" && (
+          <section className="content-card">
+            <SectionToolbar
+              title="All Investigations"
+              description="Investigation records stored in the system."
+              actions={
+                <div className="heading-actions">
+                  <span className="count-badge">
+                    {filteredInvestigations.length} of {investigations.length}{" "}
+                    records
+                  </span>
 
-      <div className="heading-actions">
-        <span className="count-badge">
-          {investigations.length} records
-        </span>
+                  {user.role === "supervisor" && (
+                    <button
+                      type="button"
+                      className="secondary-button toolbar-button"
+                      onClick={() => {
+                        setShowCreateForm((current) => !current);
+                        setCreateError("");
+                      }}
+                    >
+                      {showCreateForm ? "Cancel" : "+ New Investigation"}
+                    </button>
+                  )}
+                </div>
+              }
+            />
 
-        {(user.role === "admin" || user.role === "supervisor") && (
-          <button
-            type="button"
-            className="secondary-button"
-            onClick={() => {
-              setShowCreateForm((current) => !current);
-              setCreateError("");
-            }}
-          >
-            {showCreateForm ? "Cancel" : "+ New Investigation"}
-          </button>
+            <InvestigationFilters
+              query={investigationQuery}
+              status={investigationStatus}
+              priority={investigationPriority}
+              onQueryChange={setInvestigationQuery}
+              onStatusChange={setInvestigationStatus}
+              onPriorityChange={setInvestigationPriority}
+              onReset={() => {
+                setInvestigationQuery("");
+                setInvestigationStatus("all");
+                setInvestigationPriority("all");
+              }}
+            />
+
+            {/* New Investigation form */}
+            {showCreateForm && (
+              <form
+                className="create-form"
+                onSubmit={handleCreateInvestigation}
+              >
+                <h3>New Investigation</h3>
+
+                <label htmlFor="reference_number">Reference Number</label>
+                <input
+                  id="reference_number"
+                  value={newInvestigation.reference_number}
+                  onChange={(event) =>
+                    setNewInvestigation({
+                      ...newInvestigation,
+                      reference_number: event.target.value,
+                    })
+                  }
+                  placeholder="INV-001"
+                  required
+                />
+
+                <label htmlFor="subject_name">Subject Name</label>
+                <input
+                  id="subject_name"
+                  value={newInvestigation.subject_name}
+                  onChange={(event) =>
+                    setNewInvestigation({
+                      ...newInvestigation,
+                      subject_name: event.target.value,
+                    })
+                  }
+                  placeholder="Full name"
+                  required
+                />
+
+                <label htmlFor="address">Address</label>
+                <input
+                  id="address"
+                  value={newInvestigation.address}
+                  onChange={(event) =>
+                    setNewInvestigation({
+                      ...newInvestigation,
+                      address: event.target.value,
+                    })
+                  }
+                  placeholder="Investigation address"
+                  required
+                />
+
+                <label htmlFor="priority">Priority</label>
+                <select
+                  id="priority"
+                  value={newInvestigation.priority}
+                  onChange={(event) =>
+                    setNewInvestigation({
+                      ...newInvestigation,
+                      priority: event.target
+                        .value as NewInvestigation["priority"],
+                    })
+                  }
+                >
+                  <option value="normal">Normal</option>
+                  <option value="high">High</option>
+                  <option value="urgent">Urgent</option>
+                </select>
+
+                {createError && <p className="error">{createError}</p>}
+
+                <button
+                  className="primary-button"
+                  type="submit"
+                  disabled={creating}
+                >
+                  {creating ? "Creating..." : "Create Investigation"}
+                </button>
+              </form>
+            )}
+
+            {/* Investigation list */}
+            {filteredInvestigations.length === 0 ? (
+              <p className="empty-state">
+                {investigations.length === 0
+                  ? 'No investigations found. Click "+ New Investigation" to create one.'
+                  : "No investigations match the selected filters."}
+              </p>
+            ) : (
+              <InvestigationTable
+                items={filteredInvestigations}
+                onSelect={(item) => setSelectedInvestigationId(item.id)}
+              />
+            )}
+
+            {selectedInvestigationId !== null &&
+              investigations.some(
+                (item) => item.id === selectedInvestigationId,
+              ) && (
+                <InvestigationDetailsPage
+                  token={accessToken}
+                  user={user}
+                  investigation={
+                    investigations.find(
+                      (item) => item.id === selectedInvestigationId,
+                    )!
+                  }
+                  onChanged={() => setRefreshKey((current) => current + 1)}
+                />
+              )}
+          </section>
         )}
-      </div>
-    </div>
-
-    {/* New Investigation form */}
-    {showCreateForm && (
-      <form
-        className="create-form"
-        onSubmit={handleCreateInvestigation}
-      >
-        <h3>New Investigation</h3>
-
-        <label htmlFor="reference_number">Reference Number</label>
-        <input
-          id="reference_number"
-          value={newInvestigation.reference_number}
-          onChange={(event) =>
-            setNewInvestigation({
-              ...newInvestigation,
-              reference_number: event.target.value,
-            })
-          }
-          placeholder="INV-001"
-          required
-        />
-
-        <label htmlFor="subject_name">Subject Name</label>
-        <input
-          id="subject_name"
-          value={newInvestigation.subject_name}
-          onChange={(event) =>
-            setNewInvestigation({
-              ...newInvestigation,
-              subject_name: event.target.value,
-            })
-          }
-          placeholder="Full name"
-          required
-        />
-
-        <label htmlFor="address">Address</label>
-        <input
-          id="address"
-          value={newInvestigation.address}
-          onChange={(event) =>
-            setNewInvestigation({
-              ...newInvestigation,
-              address: event.target.value,
-            })
-          }
-          placeholder="Investigation address"
-          required
-        />
-
-        <label htmlFor="priority">Priority</label>
-        <select
-          id="priority"
-          value={newInvestigation.priority}
-          onChange={(event) =>
-            setNewInvestigation({
-              ...newInvestigation,
-              priority: event.target.value,
-            })
-          }
-        >
-          <option value="normal">Normal</option>
-          <option value="high">High</option>
-          <option value="urgent">Urgent</option>
-        </select>
-
-        {createError && <p className="error">{createError}</p>}
-
-        <button
-          className="primary-button"
-          type="submit"
-          disabled={creating}
-        >
-          {creating ? "Creating..." : "Create Investigation"}
-        </button>
-      </form>
-    )}
-
-    {/* Investigation list */}
-    {investigations.length === 0 ? (
-      <p className="empty-state">
-        No investigations found. Click "+ New Investigation" to create one.
-      </p>
-    ) : (
-      <InvestigationTable items={investigations} />
-    )}
-  </section>
-)}
-
       </main>
-    </div>
-  );
-}
-
-function InvestigationTable({ items }: { items: Investigation[] }) {
-  return (
-    <div className="table-wrap">
-      <table>
-        <thead>
-          <tr>
-            <th>Reference</th>
-            <th>Subject</th>
-            <th>Status</th>
-            <th>Priority</th>
-          </tr>
-        </thead>
-        <tbody>
-          {items.map((item) => (
-            <tr key={item.id}>
-              <td className="reference">{item.reference_number}</td>
-              <td>{item.subject_name}</td>
-              <td>
-                <span className="status-badge">{item.status}</span>
-              </td>
-              <td>{item.priority}</td>
-            </tr>
-          ))}
-        </tbody>
-      </table>
     </div>
   );
 }

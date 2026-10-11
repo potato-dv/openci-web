@@ -36,7 +36,8 @@ services:
     restart: unless-stopped
     command: >
       sh -c "python -m app.database.init_db &&
-             uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload"
+        alembic upgrade head &&
+         uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload"
     volumes:
       - ./backend:/app
     ports:

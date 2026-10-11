@@ -1,9 +1,9 @@
 from fastapi import APIRouter, Depends
 from sqlalchemy.orm import Session
 
-from app.controllers.user import create, get_all, get_one, login
+from app.controllers.user import create, get_all, get_all_agents, get_one, login, update_activation
 from app.database.session import get_db
-from app.schemas.user import UserCreate, UserResponse, UserLogin
+from app.schemas.user import UserActivationUpdate, UserCreate, UserResponse, UserLogin
 from app.models.user import User
 from app.utils.auth import get_current_user, require_roles
 
@@ -47,6 +47,17 @@ def get_users(
     return get_all(db)
 
 
+@router.get(
+    "/agents",
+    response_model=list[UserResponse],
+    dependencies=[Depends(require_roles("admin", "supervisor"))],
+)
+def get_agents(
+    db: Session = Depends(get_db),
+):
+    return get_all_agents(db)
+
+
 # Admin only: Get a specific user
 @router.get(
     "/{user_id}",
@@ -58,6 +69,21 @@ def get_user(
     db: Session = Depends(get_db),
 ):
     return get_one(db, user_id)
+
+
+# Admin only: Activate or deactivate a user
+@router.patch(
+    "/{user_id}/activation",
+    response_model=UserResponse,
+    dependencies=[Depends(require_roles("admin"))],
+)
+def set_user_activation(
+    user_id: int,
+    data: UserActivationUpdate,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(require_roles("admin")),
+):
+    return update_activation(db, user_id, data.is_active, current_user)
 
 
 # Public: Login
