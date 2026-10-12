@@ -1,5 +1,7 @@
 import type { Investigation } from "../../types/api";
 import { StatusBadge } from "../ui/StatusBadge";
+import { PriorityBadge } from "../ui/PriorityBadge";
+import { RowActions } from "../ui/RowActions";
 
 type InvestigationTableProps = {
   items: Investigation[];
@@ -17,8 +19,11 @@ export function InvestigationTable({
           <tr>
             <th>Reference</th>
             <th>Subject</th>
+            <th>Address</th>
+            <th>Assigned agent</th>
             <th>Status</th>
             <th>Priority</th>
+            {onSelect && <th>Actions</th>}
           </tr>
         </thead>
         <tbody>
@@ -38,10 +43,15 @@ export function InvestigationTable({
                 )}
               </td>
               <td>{item.subject_name}</td>
+              <td>{item.address_display || item.legacy_address || "—"}</td>
+              <td>{item.assigned_agent_name ?? "Unassigned"}</td>
               <td>
                 <StatusBadge status={item.status} />
               </td>
-              <td className={`priority-${item.priority}`}>{item.priority}</td>
+              <td><PriorityBadge priority={item.priority} /></td>
+              {onSelect && <td><RowActions label={item.reference_number}>
+                <button type="button" role="menuitem" onClick={() => onSelect(item)}>View details</button>
+              </RowActions></td>}
             </tr>
           ))}
         </tbody>

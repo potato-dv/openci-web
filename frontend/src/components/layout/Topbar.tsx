@@ -8,7 +8,6 @@ export function Topbar({ title, isLoading, onRefresh }: TopbarProps) {
   return (
     <header className="topbar">
       <div>
-        <p className="eyebrow">OPENCI OPERATIONS</p>
         <h1>{title}</h1>
       </div>
 

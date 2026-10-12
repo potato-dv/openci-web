@@ -1,10 +1,14 @@
 import type {
+  ActivityLog,
   Assignment,
   Investigation,
+  InvestigationUpdate,
+  LocationOption,
   LoginResponse,
   NewInvestigation,
   NewUser,
   Report,
+  ReportInput,
   Review,
   User,
 } from "../types/api";
@@ -43,6 +47,8 @@ async function requestJson<T>(
     const detail =
       typeof data?.detail === "string"
         ? data.detail
+        : Array.isArray(data?.detail)
+          ? data.detail.map((item: { msg?: string }) => item.msg).filter(Boolean).join("; ")
         : "The request could not be completed.";
     throw new Error(detail);
   }
@@ -89,6 +95,35 @@ export function updateUserActivation(
   });
 }
 
+export function updateUserRole(token: string, userId: number, role: User["role"]) {
+  return requestJson<User>(`/users/${userId}/role`, {
+    method: "PATCH",
+    token,
+    body: JSON.stringify({ role }),
+  });
+}
+
+export function getRegions(token: string) {
+  return requestJson<LocationOption[]>("/locations/regions", { token });
+}
+
+export function getProvinces(token: string, regionCode: string) {
+  return requestJson<LocationOption[]>(`/locations/regions/${regionCode}/provinces`, { token });
+}
+
+export function getCities(token: string, regionCode: string, provinceCode?: string) {
+  const query = provinceCode ? `?province_code=${provinceCode}` : "";
+  return requestJson<LocationOption[]>(`/locations/regions/${regionCode}/cities-municipalities${query}`, { token });
+}
+
+export function getBarangays(token: string, cityCode: string) {
+  return requestJson<LocationOption[]>(`/locations/cities-municipalities/${cityCode}/barangays`, { token });
+}
+
+export function getActivityLogs(token: string) {
+  return requestJson<ActivityLog[]>("/activity-logs/", { token });
+}
+
 export function getAgents(token: string) {
   return requestJson<User[]>("/users/agents", { token });
 }
@@ -100,8 +135,24 @@ export function createInvestigation(
   return requestJson<Investigation>("/investigations/", {
     method: "POST",
     token,
-    body: JSON.stringify({ ...investigation, status: "pending" }),
+    body: JSON.stringify({
+      ...investigation,
+      unit_floor_building_name: investigation.unit_floor_building_name || null,
+      subdivision_village_purok: investigation.subdivision_village_purok || null,
+      province_code: investigation.province_code || null,
+      postal_code: investigation.postal_code || null,
+    }),
   });
+}
+
+export function updateInvestigation(token: string, investigationId: number, values: InvestigationUpdate) {
+  return requestJson<Investigation>(`/investigations/${investigationId}`, {
+    method: "PATCH", token, body: JSON.stringify(values),
+  });
+}
+
+export function deleteInvestigation(token: string, investigationId: number) {
+  return requestJson<{ message: string }>(`/investigations/${investigationId}`, { method: "DELETE", token });
 }
 
 export function assignInvestigation(
@@ -125,7 +176,13 @@ export function getAssignments(token: string, investigationId: number) {
 }
 
 export function getReport(token: string, investigationId: number) {
-  return requestJson<Report>(`/investigations/${investigationId}/report`, {
+  return requestJson<Report | null>(`/investigations/${investigationId}/report`, {
+    token,
+  });
+}
+
+export function getReportVersions(token: string, investigationId: number) {
+  return requestJson<Report[]>(`/investigations/${investigationId}/reports`, {
     token,
   });
 }
@@ -133,12 +190,12 @@ export function getReport(token: string, investigationId: number) {
 export function saveReport(
   token: string,
   investigationId: number,
-  content: string,
+  report: ReportInput,
 ) {
   return requestJson<Report>(`/investigations/${investigationId}/report`, {
     method: "PUT",
     token,
-    body: JSON.stringify({ content }),
+    body: JSON.stringify(report),
   });
 }
 

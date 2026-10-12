@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
 
-import { getReport, getReviews, reviewReport } from "../../services/api";
+import { getReport, getReportVersions, getReviews, reviewReport } from "../../services/api";
 import type { Investigation, Report, Review } from "../../types/api";
 
 type ReviewPanelProps = {
@@ -9,12 +9,31 @@ type ReviewPanelProps = {
   onChanged: () => void;
 };
 
-export function ReviewPanel({
-  token,
-  investigation,
-  onChanged,
-}: ReviewPanelProps) {
+function displayValue(value: string | null | undefined) {
+  return value ? value.replaceAll("_", " ") : "—";
+}
+
+function ReportDetails({ report }: { report: Report }) {
+  return (
+    <div className="reviewed-report">
+      <dl className="report-detail-grid">
+        <div><dt>Visit outcome</dt><dd>{displayValue(report.visit_outcome)}</dd></div>
+        <div><dt>Investigation outcome</dt><dd>{displayValue(report.outcome)}</dd></div>
+        <div><dt>Occupancy</dt><dd>{displayValue(report.occupancy_status)}</dd></div>
+        <div><dt>Visited at</dt><dd>{report.visited_at ? new Date(report.visited_at).toLocaleString() : "—"}</dd></div>
+        <div><dt>Verified address</dt><dd>{report.verified_address || "—"}</dd></div>
+        <div><dt>Author</dt><dd>{report.author_name}</dd></div>
+      </dl>
+      {report.property_condition && <div className="report-copy"><h4>Property condition</h4><p>{report.property_condition}</p></div>}
+      {report.interaction_notes && <div className="report-copy"><h4>Interaction notes</h4><p>{report.interaction_notes}</p></div>}
+      <div className="report-copy"><h4>Detailed findings</h4><p>{report.content}</p></div>
+    </div>
+  );
+}
+
+export function ReviewPanel({ token, investigation, onChanged }: ReviewPanelProps) {
   const [report, setReport] = useState<Report | null>(null);
+  const [versions, setVersions] = useState<Report[]>([]);
   const [reviews, setReviews] = useState<Review[]>([]);
   const [comments, setComments] = useState("");
   const [loading, setLoading] = useState(true);
@@ -28,35 +47,26 @@ export function ReviewPanel({
     async function loadReviewData() {
       setLoading(true);
       setError("");
-
       try {
-        const [reportData, reviewData] = await Promise.all([
+        const [reportData, versionData, reviewData] = await Promise.all([
           getReport(token, investigation.id),
+          getReportVersions(token, investigation.id),
           getReviews(token, investigation.id),
         ]);
-
         if (!cancelled) {
           setReport(reportData);
+          setVersions(versionData);
           setReviews(reviewData);
         }
       } catch (err) {
-        if (!cancelled) {
-          setError(
-            err instanceof Error ? err.message : "Could not load review data.",
-          );
-        }
+        if (!cancelled) setError(err instanceof Error ? err.message : "Could not load review data.");
       } finally {
-        if (!cancelled) {
-          setLoading(false);
-        }
+        if (!cancelled) setLoading(false);
       }
     }
 
     void loadReviewData();
-
-    return () => {
-      cancelled = true;
-    };
+    return () => { cancelled = true; };
   }, [investigation.id, token]);
 
   async function handleReview(decision: Review["decision"]) {
@@ -68,21 +78,14 @@ export function ReviewPanel({
     setSaving(true);
     setError("");
     setMessage("");
-
     try {
-      const review = await reviewReport(
-        token,
-        investigation.id,
-        decision,
-        comments.trim() || undefined,
-      );
+      const review = await reviewReport(token, investigation.id, decision, comments.trim() || undefined);
+      const nextStatus = decision === "approved" ? "approved" : "returned_for_correction";
       setReviews((current) => [review, ...current]);
+      setReport((current) => current ? { ...current, status: nextStatus } : current);
+      setVersions((current) => current.map((item) => item.id === review.report_id ? { ...item, status: nextStatus } : item));
       setComments("");
-      setMessage(
-        decision === "approved"
-          ? "Report approved and investigation completed."
-          : "Report returned for correction.",
-      );
+      setMessage(decision === "approved" ? "Report approved and investigation completed." : "Report returned for correction.");
       onChanged();
     } catch (err) {
       setError(err instanceof Error ? err.message : "Could not review report.");
@@ -95,18 +98,28 @@ export function ReviewPanel({
     <section className="workflow-panel">
       <div className="section-heading">
         <div>
-          <h3>Supervisor review</h3>
-          <p>Approve the submitted report or request corrections.</p>
+          <h3>Report review</h3>
+          <p>Review submitted findings and request corrections when needed.</p>
         </div>
+        {report && <span className="count-badge">Version {report.version} · {report.status.replaceAll("_", " ")}</span>}
       </div>
 
-      {!loading && !report && (
-        <p className="empty-state">No report submitted yet.</p>
-      )}
-      {report && (
-        <p className="workflow-meta">
-          Report status: <strong>{report.status}</strong>
-        </p>
+      {loading && <p className="muted">Loading report and review history…</p>}
+      {!loading && !report && <p className="empty-state">No report submitted yet.</p>}
+      {report && <ReportDetails report={report} />}
+
+      {versions.length > 1 && (
+        <div className="workflow-history report-version-history">
+          <h4>Report versions</h4>
+          <div className="report-version-list">
+            {versions.map((version) => (
+              <details key={version.id} className="report-version-item">
+                <summary>Version {version.version} · {version.status.replaceAll("_", " ")} · {version.author_name}</summary>
+                <ReportDetails report={version} />
+              </details>
+            ))}
+          </div>
+        </div>
       )}
 
       <label htmlFor="review-comments">Review comments</label>
@@ -120,25 +133,15 @@ export function ReviewPanel({
         disabled={loading || saving || report?.status !== "submitted"}
       />
 
-      {error && <p className="error">{error}</p>}
-      {message && <p className="success-message">{message}</p>}
+      {error && <p className="error" role="alert">{error}</p>}
+      {message && <p className="success-message" role="status">{message}</p>}
 
       <div className="workflow-actions">
-        <button
-          type="button"
-          className="secondary-button"
-          onClick={() => void handleReview("returned_for_correction")}
-          disabled={loading || saving || report?.status !== "submitted"}
-        >
-          Return for correction
+        <button type="button" className="secondary-button" onClick={() => void handleReview("returned_for_correction")} disabled={loading || saving || report?.status !== "submitted"}>
+          {saving ? "Saving…" : "Return for correction"}
         </button>
-        <button
-          type="button"
-          className="primary-button compact-button"
-          onClick={() => void handleReview("approved")}
-          disabled={loading || saving || report?.status !== "submitted"}
-        >
-          Approve report
+        <button type="button" className="primary-button compact-button" onClick={() => void handleReview("approved")} disabled={loading || saving || report?.status !== "submitted"}>
+          {saving ? "Saving…" : "Approve report"}
         </button>
       </div>
 
@@ -148,8 +151,7 @@ export function ReviewPanel({
           <ul>
             {reviews.map((review) => (
               <li key={review.id}>
-                {review.decision.replaceAll("_", " ")} by reviewer{" "}
-                {review.reviewer_id}
+                {review.decision.replaceAll("_", " ")} by {review.reviewer_name} · {new Date(review.reviewed_at).toLocaleString()}
                 {review.comments ? `: ${review.comments}` : ""}
               </li>
             ))}

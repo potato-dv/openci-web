@@ -4,7 +4,7 @@ import "./App.css";
 
 import { useAuth } from "./hooks/useAuth";
 import { useWorkspaceData } from "./hooks/useWorkspaceData";
-import { createInvestigation, updateUserActivation } from "./services/api";
+import { createInvestigation, updateUserActivation, updateUserRole } from "./services/api";
 import type {
   InvestigationPriority,
   InvestigationStatus,
@@ -17,10 +17,19 @@ import { Sidebar } from "./components/layout/Sidebar";
 import { SectionToolbar } from "./components/layout/SectionToolbar";
 import { Topbar } from "./components/layout/Topbar";
 import { Notice } from "./components/ui/Notice";
-import { RoleBadge } from "./components/ui/RoleBadge";
 import { UserCreateForm } from "./components/users/UserCreateForm";
+import { PhilippineAddressFields } from "./components/investigations/PhilippineAddressFields";
+import { ActivityLogPage } from "./pages/ActivityLogPage";
+import { Modal } from "./components/ui/Modal";
+import { RowActions } from "./components/ui/RowActions";
 
-type Page = "overview" | "users" | "investigations";
+type Page = "overview" | "users" | "investigations" | "activity";
+
+const emptyInvestigation: NewInvestigation = {
+  subject_name: "", house_number: "", unit_floor_building_name: "",
+  street: "", subdivision_village_purok: "", region_code: "", province_code: "",
+  city_municipality_code: "", barangay_code: "", postal_code: "", priority: "normal",
+};
 
 function App() {
   const [email, setEmail] = useState("");
@@ -29,17 +38,16 @@ function App() {
   const [loading, setLoading] = useState(false);
 
   const [showCreateForm, setShowCreateForm] = useState(false);
+  const [showUserCreateForm, setShowUserCreateForm] = useState(false);
+  const [editingUserId, setEditingUserId] = useState<number | null>(null);
+  const [editRole, setEditRole] = useState<(typeof users)[number]["role"]>("agent");
+  const [roleEditError, setRoleEditError] = useState("");
   const [creating, setCreating] = useState(false);
   const [createError, setCreateError] = useState("");
   const [userStatusError, setUserStatusError] = useState("");
   const [updatingUserId, setUpdatingUserId] = useState<number | null>(null);
 
-  const [newInvestigation, setNewInvestigation] = useState<NewInvestigation>({
-    reference_number: "",
-    subject_name: "",
-    address: "",
-    priority: "normal",
-  });
+  const [newInvestigation, setNewInvestigation] = useState<NewInvestigation>(emptyInvestigation);
   const [activePage, setActivePage] = useState<Page>("overview");
   const [refreshKey, setRefreshKey] = useState(0);
   const [selectedInvestigationId, setSelectedInvestigationId] = useState<
@@ -67,7 +75,7 @@ function App() {
     const query = investigationQuery.trim().toLowerCase();
     const matchesQuery =
       query.length === 0 ||
-      [item.reference_number, item.subject_name, item.address].some((value) =>
+      [item.reference_number, item.subject_name, item.address_display, item.legacy_address ?? ""].some((value) =>
         value.toLowerCase().includes(query),
       );
     const matchesStatus =
@@ -108,12 +116,7 @@ function App() {
 
       setInvestigations((current) => [data, ...current]);
 
-      setNewInvestigation({
-        reference_number: "",
-        subject_name: "",
-        address: "",
-        priority: "normal",
-      });
+      setNewInvestigation(emptyInvestigation);
 
       setShowCreateForm(false);
     } catch (err) {
@@ -147,6 +150,21 @@ function App() {
     }
   }
 
+  async function handleUserRole(userId: number, role: (typeof users)[number]["role"]) {
+    setUserStatusError("");
+    setRoleEditError("");
+    setUpdatingUserId(userId);
+    try {
+      const updated = await updateUserRole(accessToken, userId, role);
+      setUsers((current) => current.map((item) => item.id === updated.id ? updated : item));
+      setEditingUserId(null);
+    } catch (err) {
+      setRoleEditError(err instanceof Error ? err.message : "Unable to update role.");
+    } finally {
+      setUpdatingUserId(null);
+    }
+  }
+
   function handleLogout() {
     logout();
     setEmail("");
@@ -167,7 +185,7 @@ function App() {
     return (
       <main className="login-page">
         <section className="login-card">
-          <img className="login-logo" src="/favicon.svg" alt="OpenCI" />
+          <img className="login-logo" src="/favicon.svg" alt="Collector" />
           <h1>Welcome back</h1>
 
           <form className="login-form" onSubmit={handleLogin}>
@@ -216,6 +234,7 @@ function App() {
     overview: "Dashboard",
     users: "User Management",
     investigations: "Investigations",
+    activity: "System activity",
   }[activePage];
 
   return (
@@ -246,14 +265,6 @@ function App() {
 
         {!dataLoading && activePage === "overview" && (
           <>
-            <section className="welcome-banner">
-              <div>
-                <p className="eyebrow">WORKSPACE OVERVIEW</p>
-                <h2>Welcome, {user.name}</h2>
-                <p>Monitor investigation records and manage your operations.</p>
-              </div>
-            </section>
-
             <section className="stats-grid">
               <article className="stat-card">
                 <span>Total Investigations</span>
@@ -310,18 +321,14 @@ function App() {
 
         {!dataLoading && activePage === "users" && (
           <section className="content-card">
-            <UserCreateForm
-              token={accessToken}
-              onCreated={(createdUser) =>
-                setUsers((current) => [createdUser, ...current])
-              }
-            />
-
             <SectionToolbar
               title="Registered Users"
               description="Accounts currently stored in PostgreSQL."
               actions={
-                <span className="count-badge">{users.length} users</span>
+                <div className="heading-actions">
+                  <span className="count-badge">{users.length} users</span>
+                  <button type="button" className="primary-button toolbar-button" onClick={() => setShowUserCreateForm(true)}>New account</button>
+                </div>
               }
             />
 
@@ -348,9 +355,7 @@ function App() {
                       <tr key={item.id}>
                         <td>{item.name}</td>
                         <td>{item.email}</td>
-                        <td>
-                          <RoleBadge role={item.role} />
-                        </td>
+                        <td className="role-cell">{item.role}</td>
                         <td>
                           <span
                             className={`status-badge account-${item.is_active ? "active" : "inactive"}`}
@@ -359,21 +364,12 @@ function App() {
                           </span>
                         </td>
                         <td>
-                          <button
-                            type="button"
-                            className="text-button user-status-button"
-                            disabled={updatingUserId === item.id || item.id === user.id}
-                            title={item.id === user.id ? "You cannot change your own account status" : undefined}
-                            onClick={() =>
-                              void handleUserActivation(item.id, !item.is_active)
-                            }
-                          >
-                            {updatingUserId === item.id
-                              ? "Updating..."
-                              : item.is_active
-                                ? "Deactivate"
-                                : "Activate"}
-                          </button>
+                          <RowActions label={item.name}>
+                              <button type="button" role="menuitem" onClick={() => { setEditingUserId(item.id); setEditRole(item.role); setRoleEditError(""); }}>Edit role</button>
+                              <button type="button" role="menuitem" disabled={updatingUserId === item.id || item.id === user.id} title={item.id === user.id ? "You cannot change your own account status" : undefined} onClick={() => { void handleUserActivation(item.id, !item.is_active); }}>
+                                {updatingUserId === item.id ? "Updating…" : item.is_active ? "Deactivate" : "Activate"}
+                              </button>
+                          </RowActions>
                         </td>
                       </tr>
                     ))}
@@ -381,11 +377,41 @@ function App() {
                 </table>
               </div>
             )}
+            <UserCreateForm
+              token={accessToken}
+              open={showUserCreateForm}
+              onClose={() => setShowUserCreateForm(false)}
+              onCreated={(createdUser) => setUsers((current) => [createdUser, ...current])}
+            />
+            <Modal open={editingUserId !== null} title="Edit account role" onClose={() => setEditingUserId(null)}>
+              <form className="modal-form" onSubmit={(event) => { event.preventDefault(); if (editingUserId !== null) void handleUserRole(editingUserId, editRole); }}>
+                <label className="modal-field">Role
+                  <select value={editRole} onChange={(event) => setEditRole(event.target.value as typeof editRole)}>
+                    <option value="admin">Admin</option><option value="supervisor">Supervisor</option><option value="agent">Agent</option>
+                  </select>
+                </label>
+                {roleEditError && <p className="error" role="alert">{roleEditError}</p>}
+                <div className="modal-form-actions">
+                  <button type="button" className="secondary-button toolbar-button" onClick={() => setEditingUserId(null)} disabled={updatingUserId !== null}>Cancel</button>
+                  <button type="submit" className="primary-button toolbar-button" disabled={updatingUserId !== null}>{updatingUserId !== null ? "Saving…" : "Save role"}</button>
+                </div>
+              </form>
+            </Modal>
           </section>
         )}
 
         {!dataLoading && activePage === "investigations" && (
-          <section className="content-card">
+          selectedInvestigationId !== null && investigations.some((item) => item.id === selectedInvestigationId) ? (
+            <InvestigationDetailsPage
+              key={selectedInvestigationId}
+              token={accessToken}
+              user={user}
+              investigation={investigations.find((item) => item.id === selectedInvestigationId)!}
+              onBack={() => setSelectedInvestigationId(null)}
+              onChanged={() => setRefreshKey((current) => current + 1)}
+              onDeleted={() => { setSelectedInvestigationId(null); setRefreshKey((current) => current + 1); }}
+            />
+          ) : <section className="content-card">
             <SectionToolbar
               title="All Investigations"
               description="Investigation records stored in the system."
@@ -396,16 +422,16 @@ function App() {
                     records
                   </span>
 
-                  {user.role === "supervisor" && (
+                  {(user.role === "supervisor" || user.role === "admin") && (
                     <button
                       type="button"
-                      className="secondary-button toolbar-button"
+                      className="primary-button toolbar-button"
                       onClick={() => {
-                        setShowCreateForm((current) => !current);
+                        setShowCreateForm(true);
                         setCreateError("");
                       }}
                     >
-                      {showCreateForm ? "Cancel" : "+ New Investigation"}
+                      + New Investigation
                     </button>
                   )}
                 </div>
@@ -426,27 +452,12 @@ function App() {
               }}
             />
 
-            {/* New Investigation form */}
-            {showCreateForm && (
-              <form
-                className="create-form"
-                onSubmit={handleCreateInvestigation}
-              >
+            {/* Investigation creation is rendered in a modal outside table flow. */}
+            <Modal open={showCreateForm} title="New investigation" size="wide" onClose={() => setShowCreateForm(false)}>
+              <form className="create-form modal-form" onSubmit={handleCreateInvestigation}>
                 <h3>New Investigation</h3>
 
-                <label htmlFor="reference_number">Reference Number</label>
-                <input
-                  id="reference_number"
-                  value={newInvestigation.reference_number}
-                  onChange={(event) =>
-                    setNewInvestigation({
-                      ...newInvestigation,
-                      reference_number: event.target.value,
-                    })
-                  }
-                  placeholder="INV-001"
-                  required
-                />
+                <p className="form-hint">A reference number will be generated automatically.</p>
 
                 <label htmlFor="subject_name">Subject Name</label>
                 <input
@@ -462,19 +473,7 @@ function App() {
                   required
                 />
 
-                <label htmlFor="address">Address</label>
-                <input
-                  id="address"
-                  value={newInvestigation.address}
-                  onChange={(event) =>
-                    setNewInvestigation({
-                      ...newInvestigation,
-                      address: event.target.value,
-                    })
-                  }
-                  placeholder="Investigation address"
-                  required
-                />
+                <PhilippineAddressFields token={accessToken} value={newInvestigation} onChange={setNewInvestigation} />
 
                 <label htmlFor="priority">Priority</label>
                 <select
@@ -495,21 +494,20 @@ function App() {
 
                 {createError && <p className="error">{createError}</p>}
 
-                <button
-                  className="primary-button"
-                  type="submit"
-                  disabled={creating}
-                >
-                  {creating ? "Creating..." : "Create Investigation"}
-                </button>
+                <div className="modal-form-actions">
+                  <button type="button" className="secondary-button toolbar-button" onClick={() => setShowCreateForm(false)} disabled={creating}>Cancel</button>
+                  <button className="primary-button toolbar-button" type="submit" disabled={creating}>{creating ? "Creating…" : "Create investigation"}</button>
+                </div>
               </form>
-            )}
+            </Modal>
 
             {/* Investigation list */}
             {filteredInvestigations.length === 0 ? (
               <p className="empty-state">
                 {investigations.length === 0
-                  ? 'No investigations found. Click "+ New Investigation" to create one.'
+                  ? user.role === "agent"
+                    ? "No investigations are assigned to you yet."
+                    : "No investigations found. Use New Investigation to create one."
                   : "No investigations match the selected filters."}
               </p>
             ) : (
@@ -519,22 +517,11 @@ function App() {
               />
             )}
 
-            {selectedInvestigationId !== null &&
-              investigations.some(
-                (item) => item.id === selectedInvestigationId,
-              ) && (
-                <InvestigationDetailsPage
-                  token={accessToken}
-                  user={user}
-                  investigation={
-                    investigations.find(
-                      (item) => item.id === selectedInvestigationId,
-                    )!
-                  }
-                  onChanged={() => setRefreshKey((current) => current + 1)}
-                />
-              )}
           </section>
+        )}
+
+        {!dataLoading && activePage === "activity" && user.role === "admin" && (
+          <ActivityLogPage token={accessToken} />
         )}
       </main>
     </div>

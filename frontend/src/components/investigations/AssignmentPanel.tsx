@@ -102,7 +102,7 @@ export function AssignmentPanel({
 
       {activeAssignment && (
         <p className="workflow-meta">
-          Current agent ID: <strong>{activeAssignment.agent_id}</strong>
+          Current agent: <strong>{activeAssignment.agent_name}</strong>
         </p>
       )}
 
@@ -152,8 +152,7 @@ export function AssignmentPanel({
           <ul>
             {assignments.map((assignment) => (
               <li key={assignment.id}>
-                Agent {assignment.agent_id} · assigned by{" "}
-                {assignment.assigned_by_id}
+                {assignment.agent_name} · assigned by {assignment.assigned_by_name}
                 {assignment.is_active ? " · active" : " · ended"}
               </li>
             ))}
