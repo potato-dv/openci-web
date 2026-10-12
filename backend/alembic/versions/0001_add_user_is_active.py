@@ -9,7 +9,7 @@ from alembic import op
 import sqlalchemy as sa
 
 revision: str = "0001_add_user_is_active"
-down_revision: Union[str, Sequence[str], None] = None
+down_revision: Union[str, Sequence[str], None] = "0000_initial_schema"
 branch_labels: Union[str, Sequence[str], None] = None
 depends_on: Union[str, Sequence[str], None] = None
 

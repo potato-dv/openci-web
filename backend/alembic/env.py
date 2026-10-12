@@ -6,6 +6,7 @@ from sqlalchemy import engine_from_config, pool
 from app.config.settings import DATABASE_URL
 from app.database import Base
 from app.models.assignment import InvestigationAssignment
+from app.models.activity import ActivityLog
 from app.models.investigation import Investigation
 from app.models.report import InvestigationReport
 from app.models.review import InvestigationReview

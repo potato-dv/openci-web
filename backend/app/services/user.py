@@ -30,7 +30,7 @@ def get_users(db: Session) -> list[User]:
 
 
 def get_agents(db: Session) -> list[User]:
-    return db.query(User).filter(User.role == "agent").order_by(User.name).all()
+    return db.query(User).filter(User.role == "agent", User.is_active.is_(True)).order_by(User.name).all()
 
 def get_user_by_email(db: Session, email: str) -> User | None:
     return db.query(User).filter(User.email == email).first()
@@ -45,6 +45,13 @@ def set_user_active(db: Session, user: User, is_active: bool) -> User:
     db.refresh(user)
     return user
 
+
+def set_user_role(db: Session, user: User, role: str) -> User:
+    user.role = role
+    db.commit()
+    db.refresh(user)
+    return user
+
 def authenticate_user(
     db: Session,
     email: str,
@@ -53,6 +60,9 @@ def authenticate_user(
     user = get_user_by_email(db, email)
 
     if user is None:
+        return None
+
+    if not user.is_active:
         return None
 
     if not verify_password(password, user.password):

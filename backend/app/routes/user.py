@@ -1,9 +1,9 @@
 from fastapi import APIRouter, Depends
 from sqlalchemy.orm import Session
 
-from app.controllers.user import create, get_all, get_all_agents, get_one, login, update_activation
+from app.controllers.user import create, get_all, get_all_agents, get_one, login, update_activation, update_role
 from app.database.session import get_db
-from app.schemas.user import UserActivationUpdate, UserCreate, UserResponse, UserLogin
+from app.schemas.user import UserActivationUpdate, UserCreate, UserResponse, UserLogin, UserRoleUpdate
 from app.models.user import User
 from app.utils.auth import get_current_user, require_roles
 
@@ -23,8 +23,9 @@ router = APIRouter(
 def create_user(
     data: UserCreate,
     db: Session = Depends(get_db),
+    current_user: User = Depends(require_roles("admin")),
 ):
-    return create(db, data)
+    return create(db, data, current_user)
 
 
 # Authenticated users: View their own profile
@@ -84,6 +85,20 @@ def set_user_activation(
     current_user: User = Depends(require_roles("admin")),
 ):
     return update_activation(db, user_id, data.is_active, current_user)
+
+
+@router.patch(
+    "/{user_id}/role",
+    response_model=UserResponse,
+    dependencies=[Depends(require_roles("admin"))],
+)
+def set_user_role(
+    user_id: int,
+    data: UserRoleUpdate,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(require_roles("admin")),
+):
+    return update_role(db, user_id, data.role, current_user)
 
 
 # Public: Login

@@ -1,10 +1,4 @@
-from app.database import Base, engine
-from app.models.investigation import Investigation
-from app.models.assignment import InvestigationAssignment
-from app.models.user import User
-from app.models.report import InvestigationReport
-from app.models.review import InvestigationReview
-    
-Base.metadata.create_all(bind=engine)
+"""Schema changes are managed with Alembic migrations."""
 
-print("Database tables created.")
+if __name__ == "__main__":
+    print("Run `alembic upgrade head` to create or update the database schema.")

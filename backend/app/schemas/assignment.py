@@ -15,6 +15,8 @@ class AssignmentResponse(BaseModel):
     investigation_id: int
     agent_id: int
     assigned_by_id: int
+    agent_name: str
+    assigned_by_name: str
     note: str | None
     is_active: bool
     assigned_at: datetime

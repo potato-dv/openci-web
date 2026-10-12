@@ -19,3 +19,4 @@ class ReviewResponse(BaseModel):
     decision: Literal["approved", "returned_for_correction"]
     comments: str | None
     reviewed_at: datetime
+    reviewer_name: str

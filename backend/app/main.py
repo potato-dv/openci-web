@@ -3,6 +3,8 @@ from fastapi.middleware.cors import CORSMiddleware
 
 from app.routes.investigation import router as investigation_router
 from app.routes.user import router as user_router
+from app.routes.location import router as location_router
+from app.routes.activity import router as activity_router
 
 app = FastAPI()
 
@@ -16,6 +18,8 @@ app.add_middleware(
 
 app.include_router(investigation_router)
 app.include_router(user_router)
+app.include_router(location_router)
+app.include_router(activity_router)
 
 @app.get("/")
 def root():

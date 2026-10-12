@@ -1,4 +1,5 @@
 from sqlalchemy.orm import Session
+from sqlalchemy.exc import IntegrityError
 
 from app.schemas.investigation import InvestigationCreate, InvestigationUpdate
 from app.services.investigation import ( 
@@ -11,7 +12,7 @@ from app.services.investigation import (
     get_assignment_history,
     get_report,
     get_review_history,
-    is_valid_status_transition,
+    get_report_versions,
     review_investigation_report,
     save_report_draft,
     submit_report,
@@ -24,8 +25,16 @@ from app.schemas.assignment import AssignmentCreate
 from app.schemas.report import ReportUpsert
 from app.schemas.review import ReviewCreate
 
-def create(db: Session, data: InvestigationCreate):
-    return create_investigation(db, data)
+def create(db: Session, data: InvestigationCreate, current_user: User):
+    try:
+        investigation = create_investigation(db, data)
+    except IntegrityError as error:
+        db.rollback()
+        raise HTTPException(status_code=409, detail="Could not create investigation; please retry") from error
+    from app.services.activity import record_activity
+
+    record_activity(db, current_user, "investigation.created", "investigation", investigation.id)
+    return investigation
 
 def get_all(db: Session, current_user: User):
     return get_investigations(db, current_user)
@@ -37,10 +46,7 @@ def assign(
     data: AssignmentCreate,
     current_user: User,
 ):
-    investigation = get_investigation(db, investigation_id)
-
-    if investigation is None:
-        raise HTTPException(status_code=404, detail="Investigation not found")
+    investigation = get_one(db, investigation_id, current_user)
 
     agent = db.query(User).filter(User.id == data.agent_id).first()
 
@@ -54,18 +60,25 @@ def assign(
         )
 
     try:
-        return assign_investigation(
+        assignment = assign_investigation(
             db,
             investigation,
             agent,
             current_user,
             data.note,
         )
+        from app.services.activity import record_activity
+
+        record_activity(db, current_user, "investigation.assigned", "investigation", investigation.id, {"agent_id": agent.id})
+        return assignment
     except ValueError as error:
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT,
             detail=str(error),
         ) from error
+    except IntegrityError as error:
+        db.rollback()
+        raise HTTPException(status_code=409, detail="The investigation was assigned concurrently; refresh and try again") from error
 
 
 def get_assignments(
@@ -82,11 +95,16 @@ def get_investigation_report(
 ):
     investigation = get_one(db, investigation_id, current_user)
     report = get_report(db, investigation.id)
-
-    if report is None:
-        raise HTTPException(status_code=404, detail="Report not found")
-
     return report
+
+
+def get_investigation_report_versions(
+    db: Session,
+    investigation_id: int,
+    current_user: User,
+):
+    investigation = get_one(db, investigation_id, current_user)
+    return get_report_versions(db, investigation.id)
 
 
 def save_investigation_report(
@@ -104,7 +122,11 @@ def save_investigation_report(
         )
 
     try:
-        return save_report_draft(db, investigation, current_user, data.content)
+        report = save_report_draft(db, investigation, current_user, data)
+        from app.services.activity import record_activity
+
+        record_activity(db, current_user, "report.saved", "investigation", investigation.id)
+        return report
     except ValueError as error:
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT,
@@ -126,7 +148,11 @@ def submit_investigation_report(
         )
 
     try:
-        return submit_report(db, investigation)
+        report = submit_report(db, investigation)
+        from app.services.activity import record_activity
+
+        record_activity(db, current_user, "report.submitted", "investigation", investigation.id)
+        return report
     except ValueError as error:
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT,
@@ -144,13 +170,17 @@ def review_report(
     comments = data.comments.strip() if data.comments else None
 
     try:
-        return review_investigation_report(
+        review = review_investigation_report(
             db,
             investigation,
             current_user,
             data.decision,
             comments,
         )
+        from app.services.activity import record_activity
+
+        record_activity(db, current_user, "report.reviewed", "investigation", investigation.id, {"decision": data.decision})
+        return review
     except ValueError as error:
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT,
@@ -207,29 +237,17 @@ def update(
             detail="You do not have access to this investigation",
         )
 
-    if data.status is not None and not is_valid_status_transition(
-        investigation.status,
-        data.status,
-    ):
-        raise HTTPException(
-            status_code=status.HTTP_409_CONFLICT,
-            detail=(
-                f"Invalid status transition: "
-                f"{investigation.status} -> {data.status}"
-            ),
-        )
-
-    if current_user.role == "agent" and data.status not in {
-        None,
-        "in_progress",
-        "under_review",
-    }:
+    if current_user.role == "agent":
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
-            detail="Agents cannot perform this status transition",
+            detail="Agents cannot edit investigation details",
         )
 
-    return update_investigation(db, investigation, data)
+    updated = update_investigation(db, investigation, data)
+    from app.services.activity import record_activity
+
+    record_activity(db, current_user, "investigation.updated", "investigation", investigation.id, {"fields": list(data.model_dump(exclude_unset=True))})
+    return updated
 
 def delete(
     db: Session,
@@ -251,7 +269,10 @@ def delete(
         )
 
     delete_investigation(db, investigation)
+    from app.services.activity import record_activity
+
+    record_activity(db, current_user, "investigation.archived", "investigation", investigation_id)
 
     return {
-        "message": "Investigation deleted successfully"
+        "message": "Investigation archived successfully"
     }

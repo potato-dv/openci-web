@@ -1,4 +1,5 @@
-from datetime import datetime
+from datetime import datetime, timezone
+from uuid import uuid4
 
 from sqlalchemy.orm import Session
 
@@ -14,13 +15,8 @@ def create_investigation(
     db: Session,
     data: InvestigationCreate,
 ) -> Investigation:
-    investigation = Investigation(
-        reference_number=data.reference_number,
-        subject_name=data.subject_name,
-        address=data.address,
-        status=data.status,
-        priority=data.priority,
-    )
+    values = data.model_dump()
+    investigation = Investigation(reference_number=f"INV-{uuid4().hex.upper()}", **values)
 
     db.add(investigation)
     db.commit()
@@ -33,6 +29,7 @@ def get_investigations(
     current_user: User,
 ) -> list[Investigation]:
     query = db.query(Investigation)
+    query = query.filter(Investigation.deleted_at.is_(None))
 
     if current_user.role == "agent":
         query = query.filter(Investigation.assigned_agent_id == current_user.id)
@@ -45,7 +42,7 @@ def get_investigation(
 ) -> Investigation | None:
     return (
         db.query(Investigation)
-        .filter(Investigation.id == investigation_id)
+        .filter(Investigation.id == investigation_id, Investigation.deleted_at.is_(None))
         .first()
     )
 
@@ -122,6 +119,9 @@ def assign_investigation(
         .first()
     )
 
+    if not agent.is_active:
+        raise ValueError("Inactive agents cannot receive investigations")
+
     if active_assignment and active_assignment.agent_id == agent.id:
         active_assignment.note = note
         db.commit()
@@ -130,7 +130,7 @@ def assign_investigation(
 
     if active_assignment:
         active_assignment.is_active = False
-        active_assignment.unassigned_at = datetime.utcnow()
+        active_assignment.unassigned_at = datetime.now(timezone.utc)
 
     assignment = InvestigationAssignment(
         investigation_id=investigation.id,
@@ -155,7 +155,20 @@ def get_report(
     return (
         db.query(InvestigationReport)
         .filter(InvestigationReport.investigation_id == investigation_id)
+        .order_by(InvestigationReport.version.desc())
         .first()
+    )
+
+
+def get_report_versions(
+    db: Session,
+    investigation_id: int,
+) -> list[InvestigationReport]:
+    return (
+        db.query(InvestigationReport)
+        .filter(InvestigationReport.investigation_id == investigation_id)
+        .order_by(InvestigationReport.version.desc())
+        .all()
     )
 
 
@@ -163,24 +176,30 @@ def save_report_draft(
     db: Session,
     investigation: Investigation,
     author: User,
-    content: str,
+    data: ReportUpsert,
 ) -> InvestigationReport:
     report = get_report(db, investigation.id)
 
-    if report is not None and report.status == "submitted":
-        raise ValueError("Submitted reports cannot be edited")
+    if report is not None and report.status in {"submitted", "approved"}:
+        raise ValueError("Submitted or approved report versions cannot be edited")
 
-    if report is None:
+    starts_correction_revision = report is not None and (
+        report.status == "returned_for_correction"
+        or (investigation.status == "returned_for_correction" and report.status == "draft")
+    )
+    if report is None or starts_correction_revision:
         report = InvestigationReport(
             investigation_id=investigation.id,
             author_id=author.id,
-            content=content,
+            version=1 if report is None else report.version + 1,
+            **data.model_dump(),
         )
         db.add(report)
     else:
-        report.content = content
+        for field, value in data.model_dump().items():
+            setattr(report, field, value)
 
-    if investigation.status == "assigned":
+    if investigation.status in {"assigned", "returned_for_correction"}:
         investigation.status = "in_progress"
 
     db.commit()
@@ -197,14 +216,23 @@ def submit_report(
     if report is None or not report.content.strip():
         raise ValueError("A non-empty report draft is required before submission")
 
-    if report.status == "submitted":
-        raise ValueError("Report has already been submitted")
+    if report.status != "draft":
+        raise ValueError("Only a draft report version can be submitted")
+
+    if not report.visit_outcome:
+        raise ValueError("Select a visit outcome before submitting the report")
+    if not report.outcome:
+        raise ValueError("Select an investigation outcome before submitting the report")
+    if report.visit_outcome in {"visited", "no_access"} and report.visited_at is None:
+        raise ValueError("Visit date and time are required for this visit outcome")
+    if report.outcome == "verified" and not (report.verified_address or "").strip():
+        raise ValueError("Verified address is required for a verified outcome")
 
     if investigation.status not in {"in_progress", "returned_for_correction"}:
         raise ValueError("Investigation is not ready for report submission")
 
     report.status = "submitted"
-    report.submitted_at = datetime.utcnow()
+    report.submitted_at = datetime.now(timezone.utc)
     investigation.status = "under_review"
 
     db.commit()
@@ -251,10 +279,10 @@ def review_investigation_report(
     )
 
     if decision == "approved":
+        report.status = "approved"
         investigation.status = "completed"
     else:
-        report.status = "draft"
-        report.submitted_at = None
+        report.status = "returned_for_correction"
         investigation.status = "returned_for_correction"
 
     db.add(review)
@@ -266,5 +294,5 @@ def delete_investigation(
     db: Session,
     investigation: Investigation,
 ) -> None:
-    db.delete(investigation)
+    investigation.deleted_at = datetime.now(timezone.utc)
     db.commit()
