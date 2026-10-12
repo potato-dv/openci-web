@@ -35,8 +35,7 @@ services:
     container_name: openci-backend
     restart: unless-stopped
     command: >
-      sh -c "python -m app.database.init_db &&
-        alembic upgrade head &&
+      sh -c "alembic upgrade head &&
          uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload"
     volumes:
       - ./backend:/app
