@@ -128,13 +128,19 @@ def validate_address(data: object) -> None:
 
 
 def address_display(investigation: object) -> str:
+    from app.utils.names import normalize_user_name
+
     data = catalog()
     values = data["names"]
     parts = [
-        getattr(investigation, "house_number", None),
-        getattr(investigation, "unit_floor_building_name", None),
-        getattr(investigation, "street", None),
-        getattr(investigation, "subdivision_village_purok", None),
+        normalize_user_name(value) if isinstance(value, str) else value
+        for value in (
+            getattr(investigation, "house_number", None),
+            getattr(investigation, "unit_floor_building_name", None),
+            getattr(investigation, "street", None),
+            getattr(investigation, "subdivision_village_purok", None),
+        )
+    ] + [
         values.get(getattr(investigation, "barangay_code", None)),
         values.get(getattr(investigation, "city_municipality_code", None)),
         values.get(getattr(investigation, "province_code", None)),

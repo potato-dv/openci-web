@@ -2,22 +2,25 @@ import type { Investigation } from "../../types/api";
 import { StatusBadge } from "../ui/StatusBadge";
 import { PriorityBadge } from "../ui/PriorityBadge";
 import { RowActions } from "../ui/RowActions";
+import { InvestigationSubjectCell } from "./InvestigationSubjectCell";
+import { formatUserName } from "../../utils/userName";
 
 type InvestigationTableProps = {
   items: Investigation[];
   onSelect?: (item: Investigation) => void;
+  onSubjectOpen?: (item: Investigation) => void;
 };
 
 export function InvestigationTable({
   items,
   onSelect,
+  onSubjectOpen,
 }: InvestigationTableProps) {
   return (
     <div className="table-wrap">
       <table>
         <thead>
           <tr>
-            <th>Reference</th>
             <th>Subject</th>
             <th>Address</th>
             <th>Assigned agent</th>
@@ -29,22 +32,21 @@ export function InvestigationTable({
         <tbody>
           {items.map((item) => (
             <tr key={item.id}>
-              <td className="reference">
-                {onSelect ? (
-                  <button
-                    type="button"
-                    className="table-link"
-                    onClick={() => onSelect(item)}
-                  >
-                    {item.reference_number}
-                  </button>
-                ) : (
-                  item.reference_number
-                )}
+              <td>
+                <InvestigationSubjectCell
+                  subjectName={item.subject_name}
+                  referenceNumber={item.reference_number}
+                  onOpen={
+                    onSubjectOpen
+                      ? () => onSubjectOpen(item)
+                      : onSelect
+                        ? () => onSelect(item)
+                        : undefined
+                  }
+                />
               </td>
-              <td>{item.subject_name}</td>
               <td>{item.address_display || item.legacy_address || "—"}</td>
-              <td>{item.assigned_agent_name ?? "Unassigned"}</td>
+              <td>{item.assigned_agent_name ? formatUserName(item.assigned_agent_name) : "Unassigned"}</td>
               <td>
                 <StatusBadge status={item.status} />
               </td>

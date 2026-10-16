@@ -31,7 +31,7 @@ class InvestigationReview(Base):
     )
     report_id: Mapped[int] = mapped_column(Integer, index=True)
     reviewer_id: Mapped[int] = mapped_column(ForeignKey("users.id", ondelete="RESTRICT"), index=True)
-    decision: Mapped[str] = mapped_column(String(20))
+    decision: Mapped[str] = mapped_column(String(32))
     comments: Mapped[str | None] = mapped_column(Text, nullable=True)
     reviewed_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True),

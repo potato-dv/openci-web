@@ -1,14 +1,17 @@
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, status
 from sqlalchemy.orm import Session, joinedload
 
 from app.controllers.investigation import (
     assign,
     create,
     delete,
+    get_trash,
     get_investigation_report,
     get_investigation_report_versions,
     get_one,
     review_report,
+    permanently_delete,
+    restore,
     save_investigation_report,
     submit_investigation_report,
     update,
@@ -164,6 +167,24 @@ def create_investigation(
 ):
     return create(db, data, current_user)
 
+
+@router.get("/trash", response_model=list[InvestigationResponse])
+@router.get("/archived", response_model=list[InvestigationResponse], include_in_schema=False)
+def list_trash(
+    db: Session = Depends(get_db),
+    current_user: User = Depends(require_roles("admin", "supervisor")),
+):
+    return get_trash(db)
+
+
+@router.post("/{investigation_id}/restore", response_model=InvestigationResponse)
+def restore_trashed_investigation(
+    investigation_id: int,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(require_roles("admin", "supervisor")),
+):
+    return restore(db, investigation_id, current_user)
+
 @router.get("/{investigation_id}", response_model=InvestigationResponse)
 def get_investigation(
     investigation_id: int,
@@ -185,6 +206,15 @@ def update_investigation(
 def delete_investigation(
     investigation_id: int,
     db: Session = Depends(get_db),
-    current_user: User = Depends(get_current_user),
+    current_user: User = Depends(require_roles("admin", "supervisor")),
 ):
     return delete(db, investigation_id, current_user)
+
+
+@router.delete("/{investigation_id}/permanent", status_code=status.HTTP_204_NO_CONTENT)
+def permanently_delete_investigation_route(
+    investigation_id: int,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(require_roles("admin")),
+):
+    permanently_delete(db, investigation_id, current_user)

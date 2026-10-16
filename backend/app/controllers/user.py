@@ -5,6 +5,7 @@ from sqlalchemy.exc import IntegrityError
 from app.schemas.user import UserCreate, UserLogin
 from app.models.user import User
 from app.models.assignment import InvestigationAssignment
+from app.models.investigation import Investigation
 from app.services.user import (
     create_user,
     get_agents,
@@ -70,9 +71,14 @@ def update_activation(db: Session, user_id: int, is_active: bool, actor: User):
         )
 
     if user.role == "agent" and user.is_active and not is_active:
-        active_assignments = db.query(InvestigationAssignment).filter(
+        active_assignments = db.query(InvestigationAssignment).join(
+            Investigation,
+            Investigation.id == InvestigationAssignment.investigation_id,
+        ).filter(
             InvestigationAssignment.agent_id == user.id,
             InvestigationAssignment.is_active.is_(True),
+            Investigation.status != "completed",
+            Investigation.deleted_at.is_(None),
         ).count()
         if active_assignments:
             raise HTTPException(status_code=409, detail="Reassign this agent’s active investigations before deactivation")
@@ -98,9 +104,14 @@ def update_role(db: Session, user_id: int, role: str, actor: User):
         if active_admins <= 1:
             raise HTTPException(status_code=409, detail="At least one active admin account must remain")
     if user.role == "agent" and role != "agent":
-        active_assignments = db.query(InvestigationAssignment).filter(
+        active_assignments = db.query(InvestigationAssignment).join(
+            Investigation,
+            Investigation.id == InvestigationAssignment.investigation_id,
+        ).filter(
             InvestigationAssignment.agent_id == user.id,
             InvestigationAssignment.is_active.is_(True),
+            Investigation.status != "completed",
+            Investigation.deleted_at.is_(None),
         ).count()
         if active_assignments:
             raise HTTPException(status_code=409, detail="Reassign this agent’s active investigations before changing their role")

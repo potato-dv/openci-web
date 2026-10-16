@@ -1,4 +1,3 @@
-import { useEffect, useRef, useState } from "react";
 import type { User } from "../../types/api";
 
 type Page = "overview" | "users" | "investigations" | "activity";
@@ -7,7 +6,6 @@ type SidebarProps = {
   user: User;
   activePage: Page;
   onPageChange: (page: Page) => void;
-  onLogout: () => void;
 };
 
 function NavigationIcon({ name }: { name: "overview" | "investigations" | "users" | "activity" }) {
@@ -25,49 +23,7 @@ export function Sidebar({
   user,
   activePage,
   onPageChange,
-  onLogout,
 }: SidebarProps) {
-  const [accountMenuOpen, setAccountMenuOpen] = useState(false);
-  const accountMenuRef = useRef<HTMLDivElement>(null);
-  const accountTriggerRef = useRef<HTMLButtonElement>(null);
-  const accountMenuItemRef = useRef<HTMLButtonElement>(null);
-
-  useEffect(() => {
-    function handlePointerDown(event: PointerEvent) {
-      if (
-        accountMenuRef.current &&
-        !accountMenuRef.current.contains(event.target as Node)
-      ) {
-        setAccountMenuOpen(false);
-      }
-    }
-
-    function handleKeyDown(event: KeyboardEvent) {
-      if (event.key === "Escape") {
-        closeAccountMenu();
-      }
-    }
-
-    document.addEventListener("pointerdown", handlePointerDown);
-    document.addEventListener("keydown", handleKeyDown);
-
-    return () => {
-      document.removeEventListener("pointerdown", handlePointerDown);
-      document.removeEventListener("keydown", handleKeyDown);
-    };
-  }, []);
-
-  useEffect(() => {
-    if (accountMenuOpen) {
-      accountMenuItemRef.current?.focus();
-    }
-  }, [accountMenuOpen]);
-
-  function closeAccountMenu() {
-    setAccountMenuOpen(false);
-    accountTriggerRef.current?.focus();
-  }
-
   return (
     <aside className="sidebar">
       <div className="sidebar-brand">
@@ -100,54 +56,6 @@ export function Sidebar({
         </div>}
       </nav>
 
-      <div className="sidebar-user" ref={accountMenuRef}>
-        <button
-          type="button"
-          className="account-trigger"
-          ref={accountTriggerRef}
-          aria-expanded={accountMenuOpen}
-          aria-haspopup="menu"
-          aria-controls="account-menu"
-          onClick={() => setAccountMenuOpen((current) => !current)}
-        >
-          <span className="avatar">{user.name.charAt(0).toUpperCase()}</span>
-          <span className="sidebar-user-info">
-            <strong>{user.name}</strong>
-            <span>{user.role}</span>
-          </span>
-          <span
-            className={`account-chevron ${accountMenuOpen ? "open" : ""}`}
-            aria-hidden="true"
-          />
-        </button>
-
-        {accountMenuOpen && (
-          <div id="account-menu" className="account-menu" role="menu">
-            <div className="account-menu-identity">
-              <span className="account-menu-avatar">
-                {user.name.charAt(0).toUpperCase()}
-              </span>
-              <span>
-                <strong>{user.name}</strong>
-                <small>{user.role}</small>
-              </span>
-            </div>
-            <div className="account-menu-divider" />
-            <button
-              type="button"
-              className="account-menu-item"
-              ref={accountMenuItemRef}
-              role="menuitem"
-              onClick={() => {
-                closeAccountMenu();
-                onLogout();
-              }}
-            >
-              Log out
-            </button>
-          </div>
-        )}
-      </div>
     </aside>
   );
 }

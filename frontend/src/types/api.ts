@@ -33,6 +33,9 @@ export type NewUser = {
 export type Investigation = {
   id: number;
   reference_number: string;
+  first_name: string | null;
+  middle_name: string | null;
+  last_name: string | null;
   subject_name: string;
   legacy_address: string | null;
   address_display: string;
@@ -53,7 +56,9 @@ export type Investigation = {
 };
 
 export type NewInvestigation = {
-  subject_name: string;
+  first_name: string;
+  middle_name: string | null;
+  last_name: string;
   house_number: string;
   unit_floor_building_name: string;
   street: string;
@@ -67,7 +72,9 @@ export type NewInvestigation = {
 };
 
 export type InvestigationUpdate = {
-  subject_name?: string;
+  first_name?: string;
+  middle_name?: string | null;
+  last_name?: string;
   house_number?: string;
   unit_floor_building_name?: string | null;
   street?: string;

@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useRef, useState } from "react";
 import type { FormEvent } from "react";
 import { deleteInvestigation, updateInvestigation } from "../services/api";
 import type { Investigation, User } from "../types/api";
@@ -6,6 +6,7 @@ import { AssignmentPanel } from "../components/investigations/AssignmentPanel";
 import { PhilippineAddressFields } from "../components/investigations/PhilippineAddressFields";
 import { ReportEditor } from "../components/investigations/ReportEditor";
 import { ReviewPanel } from "../components/investigations/ReviewPanel";
+import { formatUserName } from "../utils/userName";
 import { StatusBadge } from "../components/ui/StatusBadge";
 import { PriorityBadge } from "../components/ui/PriorityBadge";
 import { Modal } from "../components/ui/Modal";
@@ -14,28 +15,29 @@ type InvestigationDetailsPageProps = {
   token: string;
   user: User;
   investigation: Investigation;
-  onBack: () => void;
   onChanged: () => void;
-  onDeleted: () => void;
+  onDeleted: (item: Investigation) => void;
 };
 
 export function InvestigationDetailsPage({
   token,
   user,
   investigation,
-  onBack,
   onChanged,
   onDeleted,
 }: InvestigationDetailsPageProps) {
   const canManage = user.role === "admin" || user.role === "supervisor";
   const [editing, setEditing] = useState(false);
   const [saving, setSaving] = useState(false);
-  const [archiving, setArchiving] = useState(false);
-  const [confirmArchive, setConfirmArchive] = useState(false);
+  const [softDeleting, setSoftDeleting] = useState(false);
+  const [confirmDelete, setConfirmDelete] = useState(false);
+  const deleteInFlight = useRef(false);
   const [error, setError] = useState("");
   const [deleteError, setDeleteError] = useState("");
   const [form, setForm] = useState({
-    subject_name: investigation.subject_name,
+    first_name: investigation.first_name ?? "",
+    middle_name: investigation.middle_name ?? "",
+    last_name: investigation.last_name ?? "",
     house_number: investigation.house_number ?? "",
     unit_floor_building_name: investigation.unit_floor_building_name ?? "",
     street: investigation.street ?? "",
@@ -50,7 +52,9 @@ export function InvestigationDetailsPage({
 
   function openEditForm() {
     setForm({
-      subject_name: investigation.subject_name,
+      first_name: investigation.first_name ?? "",
+      middle_name: investigation.middle_name ?? "",
+      last_name: investigation.last_name ?? "",
       house_number: investigation.house_number ?? "",
       unit_floor_building_name: investigation.unit_floor_building_name ?? "",
       street: investigation.street ?? "",
@@ -68,11 +72,13 @@ export function InvestigationDetailsPage({
 
   async function handleSave(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
-    setSaving(true);
     setError("");
+    setSaving(true);
     try {
       await updateInvestigation(token, investigation.id, {
-        subject_name: form.subject_name,
+        first_name: form.first_name,
+        middle_name: form.middle_name.trim() || null,
+        last_name: form.last_name,
         house_number: form.house_number,
         unit_floor_building_name: form.unit_floor_building_name || null,
         street: form.street,
@@ -94,29 +100,37 @@ export function InvestigationDetailsPage({
   }
 
   async function handleDelete() {
+    if (deleteInFlight.current) return;
+    deleteInFlight.current = true;
     setDeleteError("");
-    setArchiving(true);
+    setSoftDeleting(true);
     try {
       await deleteInvestigation(token, investigation.id);
-      onDeleted();
+      onDeleted(investigation);
     } catch (err) {
-      setDeleteError(err instanceof Error ? err.message : "Could not archive investigation.");
-      setConfirmArchive(false);
+      setDeleteError(err instanceof Error ? err.message : "Could not move investigation to Trash.");
     } finally {
-      setArchiving(false);
+      deleteInFlight.current = false;
+      setSoftDeleting(false);
     }
   }
 
   return (
     <div className="details-layout">
-      <button type="button" className="secondary-button toolbar-button back-button" onClick={onBack}>Back to investigations</button>
       <section className="details-summary">
-        <div className="section-heading">
-          <div>
-            <h2>{investigation.reference_number}</h2>
-            <p>{investigation.subject_name}</p>
+        <div className="details-page-heading">
+          <div className="details-page-identity">
+            <h1>{formatUserName(investigation.subject_name)}</h1>
+            <p className="details-reference">{investigation.reference_number}</p>
           </div>
-          <StatusBadge status={investigation.status} />
+          <div className="details-page-controls">
+            {canManage && (
+              <div className="details-actions">
+                <button className="secondary-button toolbar-button" type="button" onClick={openEditForm}>Edit investigation</button>
+                <button className="danger-button toolbar-button" type="button" onClick={() => { setDeleteError(""); setConfirmDelete(true); }}>Move to Trash</button>
+              </div>
+            )}
+          </div>
         </div>
         <dl className="details-grid">
           <div>
@@ -129,31 +143,37 @@ export function InvestigationDetailsPage({
           </div>
           <div>
             <dt>Assigned agent</dt>
-            <dd>{investigation.assigned_agent_name ?? "Unassigned"}</dd>
+            <dd>{investigation.assigned_agent_name ? formatUserName(investigation.assigned_agent_name) : "Unassigned"}</dd>
+          </div>
+          <div>
+            <dt>Status</dt>
+            <dd><StatusBadge status={investigation.status} /></dd>
           </div>
         </dl>
       </section>
 
-      {deleteError && <p className="error" role="alert">{deleteError}</p>}
-      {canManage && <div className="details-actions">
-        <button className="secondary-button toolbar-button" type="button" onClick={openEditForm}>Edit investigation</button>
-        {user.role === "admin" && <button className="danger-button" type="button" onClick={() => { setDeleteError(""); setConfirmArchive(true); }}>Archive investigation</button>}
-      </div>}
-      {user.role === "admin" && <Modal open={confirmArchive} title="Archive investigation" onClose={() => !archiving && setConfirmArchive(false)}>
+      {canManage && <Modal open={confirmDelete} title="Move investigation to Trash" onClose={() => !softDeleting && setConfirmDelete(false)}>
         <div className="confirm-dialog-copy">
-          <p>Archive investigation <strong>{investigation.reference_number}</strong>?</p>
-          <p>Its reports, reviews, and assignment history will be retained.</p>
+          <p>Move <strong>{investigation.reference_number}</strong> to Trash?</p>
+          <p>The investigation and its history will be retained. An administrator can permanently delete it from Trash.</p>
           {deleteError && <p className="error" role="alert">{deleteError}</p>}
           <div className="modal-form-actions">
-            <button type="button" className="secondary-button toolbar-button" onClick={() => setConfirmArchive(false)} disabled={archiving}>Cancel</button>
-            <button type="button" className="danger-button toolbar-button" onClick={() => void handleDelete()} disabled={archiving}>{archiving ? "Archiving…" : "Archive investigation"}</button>
+            <button type="button" className="secondary-button toolbar-button" onClick={() => setConfirmDelete(false)} disabled={softDeleting}>Cancel</button>
+            <button type="button" className="danger-button toolbar-button" onClick={() => void handleDelete()} disabled={softDeleting}>{softDeleting ? "Moving to Trash…" : "Move to Trash"}</button>
           </div>
         </div>
       </Modal>}
       {canManage && <Modal open={editing} title={`Edit ${investigation.reference_number}`} size="wide" onClose={() => setEditing(false)}>
         <form className="create-form modal-form" onSubmit={handleSave}>
-          <label>Subject name<input required maxLength={255} value={form.subject_name} onChange={(event) => setForm({ ...form, subject_name: event.target.value })} /></label>
-          <PhilippineAddressFields token={token} value={form} onChange={setForm} />
+          {investigation.first_name === null || investigation.last_name === null ? (
+            <p className="form-hint" role="status">This legacy name has not been split into name parts. Confirm the correct parts before saving: “{formatUserName(investigation.subject_name)}”.</p>
+          ) : null}
+          <div className="subject-name-grid">
+            <label htmlFor="edit_subject_first_name">First name<input id="edit_subject_first_name" autoComplete="given-name" required maxLength={255} value={form.first_name} onChange={(event) => setForm({ ...form, first_name: event.target.value })} /></label>
+            <label htmlFor="edit_subject_middle_name">Middle name <span className="optional-label">Optional</span><input id="edit_subject_middle_name" autoComplete="additional-name" maxLength={255} value={form.middle_name} onChange={(event) => setForm({ ...form, middle_name: event.target.value })} /></label>
+            <label htmlFor="edit_subject_last_name">Last name<input id="edit_subject_last_name" autoComplete="family-name" required maxLength={255} value={form.last_name} onChange={(event) => setForm({ ...form, last_name: event.target.value })} /></label>
+          </div>
+          <PhilippineAddressFields token={token} value={form} onChange={(next) => setForm((current) => ({ ...current, ...next, middle_name: next.middle_name ?? "" }))} />
           <label>Priority<select value={form.priority} onChange={(event) => setForm({ ...form, priority: event.target.value as typeof form.priority })}><option value="normal">Normal</option><option value="high">High</option><option value="urgent">Urgent</option></select></label>
           {error && <p className="error" role="alert">{error}</p>}
           <div className="modal-form-actions">

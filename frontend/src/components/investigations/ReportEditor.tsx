@@ -9,6 +9,7 @@ import type {
   ReportInput,
   VisitOutcome,
 } from "../../types/api";
+import { formatUserName } from "../../utils/userName";
 
 type ReportEditorProps = {
   token: string;
@@ -167,7 +168,7 @@ export function ReportEditor({ token, investigation, onChanged }: ReportEditorPr
       </div>
 
       {isReturned && <p className="workflow-meta">This version was returned. Saving your corrections creates a new version and keeps this one in the history.</p>}
-      {report?.author_name && <p className="workflow-meta">Report author: <strong>{report.author_name}</strong></p>}
+      {report?.author_name && <p className="workflow-meta">Report author: <strong>{formatUserName(report.author_name)}</strong></p>}
 
       <div className="report-fields">
         <label>Visit outcome

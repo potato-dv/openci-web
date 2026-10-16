@@ -38,6 +38,10 @@ async function requestJson<T>(
     headers,
   });
 
+  if (response.status === 204) {
+    return undefined as T;
+  }
+
   const contentType = response.headers.get("content-type") ?? "";
   const data = contentType.includes("application/json")
     ? await response.json()
@@ -69,6 +73,10 @@ export function getProfile(token: string) {
 
 export function getInvestigations(token: string) {
   return requestJson<Investigation[]>("/investigations/", { token });
+}
+
+export function getTrashedInvestigations(token: string) {
+  return requestJson<Investigation[]>("/investigations/trash", { token });
 }
 
 export function getUsers(token: string) {
@@ -153,6 +161,14 @@ export function updateInvestigation(token: string, investigationId: number, valu
 
 export function deleteInvestigation(token: string, investigationId: number) {
   return requestJson<{ message: string }>(`/investigations/${investigationId}`, { method: "DELETE", token });
+}
+
+export function permanentlyDeleteInvestigation(token: string, investigationId: number) {
+  return requestJson<void>(`/investigations/${investigationId}/permanent`, { method: "DELETE", token });
+}
+
+export function restoreInvestigation(token: string, investigationId: number) {
+  return requestJson<Investigation>(`/investigations/${investigationId}/restore`, { method: "POST", token });
 }
 
 export function assignInvestigation(

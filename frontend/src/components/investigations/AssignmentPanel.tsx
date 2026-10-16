@@ -6,6 +6,7 @@ import {
   getAssignments,
 } from "../../services/api";
 import type { Assignment, Investigation, User } from "../../types/api";
+import { formatUserName } from "../../utils/userName";
 
 type AssignmentPanelProps = {
   token: string;
@@ -18,6 +19,7 @@ export function AssignmentPanel({
   investigation,
   onChanged,
 }: AssignmentPanelProps) {
+  const canAssign = ["pending", "assigned"].includes(investigation.status);
   const [agents, setAgents] = useState<User[]>([]);
   const [assignments, setAssignments] = useState<Assignment[]>([]);
   const [agentId, setAgentId] = useState("");
@@ -35,7 +37,7 @@ export function AssignmentPanel({
 
       try {
         const [agentData, assignmentData] = await Promise.all([
-          getAgents(token),
+          canAssign ? getAgents(token) : Promise.resolve([]),
           getAssignments(token, investigation.id),
         ]);
 
@@ -61,7 +63,7 @@ export function AssignmentPanel({
     return () => {
       cancelled = true;
     };
-  }, [investigation.id, token]);
+  }, [canAssign, investigation.id, token]);
 
   async function handleAssign() {
     if (!agentId) {
@@ -89,76 +91,84 @@ export function AssignmentPanel({
     }
   }
 
-  const activeAssignment = assignments.find((item) => item.is_active);
-
   return (
     <section className="workflow-panel">
       <div className="section-heading">
         <div>
           <h3>Agent assignment</h3>
-          <p>Assign or reassign an eligible field agent.</p>
+          <p>
+            {canAssign
+              ? "Assign or reassign an eligible field agent."
+              : "Assignment is closed while this investigation is being handled or reviewed."}
+          </p>
         </div>
       </div>
 
-      {activeAssignment && (
-        <p className="workflow-meta">
-          Current agent: <strong>{activeAssignment.agent_name}</strong>
-        </p>
+      {canAssign && (
+        <>
+          <div className="workflow-form-row">
+            <label htmlFor="assignment-agent">Agent</label>
+            <select
+              id="assignment-agent"
+              value={agentId}
+              onChange={(event) => setAgentId(event.target.value)}
+              disabled={loading || saving}
+            >
+              <option value="">Select an agent</option>
+              {agents.map((agent) => (
+                <option key={agent.id} value={agent.id}>
+                  {formatUserName(agent.name)} ({agent.email})
+                </option>
+              ))}
+            </select>
+          </div>
+
+          <div className="workflow-form-row">
+            <label htmlFor="assignment-note">Assignment note</label>
+            <input
+              id="assignment-note"
+              value={note}
+              onChange={(event) => setNote(event.target.value)}
+              placeholder="Optional instructions"
+              maxLength={500}
+              disabled={saving}
+            />
+          </div>
+
+          {error && <p className="error" role="alert">{error}</p>}
+
+          <button
+            type="button"
+            className="primary-button compact-button"
+            onClick={() => void handleAssign()}
+            disabled={loading || saving || !agents.length}
+          >
+            {saving ? "Assigning..." : "Assign investigation"}
+          </button>
+        </>
       )}
 
-      <div className="workflow-form-row">
-        <label htmlFor="assignment-agent">Agent</label>
-        <select
-          id="assignment-agent"
-          value={agentId}
-          onChange={(event) => setAgentId(event.target.value)}
-          disabled={loading || saving}
-        >
-          <option value="">Select an agent</option>
-          {agents.map((agent) => (
-            <option key={agent.id} value={agent.id}>
-              {agent.name} ({agent.email})
-            </option>
-          ))}
-        </select>
-      </div>
-
-      <div className="workflow-form-row">
-        <label htmlFor="assignment-note">Assignment note</label>
-        <input
-          id="assignment-note"
-          value={note}
-          onChange={(event) => setNote(event.target.value)}
-          placeholder="Optional instructions"
-          maxLength={500}
-          disabled={saving}
-        />
-      </div>
-
-      {error && <p className="error">{error}</p>}
-
-      <button
-        type="button"
-        className="primary-button compact-button"
-        onClick={() => void handleAssign()}
-        disabled={loading || saving || !agents.length}
+      <details
+        key={`${investigation.id}-${canAssign ? "assignable" : "closed"}`}
+        className="workflow-history"
+        open={canAssign || undefined}
       >
-        {saving ? "Assigning..." : "Assign investigation"}
-      </button>
-
-      {assignments.length > 0 && (
-        <div className="workflow-history">
-          <h4>Assignment history</h4>
+        <summary>Assignment history ({assignments.length})</summary>
+        {loading ? (
+          <p className="muted">Loading assignment history…</p>
+        ) : assignments.length > 0 ? (
           <ul>
             {assignments.map((assignment) => (
               <li key={assignment.id}>
-                {assignment.agent_name} · assigned by {assignment.assigned_by_name}
+                {formatUserName(assignment.agent_name)} · assigned by {formatUserName(assignment.assigned_by_name)}
                 {assignment.is_active ? " · active" : " · ended"}
               </li>
             ))}
           </ul>
-        </div>
-      )}
+        ) : (
+          <p className="empty-state">No assignment history yet.</p>
+        )}
+      </details>
     </section>
   );
 }

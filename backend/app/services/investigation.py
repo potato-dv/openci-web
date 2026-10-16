@@ -7,6 +7,7 @@ from app.models.assignment import InvestigationAssignment
 from app.models.investigation import Investigation
 from app.models.report import InvestigationReport
 from app.models.review import InvestigationReview
+from app.models.activity import ActivityLog
 from app.models.user import User
 from app.schemas.investigation import InvestigationCreate, InvestigationUpdate
 
@@ -36,6 +37,47 @@ def get_investigations(
 
     return query.order_by(Investigation.created_at.desc()).all()
 
+
+def get_trashed_investigations(db: Session) -> list[Investigation]:
+    return (
+        db.query(Investigation)
+        .filter(Investigation.deleted_at.is_not(None))
+        .order_by(Investigation.deleted_at.desc())
+        .all()
+    )
+
+
+def get_trashed_investigation(
+    db: Session,
+    investigation_id: int,
+) -> Investigation | None:
+    return (
+        db.query(Investigation)
+        .filter(
+            Investigation.id == investigation_id,
+            Investigation.deleted_at.is_not(None),
+        )
+        .first()
+    )
+
+
+def restore_investigation(
+    db: Session,
+    investigation: Investigation,
+    actor: User,
+) -> Investigation:
+    investigation.deleted_at = None
+    db.add(ActivityLog(
+        actor_id=actor.id,
+        action="investigation.restored",
+        object_type="investigation",
+        object_id=investigation.id,
+        details={"reference_number": investigation.reference_number},
+    ))
+    db.commit()
+    db.refresh(investigation)
+    return investigation
+
 def get_investigation(
     db: Session,
     investigation_id: int,
@@ -52,6 +94,9 @@ def update_investigation(
     data: InvestigationUpdate,
 ) -> Investigation:
     update_data = data.model_dump(exclude_unset=True)
+
+    if {"first_name", "middle_name", "last_name"}.issubset(update_data):
+        investigation.legacy_subject_name = None
 
     for field, value in update_data.items():
         setattr(investigation, field, value)
@@ -293,6 +338,44 @@ def review_investigation_report(
 def delete_investigation(
     db: Session,
     investigation: Investigation,
+    actor: User,
 ) -> None:
     investigation.deleted_at = datetime.now(timezone.utc)
+    db.add(ActivityLog(
+        actor_id=actor.id,
+        action="investigation.deleted",
+        object_type="investigation",
+        object_id=investigation.id,
+        details={"reference_number": investigation.reference_number},
+    ))
+    db.commit()
+
+
+def permanently_delete_investigation(
+    db: Session,
+    investigation: Investigation,
+    actor: User,
+) -> None:
+    reference_number = investigation.reference_number
+    investigation_id = investigation.id
+
+    # Delete dependents in foreign-key order so this works consistently with
+    # databases that enforce constraints even when ORM relationships are unloaded.
+    db.query(InvestigationReview).filter(
+        InvestigationReview.investigation_id == investigation_id
+    ).delete(synchronize_session=False)
+    db.query(InvestigationReport).filter(
+        InvestigationReport.investigation_id == investigation_id
+    ).delete(synchronize_session=False)
+    db.query(InvestigationAssignment).filter(
+        InvestigationAssignment.investigation_id == investigation_id
+    ).delete(synchronize_session=False)
+    db.add(ActivityLog(
+        actor_id=actor.id,
+        action="investigation.permanently_deleted",
+        object_type="investigation",
+        object_id=investigation_id,
+        details={"reference_number": reference_number},
+    ))
+    db.delete(investigation)
     db.commit()

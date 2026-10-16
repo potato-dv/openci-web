@@ -25,13 +25,20 @@ export function RowActions({ label, children }: RowActionsProps) {
 
       const triggerRect = trigger.getBoundingClientRect();
       const menuRect = menu.getBoundingClientRect();
-      const gap = 4;
+      const gap = 3;
       const edge = 8;
-      const left = Math.max(edge, Math.min(triggerRect.right - menuRect.width, window.innerWidth - menuRect.width - edge));
+      const left = Math.max(
+        edge,
+        Math.min(
+          triggerRect.right - menuRect.width,
+          window.innerWidth - menuRect.width - edge,
+        ),
+      );
       const below = triggerRect.bottom + gap;
-      const top = below + menuRect.height <= window.innerHeight - edge
-        ? below
-        : Math.max(edge, triggerRect.top - menuRect.height - gap);
+      const top = Math.min(
+        Math.max(edge, below),
+        Math.max(edge, window.innerHeight - menuRect.height - edge),
+      );
 
       setPosition({ top, left });
     }

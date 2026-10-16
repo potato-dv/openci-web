@@ -31,6 +31,9 @@ export function InvestigationFilters({
   onPriorityChange,
   onReset,
 }: InvestigationFiltersProps) {
+  const hasActiveFilters =
+    query.trim().length > 0 || status !== "all" || priority !== "all";
+
   return (
     <div className="investigation-filters" aria-label="Investigation filters">
       <label className="filter-search">
@@ -79,8 +82,9 @@ export function InvestigationFilters({
 
       <button
         type="button"
-        className="text-button filter-reset"
+        className="secondary-button toolbar-button filter-reset"
         onClick={onReset}
+        disabled={!hasActiveFilters}
       >
         Clear filters
       </button>

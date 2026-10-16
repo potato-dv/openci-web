@@ -22,11 +22,25 @@ class Investigation(Base):
             name="ck_investigations_status",
         ),
         CheckConstraint("priority IN ('normal', 'high', 'urgent')", name="ck_investigations_priority"),
+        CheckConstraint(
+            "(legacy_subject_name IS NOT NULL AND first_name IS NULL AND middle_name IS NULL AND last_name IS NULL) "
+            "OR (legacy_subject_name IS NULL "
+            "AND first_name IS NOT NULL AND length(trim(first_name)) > 0 "
+            "AND last_name IS NOT NULL AND length(trim(last_name)) > 0 "
+            "AND (middle_name IS NULL OR length(trim(middle_name)) > 0) "
+            "AND length(trim(first_name)) + length(trim(last_name)) "
+            "+ coalesce(length(trim(middle_name)), 0) "
+            "+ CASE WHEN middle_name IS NULL THEN 1 ELSE 2 END <= 255)",
+            name="ck_investigations_structured_subject_name",
+        ),
     )
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True, index=True)
     reference_number: Mapped[str] = mapped_column(String(50), unique=True, index=True)
-    subject_name: Mapped[str] = mapped_column(String(255))
+    first_name: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    middle_name: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    last_name: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    legacy_subject_name: Mapped[str | None] = mapped_column(String(255), nullable=True)
     legacy_address: Mapped[str | None] = mapped_column(String(500), nullable=True)
     house_number: Mapped[str | None] = mapped_column(String(100), nullable=True)
     unit_floor_building_name: Mapped[str | None] = mapped_column(String(150), nullable=True)
@@ -68,3 +82,14 @@ class Investigation(Base):
     @property
     def assigned_agent_name(self) -> str | None:
         return self.assigned_agent.name if self.assigned_agent else None
+
+    @property
+    def subject_name(self) -> str:
+        if self.legacy_subject_name is not None:
+            return self.legacy_subject_name
+
+        return " ".join(
+            part.strip()
+            for part in (self.first_name, self.middle_name, self.last_name)
+            if part and part.strip()
+        )

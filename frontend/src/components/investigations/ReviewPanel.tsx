@@ -2,6 +2,7 @@ import { useEffect, useState } from "react";
 
 import { getReport, getReportVersions, getReviews, reviewReport } from "../../services/api";
 import type { Investigation, Report, Review } from "../../types/api";
+import { formatUserName } from "../../utils/userName";
 
 type ReviewPanelProps = {
   token: string;
@@ -22,7 +23,7 @@ function ReportDetails({ report }: { report: Report }) {
         <div><dt>Occupancy</dt><dd>{displayValue(report.occupancy_status)}</dd></div>
         <div><dt>Visited at</dt><dd>{report.visited_at ? new Date(report.visited_at).toLocaleString() : "—"}</dd></div>
         <div><dt>Verified address</dt><dd>{report.verified_address || "—"}</dd></div>
-        <div><dt>Author</dt><dd>{report.author_name}</dd></div>
+        <div><dt>Author</dt><dd>{formatUserName(report.author_name)}</dd></div>
       </dl>
       {report.property_condition && <div className="report-copy"><h4>Property condition</h4><p>{report.property_condition}</p></div>}
       {report.interaction_notes && <div className="report-copy"><h4>Interaction notes</h4><p>{report.interaction_notes}</p></div>}
@@ -114,7 +115,7 @@ export function ReviewPanel({ token, investigation, onChanged }: ReviewPanelProp
           <div className="report-version-list">
             {versions.map((version) => (
               <details key={version.id} className="report-version-item">
-                <summary>Version {version.version} · {version.status.replaceAll("_", " ")} · {version.author_name}</summary>
+                <summary>Version {version.version} · {version.status.replaceAll("_", " ")} · {formatUserName(version.author_name)}</summary>
                 <ReportDetails report={version} />
               </details>
             ))}
@@ -151,7 +152,7 @@ export function ReviewPanel({ token, investigation, onChanged }: ReviewPanelProp
           <ul>
             {reviews.map((review) => (
               <li key={review.id}>
-                {review.decision.replaceAll("_", " ")} by {review.reviewer_name} · {new Date(review.reviewed_at).toLocaleString()}
+                {review.decision.replaceAll("_", " ")} by {formatUserName(review.reviewer_name)} · {new Date(review.reviewed_at).toLocaleString()}
                 {review.comments ? `: ${review.comments}` : ""}
               </li>
             ))}

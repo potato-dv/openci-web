@@ -3,17 +3,20 @@ from types import SimpleNamespace
 
 from pydantic import ValidationError
 from sqlalchemy import create_engine, event
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session, configure_mappers
 
 from app.database import Base
 from app.models.investigation import Investigation
 from app.models.activity import ActivityLog
+from app.models.review import InvestigationReview
+from app.models.report import InvestigationReport
 from app.schemas.activity import ActivityLogResponse
 from app.schemas.assignment import AssignmentResponse
-from app.schemas.investigation import InvestigationResponse
-from app.schemas.investigation import InvestigationCreate
+from app.schemas.investigation import InvestigationCreate, InvestigationResponse, InvestigationUpdate
 from app.services.investigation import (
     can_access_investigation,
+    assign_investigation,
     create_investigation,
     get_report,
     get_report_versions,
@@ -21,11 +24,143 @@ from app.services.investigation import (
     review_investigation_report,
     save_report_draft,
     submit_report,
+    update_investigation,
 )
 from app.schemas.report import ReportResponse, ReportUpsert
 from app.services.locations import catalog, get_barangays, get_cities, get_provinces
 from app.utils.auth import require_roles
 from fastapi import HTTPException
+
+
+class InvestigationNameTests(unittest.TestCase):
+    def address_fields(self):
+        from app.services.locations import catalog, get_barangays
+
+        city_code = "1381400000"
+        city = next(item for item in catalog()["cities"] if item["code"] == city_code)
+        return {
+            "house_number": "10",
+            "street": "Test Street",
+            "region_code": city["region_code"],
+            "province_code": None,
+            "city_municipality_code": city_code,
+            "barangay_code": get_barangays(city_code)[0]["code"],
+        }
+
+    def test_create_schema_trims_names_and_validates_required_and_combined_length(self):
+        values = {
+            **self.address_fields(),
+            "first_name": "  Ada ",
+            "middle_name": "  Augusta  ",
+            "last_name": " Lovelace  ",
+        }
+        payload = InvestigationCreate(**values)
+        self.assertEqual(payload.first_name, "Ada")
+        self.assertEqual(payload.middle_name, "Augusta")
+        self.assertEqual(payload.last_name, "Lovelace")
+        optional_middle = InvestigationCreate(**{**values, "middle_name": "   "})
+        self.assertIsNone(optional_middle.middle_name)
+
+        with self.assertRaises(ValidationError):
+            InvestigationCreate(**{**values, "first_name": "   "})
+        with self.assertRaises(ValidationError):
+            InvestigationCreate(**{key: value for key, value in values.items() if key != "last_name"})
+        with self.assertRaises(ValidationError):
+            InvestigationCreate(**{**values, "first_name": "A" * 128, "middle_name": None, "last_name": "B" * 127})
+        with self.assertRaises(ValidationError):
+            InvestigationCreate(**{**values, "subject_name": "Ada Augusta Lovelace"})
+
+        formatted = InvestigationCreate(**{
+            **values,
+            "first_name": "  aDA ",
+            "middle_name": " mARIE  ",
+            "last_name": " lOVELACE  ",
+        })
+        self.assertEqual(formatted.first_name, "Ada")
+        self.assertEqual(formatted.middle_name, "Marie")
+        self.assertEqual(formatted.last_name, "Lovelace")
+
+    def test_create_and_update_normalize_freeform_address_fields(self):
+        create_payload = InvestigationCreate(**{
+            **self.address_fields(),
+            "first_name": "Ada",
+            "last_name": "Lovelace",
+            "house_number": "  bLDG   12a ",
+            "unit_floor_building_name": "  tOWER   WEST ",
+            "street": "  mAIN   STREET ",
+            "subdivision_village_purok": "  sAN   ISIDRO ",
+        })
+        self.assertEqual(create_payload.house_number, "Bldg 12a")
+        self.assertEqual(create_payload.unit_floor_building_name, "Tower West")
+        self.assertEqual(create_payload.street, "Main Street")
+        self.assertEqual(create_payload.subdivision_village_purok, "San Isidro")
+
+        update_payload = InvestigationUpdate(
+            house_number="  uNIT   4 ",
+            street="  hIGH   STREET ",
+        )
+        self.assertEqual(update_payload.house_number, "Unit 4")
+        self.assertEqual(update_payload.street, "High Street")
+
+        updated_name = InvestigationUpdate(
+            first_name=" jANE ",
+            middle_name=" DOE ",
+            last_name=" SMITH ",
+        )
+        self.assertEqual((updated_name.first_name, updated_name.middle_name, updated_name.last_name), ("Jane", "Doe", "Smith"))
+
+    def test_create_response_and_legacy_correction_use_structured_names(self):
+        engine = create_engine("sqlite:///:memory:")
+        Base.metadata.create_all(engine)
+        with Session(engine) as session:
+            legacy = Investigation(
+                reference_number="INV-LEGACY-NAME",
+                legacy_subject_name="Two Words",
+            )
+            session.add(legacy)
+            session.flush()
+
+            legacy_response = InvestigationResponse.model_validate(legacy)
+            self.assertEqual(legacy_response.subject_name, "Two Words")
+            self.assertIsNone(legacy_response.first_name)
+            self.assertIsNone(legacy_response.last_name)
+
+            corrected = update_investigation(
+                session,
+                legacy,
+                InvestigationUpdate(first_name="  Ada ", middle_name=" ", last_name=" Lovelace "),
+            )
+            response = InvestigationResponse.model_validate(corrected)
+            self.assertEqual(response.first_name, "Ada")
+            self.assertIsNone(response.middle_name)
+            self.assertEqual(response.last_name, "Lovelace")
+            self.assertEqual(response.subject_name, "Ada Lovelace")
+            self.assertIsNone(corrected.legacy_subject_name)
+
+    def test_update_requires_all_name_parts_and_rejects_legacy_subject_name(self):
+        with self.assertRaises(ValidationError):
+            InvestigationUpdate(first_name="Ada", last_name="Lovelace")
+        with self.assertRaises(ValidationError):
+            InvestigationUpdate(subject_name="Ada Lovelace")
+        with self.assertRaises(ValidationError):
+            InvestigationUpdate(first_name=" ", middle_name=None, last_name="Lovelace")
+        with self.assertRaises(ValidationError):
+            InvestigationUpdate(first_name="A" * 128, middle_name=None, last_name="B" * 127)
+
+    def test_database_rejects_incomplete_non_legacy_name_parts(self):
+        engine = create_engine("sqlite:///:memory:")
+        Base.metadata.create_all(engine)
+        with Session(engine) as session:
+            session.add(
+                Investigation(
+                    reference_number="INV-INCOMPLETE-NAME",
+                    first_name=" ",
+                    middle_name=None,
+                    last_name="Lovelace",
+                )
+            )
+            with self.assertRaises(IntegrityError):
+                session.commit()
 
 
 class LocationTests(unittest.TestCase):
@@ -47,7 +182,8 @@ class LocationTests(unittest.TestCase):
         city = next(item for item in catalog()["cities"] if item["code"] == manila_code)
 
         common = {
-            "subject_name": "Test Subject",
+            "first_name": "Test",
+            "last_name": "Subject",
             "house_number": "10",
             "street": "Test Street",
             "region_code": city["region_code"],
@@ -66,6 +202,88 @@ class LocationTests(unittest.TestCase):
 
 
 class WorkflowTests(unittest.TestCase):
+    def test_investigation_delete_permissions_distinguish_soft_restore_and_permanent_delete(self):
+        from app.controllers.investigation import permanently_delete, restore
+
+        supervisor = SimpleNamespace(role="supervisor", id=2)
+        agent = SimpleNamespace(role="agent", id=3)
+        self.assertIs(require_roles("admin", "supervisor")(supervisor), supervisor)
+        with self.assertRaises(HTTPException):
+            require_roles("admin")(supervisor)
+        with self.assertRaises(HTTPException) as permanent_error:
+            permanently_delete(None, 7, supervisor)
+        self.assertEqual(permanent_error.exception.status_code, 403)
+        with self.assertRaises(HTTPException) as restore_error:
+            restore(None, 7, agent)
+        self.assertEqual(restore_error.exception.status_code, 403)
+
+    def test_review_decision_column_fits_longest_decision(self):
+        decision_column = InvestigationReview.__table__.columns["decision"]
+        self.assertGreaterEqual(decision_column.type.length, len("returned_for_correction"))
+
+    def test_report_versions_are_unique_per_investigation_not_per_investigation_only(self):
+        from sqlalchemy import UniqueConstraint
+
+        unique_columns = {
+            tuple(constraint.columns.keys())
+            for constraint in InvestigationReport.__table__.constraints
+            if isinstance(constraint, UniqueConstraint)
+        }
+        self.assertIn(("investigation_id", "version"), unique_columns)
+        self.assertNotIn(("investigation_id",), unique_columns)
+
+    def test_celery_task_uses_workflow_status_and_rejects_invalid_transition(self):
+        from datetime import datetime, timezone
+        from unittest.mock import patch
+
+        from sqlalchemy.orm import sessionmaker
+
+        from app.workers.tasks import process_investigation
+
+        engine = create_engine("sqlite:///:memory:")
+        Base.metadata.create_all(engine)
+        session_factory = sessionmaker(bind=engine)
+        with session_factory() as session:
+            assigned = Investigation(
+                reference_number="INV-CELERY-ASSIGNED",
+                first_name="QA",
+                last_name="Agent",
+                status="assigned",
+            )
+            pending = Investigation(
+                reference_number="INV-CELERY-PENDING",
+                first_name="QA",
+                last_name="Pending",
+                status="pending",
+            )
+            trashed = Investigation(
+                reference_number="INV-CELERY-TRASHED",
+                first_name="QA",
+                last_name="Trashed",
+                status="assigned",
+                deleted_at=datetime.now(timezone.utc),
+            )
+            session.add_all([assigned, pending, trashed])
+            session.flush()
+            assigned_id = assigned.id
+            pending_id = pending.id
+            trashed_id = trashed.id
+            session.commit()
+
+        with patch("app.workers.tasks.SessionLocal", session_factory):
+            result = process_investigation.run(assigned_id)
+            rejected = process_investigation.run(pending_id)
+            skipped = process_investigation.run(trashed_id)
+
+        self.assertEqual(result["status"], "in_progress")
+        self.assertEqual(rejected["status"], "failed")
+        self.assertEqual(skipped["status"], "skipped")
+        with session_factory() as session:
+            self.assertEqual(session.get(Investigation, assigned_id).status, "in_progress")
+            self.assertEqual(session.get(Investigation, pending_id).status, "pending")
+            self.assertEqual(session.get(Investigation, trashed_id).status, "assigned")
+        engine.dispose()
+
     def test_report_versions_preserve_returned_submissions_and_reviews(self):
         from datetime import datetime, timezone
 
@@ -81,7 +299,8 @@ class WorkflowTests(unittest.TestCase):
             session.flush()
             investigation = Investigation(
                 reference_number="INV-REPORT-VERSIONS",
-                subject_name="Test Subject",
+                first_name="Test",
+                last_name="Subject",
                 status="assigned",
                 assigned_agent_id=agent.id,
             )
@@ -152,7 +371,8 @@ class WorkflowTests(unittest.TestCase):
             session.flush()
             investigation = Investigation(
                 reference_number="INV-REPORT-VALIDATION",
-                subject_name="Test Subject",
+                first_name="Test",
+                last_name="Subject",
                 status="assigned",
                 assigned_agent_id=agent.id,
             )
@@ -190,7 +410,8 @@ class WorkflowTests(unittest.TestCase):
             session.flush()
             investigation = Investigation(
                 reference_number="INV-LEGACY-RETURN",
-                subject_name="Test Subject",
+                first_name="Test",
+                last_name="Subject",
                 status="assigned",
                 assigned_agent_id=agent.id,
             )
@@ -225,7 +446,9 @@ class WorkflowTests(unittest.TestCase):
         city_code = "1381400000"
         region_code = next(city["region_code"] for city in catalog()["cities"] if city["code"] == city_code)
         payload = InvestigationCreate(
-            subject_name="Test Subject",
+            first_name="Test",
+            middle_name="Case",
+            last_name="Subject",
             house_number="10",
             street="Test Street",
             region_code=region_code,
@@ -238,6 +461,11 @@ class WorkflowTests(unittest.TestCase):
             second = create_investigation(session, payload)
             self.assertRegex(first.reference_number, r"^INV-[0-9A-F]{32}$")
             self.assertNotEqual(first.reference_number, second.reference_number)
+            response = InvestigationResponse.model_validate(first)
+            self.assertEqual(response.subject_name, "Test Case Subject")
+            self.assertEqual(response.first_name, "Test")
+            self.assertEqual(response.middle_name, "Case")
+            self.assertEqual(response.last_name, "Subject")
 
     def test_admin_and_supervisor_scope_and_agent_assignment_scope(self):
         investigation = SimpleNamespace(assigned_agent_id=7)
@@ -251,6 +479,18 @@ class WorkflowTests(unittest.TestCase):
         self.assertFalse(is_valid_status_transition("pending", "under_review"))
         self.assertFalse(is_valid_status_transition("completed", "in_progress"))
 
+    def test_assignment_service_rejects_non_assignable_statuses(self):
+        for status in ("in_progress", "under_review", "returned_for_correction", "completed"):
+            with self.subTest(status=status):
+                with self.assertRaisesRegex(ValueError, "Only pending or assigned"):
+                    assign_investigation(
+                        None,
+                        SimpleNamespace(status=status),
+                        None,
+                        None,
+                        None,
+                    )
+
     def test_admin_dependency_rejects_other_roles(self):
         admin = SimpleNamespace(role="admin", id=1)
         supervisor = SimpleNamespace(role="supervisor", id=2)
@@ -258,7 +498,7 @@ class WorkflowTests(unittest.TestCase):
         with self.assertRaises(HTTPException):
             require_roles("admin")(supervisor)
 
-    def test_relationships_and_archive_preserve_assignment_history(self):
+    def test_soft_delete_preserves_relationships_and_permanent_delete_preserves_audit(self):
         configure_mappers()
         engine = create_engine("sqlite:///:memory:")
 
@@ -275,10 +515,25 @@ class WorkflowTests(unittest.TestCase):
             agent = User(name="Agent", email="agent@example.test", password="hashed", role="agent")
             session.add_all([actor, agent])
             session.flush()
-            investigation = Investigation(reference_number="INV-CASCADE", subject_name="Subject", assigned_agent_id=agent.id)
+            investigation = Investigation(reference_number="INV-CASCADE", first_name="Test", last_name="Subject", assigned_agent_id=agent.id)
             assignment = InvestigationAssignment(agent_id=agent.id, assigned_by_id=actor.id, is_active=True)
             investigation.assignments.append(assignment)
             session.add(investigation)
+            session.flush()
+            report = InvestigationReport(
+                investigation_id=investigation.id,
+                author_id=agent.id,
+                content="Field findings",
+            )
+            session.add(report)
+            session.flush()
+            review = InvestigationReview(
+                investigation_id=investigation.id,
+                report_id=report.id,
+                reviewer_id=actor.id,
+                decision="approved",
+            )
+            session.add(review)
             activity = ActivityLog(actor_id=actor.id, action="test", object_type="investigation", object_id=1)
             session.add(activity)
             session.commit()
@@ -292,13 +547,50 @@ class WorkflowTests(unittest.TestCase):
 
             session.delete(investigation)
             session.rollback()
-            from app.services.investigation import delete_investigation, get_investigations
+            from app.services.investigation import (
+                delete_investigation,
+                get_investigations,
+                get_investigation,
+                get_trashed_investigations,
+                permanently_delete_investigation,
+                restore_investigation,
+            )
 
             investigation = session.get(Investigation, investigation_id)
-            delete_investigation(session, investigation)
+            delete_investigation(session, investigation, actor)
             self.assertEqual(get_investigations(session, actor), [])
             self.assertIsNotNone(session.get(Investigation, investigation_id))
             self.assertEqual(session.query(InvestigationAssignment).count(), 1)
+            self.assertEqual(session.query(InvestigationReport).count(), 1)
+            self.assertEqual(session.query(InvestigationReview).count(), 1)
+            soft_delete_event = session.query(ActivityLog).filter_by(
+                action="investigation.deleted",
+                object_id=investigation_id,
+            ).one()
+            self.assertEqual(soft_delete_event.actor_id, actor.id)
+            self.assertEqual(soft_delete_event.details["reference_number"], "INV-CASCADE")
+            self.assertIsNone(get_investigation(session, investigation_id))
+            self.assertEqual(get_trashed_investigations(session)[0].id, investigation_id)
+
+            investigation = get_trashed_investigations(session)[0]
+            restore_investigation(session, investigation, actor)
+            self.assertEqual(get_investigations(session, actor)[0].id, investigation_id)
+
+            investigation = session.get(Investigation, investigation_id)
+            delete_investigation(session, investigation, actor)
+            investigation = get_trashed_investigations(session)[0]
+            permanently_delete_investigation(session, investigation, actor)
+            self.assertIsNone(session.get(Investigation, investigation_id))
+            self.assertEqual(session.query(InvestigationAssignment).count(), 0)
+            self.assertEqual(session.query(InvestigationReport).count(), 0)
+            self.assertEqual(session.query(InvestigationReview).count(), 0)
+            deletion_event = session.query(ActivityLog).filter_by(
+                action="investigation.permanently_deleted",
+                object_id=investigation_id,
+            ).one()
+            self.assertEqual(deletion_event.actor_id, actor.id)
+            self.assertEqual(deletion_event.details["reference_number"], "INV-CASCADE")
+            self.assertIsNotNone(deletion_event.created_at)
 
 
 if __name__ == "__main__":

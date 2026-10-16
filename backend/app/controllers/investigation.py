@@ -7,13 +7,17 @@ from app.services.investigation import (
     can_access_investigation,
     create_investigation,
     delete_investigation,
+    permanently_delete_investigation,
     get_investigations,
     get_investigation,
     get_assignment_history,
+    get_trashed_investigation,
+    get_trashed_investigations,
     get_report,
     get_review_history,
     get_report_versions,
     review_investigation_report,
+    restore_investigation,
     save_report_draft,
     submit_report,
     update_investigation,
@@ -38,6 +42,25 @@ def create(db: Session, data: InvestigationCreate, current_user: User):
 
 def get_all(db: Session, current_user: User):
     return get_investigations(db, current_user)
+
+
+def get_trash(db: Session):
+    return get_trashed_investigations(db)
+
+
+def restore(
+    db: Session,
+    investigation_id: int,
+    current_user: User,
+):
+    if current_user.role not in {"admin", "supervisor"}:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="You do not have permission to restore investigations")
+
+    investigation = get_trashed_investigation(db, investigation_id)
+    if investigation is None:
+        raise HTTPException(status_code=404, detail="Investigation not found in Trash")
+
+    return restore_investigation(db, investigation, current_user)
 
 
 def assign(
@@ -262,17 +285,26 @@ def delete(
             detail="Investigation not found",
         )
 
-    if current_user.role != "admin":
+    if current_user.role not in {"admin", "supervisor"}:
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
-            detail="Only admins can delete investigations",
+            detail="Only admins and supervisors can move investigations to Trash",
         )
 
-    delete_investigation(db, investigation)
-    from app.services.activity import record_activity
+    delete_investigation(db, investigation, current_user)
+    return {"message": "Investigation moved to Trash"}
 
-    record_activity(db, current_user, "investigation.archived", "investigation", investigation_id)
 
-    return {
-        "message": "Investigation archived successfully"
-    }
+def permanently_delete(
+    db: Session,
+    investigation_id: int,
+    current_user: User,
+):
+    if current_user.role != "admin":
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Only admins can permanently delete investigations")
+
+    investigation = get_trashed_investigation(db, investigation_id)
+    if investigation is None:
+        raise HTTPException(status_code=404, detail="Investigation not found in Trash")
+
+    permanently_delete_investigation(db, investigation, current_user)
