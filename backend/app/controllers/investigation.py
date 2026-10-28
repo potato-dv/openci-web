@@ -83,6 +83,7 @@ def assign(
         )
 
     try:
+        previous_agent_id = investigation.assigned_agent_id
         assignment = assign_investigation(
             db,
             investigation,
@@ -92,7 +93,21 @@ def assign(
         )
         from app.services.activity import record_activity
 
-        record_activity(db, current_user, "investigation.assigned", "investigation", investigation.id, {"agent_id": agent.id})
+        record_activity(db, current_user, "investigation.assigned", "investigation", investigation.id, {"agent_id": agent.id, "assignment_source": "manual"})
+        # Route refresh is deliberately initiated only by the direct assignment
+        # endpoint. Planning-run application also updates assignments and must
+        # not recursively start another optimization.
+        if previous_agent_id != agent.id:
+            from app.services.planning import queue_assignment_route_refresh
+
+            refreshed = queue_assignment_route_refresh(
+                db,
+                assignment.id,
+                [item for item in (previous_agent_id, agent.id) if item is not None],
+                current_user,
+            )
+            if refreshed is not None:
+                assignment = refreshed
         return assignment
     except ValueError as error:
         raise HTTPException(
@@ -134,6 +149,7 @@ def save_investigation_report(
     db: Session,
     investigation_id: int,
     data: ReportUpsert,
+
     current_user: User,
 ):
     investigation = get_one(db, investigation_id, current_user)
@@ -266,10 +282,31 @@ def update(
             detail="Agents cannot edit investigation details",
         )
 
-    updated = update_investigation(db, investigation, data)
+    try:
+        updated = update_investigation(db, investigation, data)
+    except ValueError as error:
+        db.rollback()
+        raise HTTPException(status_code=422, detail=str(error)) from error
     from app.services.activity import record_activity
 
     record_activity(db, current_user, "investigation.updated", "investigation", investigation.id, {"fields": list(data.model_dump(exclude_unset=True))})
+    planning_fields = {
+        "legacy_address", "house_number", "unit_floor_building_name", "street",
+        "subdivision_village_purok", "region_code", "province_code",
+        "city_municipality_code", "barangay_code", "postal_code", "priority",
+        "service_duration_seconds", "visit_not_before_at", "visit_due_at",
+    }
+    if planning_fields.intersection(data.model_dump(exclude_unset=True)) and updated.location_confirmed and updated.region_code:
+        from app.services.planning import queue_automatic_planning
+
+        try:
+            queue_automatic_planning(db, updated.region_code, current_user)
+        except Exception:
+            import logging
+
+            logging.getLogger("app.planning").exception(
+                "Could not queue automatic planning after investigation update"
+            )
     return updated
 
 def delete(

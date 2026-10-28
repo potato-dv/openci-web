@@ -1,0 +1,242 @@
+x-logging: &default-logging
+  driver: json-file
+  options:
+    max-size: "10m"
+    max-file: "5"
+
+services:
+  postgres:
+    image: ${POSTGRES_IMAGE:-docker.io/library/postgres:17}
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: openci
+      POSTGRES_USER: openci
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD from the deployment secret store}
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U openci -d openci"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 20s
+    logging: *default-logging
+    networks: [backend]
+
+  redis:
+    image: ${REDIS_IMAGE:-docker.io/library/redis:7-alpine}
+    restart: unless-stopped
+    command: ["redis-server", "--appendonly", "yes", "--requirepass", "${REDIS_PASSWORD:?Set REDIS_PASSWORD from the deployment secret store}"]
+    environment:
+      REDIS_PASSWORD: ${REDIS_PASSWORD:?Set REDIS_PASSWORD from the deployment secret store}
+    volumes:
+      - redis_data:/data
+    healthcheck:
+      test: ["CMD-SHELL", "redis-cli -a \"$$REDIS_PASSWORD\" ping | grep -q PONG"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+    logging: *default-logging
+    networks: [backend]
+
+  migrate:
+    build:
+      context: ./backend
+      args:
+        PYTHON_IMAGE: ${PYTHON_IMAGE:-docker.io/library/python:3.14-slim}
+    restart: "no"
+    command:
+      - sh
+      - -ec
+      - |
+        for value in "$${JWT_SECRET_KEY}" "$${POSTGRES_PASSWORD}" "$${REDIS_PASSWORD}" "$${NOMINATIM_PASSWORD}"; do
+          case "$$value" in CHANGE_ME*|replace-*) echo "Replace all production secret placeholders" >&2; exit 1;; esac
+        done
+        exec alembic upgrade head
+    environment:
+      DATABASE_URL: postgresql+psycopg://openci:${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD}@postgres:5432/openci
+      JWT_SECRET_KEY: ${JWT_SECRET_KEY:?Set JWT_SECRET_KEY from the deployment secret store}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD from the deployment secret store}
+      REDIS_PASSWORD: ${REDIS_PASSWORD:?Set REDIS_PASSWORD from the deployment secret store}
+      NOMINATIM_PASSWORD: ${NOMINATIM_PASSWORD:?Set NOMINATIM_PASSWORD from the deployment secret store}
+    depends_on:
+      postgres:
+        condition: service_healthy
+    logging: *default-logging
+    networks: [backend]
+
+  backend:
+    build:
+      context: ./backend
+      args:
+        PYTHON_IMAGE: ${PYTHON_IMAGE:-docker.io/library/python:3.14-slim}
+    restart: unless-stopped
+    command:
+      - sh
+      - -ec
+      - |
+        for value in "$${JWT_SECRET_KEY}" "$${POSTGRES_PASSWORD}" "$${REDIS_PASSWORD}" "$${NOMINATIM_PASSWORD}"; do
+          case "$$value" in CHANGE_ME*|replace-*) echo "Replace all production secret placeholders" >&2; exit 1;; esac
+        done
+        exec uvicorn app.main:app --host 0.0.0.0 --port 8000 --workers "$${API_WORKERS}" --proxy-headers
+    ports:
+      - "127.0.0.1:8000:8000"
+    environment:
+      DATABASE_URL: postgresql+psycopg://openci:${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD}@postgres:5432/openci
+      CELERY_BROKER_URL: redis://:${REDIS_PASSWORD:?Set REDIS_PASSWORD}@redis:6379/0
+      JWT_SECRET_KEY: ${JWT_SECRET_KEY:?Set JWT_SECRET_KEY from the deployment secret store}
+      CORS_ALLOWED_ORIGINS: ${PUBLIC_WEB_ORIGIN:?Set PUBLIC_WEB_ORIGIN}
+      PLANNING_ENABLED: ${PLANNING_ENABLED:-false}
+      NOMINATIM_URL: http://nominatim:8080
+      OSRM_URL: http://osrm:5000
+      VROOM_URL: http://vroom:3000
+      OSRM_DATASET_VERSION: ${OSRM_DATASET_VERSION:?Set OSRM_DATASET_VERSION}
+      GEOSPATIAL_HTTP_TIMEOUT_SECONDS: ${GEOSPATIAL_HTTP_TIMEOUT_SECONDS:-15}
+      PLANNING_MAX_LOCATIONS: ${PLANNING_MAX_LOCATIONS:-80}
+      API_WORKERS: ${API_WORKERS:-4}
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+      redis:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "python", "-c", "from urllib.request import urlopen; urlopen('http://127.0.0.1:8000/', timeout=3)"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
+    mem_limit: ${API_MEMORY_LIMIT:-1g}
+    cpus: ${API_CPUS:-2.0}
+    logging: *default-logging
+    networks: [backend, routing]
+
+  celery_worker:
+    build:
+      context: ./backend
+      args:
+        PYTHON_IMAGE: ${PYTHON_IMAGE:-docker.io/library/python:3.14-slim}
+    restart: unless-stopped
+    command: ["celery", "-A", "app.workers.celery_app", "worker", "--loglevel=info", "--concurrency=${CELERY_WORKER_CONCURRENCY:-2}", "--max-tasks-per-child=100"]
+    environment:
+      DATABASE_URL: postgresql+psycopg://openci:${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD}@postgres:5432/openci
+      CELERY_BROKER_URL: redis://:${REDIS_PASSWORD:?Set REDIS_PASSWORD}@redis:6379/0
+      NOMINATIM_URL: http://nominatim:8080
+      OSRM_URL: http://osrm:5000
+      VROOM_URL: http://vroom:3000
+      OSRM_DATASET_VERSION: ${OSRM_DATASET_VERSION:?Set OSRM_DATASET_VERSION}
+      GEOSPATIAL_HTTP_TIMEOUT_SECONDS: ${GEOSPATIAL_HTTP_TIMEOUT_SECONDS:-15}
+      PLANNING_MAX_LOCATIONS: ${PLANNING_MAX_LOCATIONS:-80}
+      PLANNING_ENABLED: ${PLANNING_ENABLED:-false}
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+      redis:
+        condition: service_healthy
+    mem_limit: ${CELERY_WORKER_MEMORY_LIMIT:-2g}
+    cpus: ${CELERY_WORKER_CPUS:-2.0}
+    logging: *default-logging
+    networks: [backend, routing]
+
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile.production
+      args:
+        NODE_IMAGE: ${NODE_IMAGE:-docker.io/library/node:22-alpine}
+        NGINX_IMAGE: ${NGINX_IMAGE:-docker.io/library/nginx:alpine}
+        VITE_API_URL: ${PUBLIC_API_URL:?Set PUBLIC_API_URL}
+        VITE_PLANNING_ENABLED: ${PLANNING_ENABLED:-false}
+        VITE_MAP_TILE_URL: ${VITE_MAP_TILE_URL:-}
+        VITE_MAP_TILE_ATTRIBUTION: ${VITE_MAP_TILE_ATTRIBUTION:-}
+    restart: unless-stopped
+    ports:
+      - "127.0.0.1:8080:8080"
+    healthcheck:
+      test: ["CMD-SHELL", "wget -q -O /dev/null http://127.0.0.1:8080/healthz"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+    logging: *default-logging
+    networks: [web]
+
+  nominatim:
+    image: mediagis/nominatim:5.3.2
+    profiles: [planning]
+    restart: unless-stopped
+    shm_size: 1gb
+    environment:
+      PBF_URL: ${NOMINATIM_PBF_URL:-https://download.geofabrik.de/asia/philippines-latest.osm.pbf}
+      REPLICATION_URL: https://download.geofabrik.de/asia/philippines-updates/
+      REPLICATION_UPDATE_INTERVAL: 86400
+      UPDATE_MODE: continuous
+      IMPORT_STYLE: address
+      IMPORT_WIKIPEDIA: "false"
+      NOMINATIM_PASSWORD: ${NOMINATIM_PASSWORD:?Set NOMINATIM_PASSWORD from the deployment secret store}
+      THREADS: ${NOMINATIM_IMPORT_THREADS:-4}
+      GUNICORN_WORKERS: 2
+    volumes:
+      - nominatim_data:/var/lib/postgresql/16/main
+      - nominatim_flatnode:/nominatim/flatnode
+    healthcheck:
+      test: ["CMD-SHELL", "curl -fsS 'http://localhost:8080/status?format=json' >/dev/null"]
+      interval: 30s
+      timeout: 10s
+      retries: 10
+      start_period: 10m
+    mem_limit: ${NOMINATIM_MEMORY_LIMIT:-32g}
+    cpus: ${NOMINATIM_CPUS:-8.0}
+    logging: *default-logging
+    networks: [routing]
+
+  osrm:
+    image: ghcr.io/project-osrm/osrm-backend:v5.27.1
+    profiles: [planning]
+    restart: unless-stopped
+    command: ["osrm-routed", "--algorithm", "ch", "--max-table-size", "100", "/data/philippines.osrm"]
+    volumes:
+      - ${OSRM_DATA_DIR:-./infrastructure/geospatial/osrm-data}:/data:ro
+    healthcheck:
+      test: ["CMD", "bash", "-c", "exec 3<>/dev/tcp/127.0.0.1/5000"]
+      interval: 15s
+      timeout: 10s
+      retries: 5
+      start_period: 2m
+    mem_limit: ${OSRM_MEMORY_LIMIT:-16g}
+    cpus: ${OSRM_CPUS:-8.0}
+    logging: *default-logging
+    networks: [routing]
+
+  vroom:
+    image: ghcr.io/vroom-project/vroom-docker:v1.15.0
+    profiles: [planning]
+    restart: unless-stopped
+    environment:
+      VROOM_ROUTER: osrm
+    volumes:
+      - ./infrastructure/geospatial/vroom-config.yml:/conf/config.yml:ro
+    depends_on:
+      osrm:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "curl -fsS 'http://localhost:3000/health' >/dev/null"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+    mem_limit: ${VROOM_MEMORY_LIMIT:-1g}
+    cpus: ${VROOM_CPUS:-2.0}
+    logging: *default-logging
+    networks: [routing]
+
+volumes:
+  postgres_data:
+  redis_data:
+  nominatim_data:
+  nominatim_flatnode:
+
+networks:
+  backend:
+    driver: bridge
+  routing:
+    driver: bridge
+  web:
+    driver: bridge

@@ -11,6 +11,7 @@ from app.models.investigation import Investigation
 from app.models.report import InvestigationReport
 from app.models.review import InvestigationReview
 from app.models.user import User
+from app.models.planning import AgentShift, PlanningItem, PlanningRun
 
 config = context.config
 config.set_main_option("sqlalchemy.url", DATABASE_URL)

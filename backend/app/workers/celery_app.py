@@ -10,3 +10,12 @@ celery_app = Celery(
     ),
     include=["app.workers.tasks"],
 )
+
+# A worker loss must return the planning task to Redis. The planner's hard
+# limit is 300 seconds; the broker redelivers after six minutes so the task can
+# safely recover a run left in `running` by a killed process.
+celery_app.conf.update(
+    task_acks_late=True,
+    task_reject_on_worker_lost=True,
+    broker_transport_options={"visibility_timeout": 360},
+)

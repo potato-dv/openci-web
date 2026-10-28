@@ -1,7 +1,35 @@
 import react from '@vitejs/plugin-react'
-import { defineConfig } from 'vite'
+import tailwindcss from '@tailwindcss/vite'
+import { defineConfig, loadEnv } from 'vite'
+import { fileURLToPath, URL } from 'node:url'
 
 // https://vite.dev/config/
-export default defineConfig({
-  plugins: [react()],
+export default defineConfig(({ mode }) => {
+  const env = loadEnv(mode, process.cwd(), 'VITE_API_PROXY_TARGET')
+  const apiTarget = env.VITE_API_PROXY_TARGET || 'http://localhost:8000'
+  const apiPrefixes = [
+    '/users',
+    '/investigations',
+    '/locations',
+    '/activity-logs',
+    '/planning',
+    '/reports',
+  ]
+
+  return {
+    plugins: [tailwindcss(), react()],
+    resolve: {
+      alias: {
+        '@': fileURLToPath(new URL('./src', import.meta.url)),
+      },
+    },
+    server: {
+      proxy: Object.fromEntries(
+        apiPrefixes.map((prefix) => [
+          prefix,
+          { target: apiTarget, changeOrigin: true },
+        ]),
+      ),
+    },
+  }
 })

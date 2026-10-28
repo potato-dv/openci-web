@@ -1,0 +1,84 @@
+:root {
+  color-scheme: light;
+}
+
+@theme inline {
+  --color-openci-bg: var(--color-bg);
+  --color-openci-surface: var(--color-surface);
+  --color-openci-surface-muted: var(--color-surface-muted);
+  --color-openci-surface-selected: var(--color-surface-selected);
+  --color-openci-text: var(--color-text);
+  --color-openci-text-muted: var(--color-text-muted);
+  --color-openci-text-subtle: var(--color-text-subtle);
+  --color-openci-border: var(--color-border);
+  --color-openci-border-strong: var(--color-border-strong);
+  --color-openci-accent: var(--color-accent);
+  --color-openci-accent-strong: var(--color-accent-strong);
+  --color-openci-danger: var(--color-danger);
+  --color-openci-danger-surface: var(--color-danger-surface);
+  --color-openci-danger-border: var(--color-danger-border);
+  --color-openci-success: var(--color-success);
+  --color-openci-success-surface: var(--color-success-surface);
+  --color-openci-success-border: var(--color-success-border);
+  --color-openci-warning: var(--color-warning);
+  --color-openci-warning-surface: var(--color-warning-surface);
+  --color-openci-warning-border: var(--color-warning-border);
+  --color-openci-info: var(--color-info);
+  --color-openci-info-surface: var(--color-info-surface);
+  --color-openci-info-border: var(--color-info-border);
+  --radius-openci-sm: var(--radius-sm);
+  --radius-openci-md: var(--radius-md);
+  --shadow-openci-menu: var(--shadow-menu);
+  --shadow-openci-dialog: var(--shadow-dialog);
+}
+
+:root {
+  font-family:
+    Inter,
+    ui-sans-serif,
+    system-ui,
+    -apple-system,
+    BlinkMacSystemFont,
+    "Segoe UI",
+    sans-serif;
+  --color-bg: #f7f8fa;
+  --color-surface: #fff;
+  --color-surface-muted: #f4f5f7;
+  --color-surface-selected: #eef0ff;
+  --color-text: #25252b;
+  --color-text-muted: #61656f;
+  --color-text-subtle: #858a94;
+  --color-border: #e3e5ea;
+  --color-border-strong: #8a929f;
+  --color-accent: #5e6ad2;
+  --color-accent-strong: #4f5abd;
+  --color-danger: #a23d34;
+  --color-danger-surface: #fff1ef;
+  --color-danger-border: #ecc9c5;
+  --color-success: #187449;
+  --color-success-surface: #edf7f0;
+  --color-success-border: #bedecb;
+  --color-warning: #8a580e;
+  --color-warning-surface: #fff7e8;
+  --color-warning-border: #ecd5a6;
+  --color-info: #1d4ed8;
+  --color-info-surface: #eff5ff;
+  --color-info-border: #c5d6f5;
+  --space-1: 4px;
+  --space-2: 8px;
+  --space-3: 12px;
+  --space-4: 16px;
+  --space-6: 24px;
+  --space-8: 32px;
+  --space-10: 40px;
+  --radius-sm: 6px;
+  --radius-md: 8px;
+  --radius-dialog: 10px;
+  --shadow-menu: 0 6px 20px rgb(22 28 45 / 12%);
+  --shadow-dialog: 0 20px 60px rgb(22 28 45 / 20%);
+  --ease-out: cubic-bezier(0.23, 1, 0.32, 1);
+  --height-compact: 36px;
+  --height-control: 40px;
+  --height-touch: 44px;
+  --height-header: 56px;
+}

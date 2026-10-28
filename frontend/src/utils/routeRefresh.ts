@@ -1,0 +1,41 @@
+const routeRefreshMessages: Record<string, string> = {
+  agent_shift_unavailable_today: "This agent needs an available shift for today before a route can be built.",
+  affected_agent_shift_unavailable_today: "A previously assigned agent has no available shift today; manage shifts, then retry.",
+  agent_region_mismatch: "The selected agent’s shift is for a different service region.",
+  affected_agent_region_mismatch: "Some existing assigned work is outside the affected agent’s shift region.",
+  planning_disabled: "Automatic route planning is currently disabled. Contact an administrator before retrying.",
+  agent_not_eligible: "One of the affected agents is inactive or no longer eligible. Review the agent account and retry.",
+  agent_no_longer_eligible: "An affected agent became unavailable before publication. Review the agent and shift, then retry.",
+  no_eligible_agents: "No affected agent has an eligible shift today. Review shifts and retry.",
+  no_eligible_investigations: "No assigned investigations are eligible for today’s route. Confirm locations and statuses.",
+  locked_agent_unavailable: "An existing assigned case belongs to an agent without an eligible shift today.",
+  assignment_lock_conflict: "An investigation’s assignment changed during route generation. Refresh the case and retry.",
+  investigation_not_routeable_today: "This investigation is not eligible for today’s route. Confirm its location and status.",
+  location_unconfirmed: "Confirm the investigation location before building a route.",
+  no_routeable_assigned_work: "There is no route-eligible assigned work for the affected agents today.",
+  run_too_large: "The affected agents’ work exceeds the route planning limit. Reduce the workload and retry.",
+  road_snap_too_far: "A stop is too far from a routable road. Correct its confirmed location and retry.",
+  agent_start_off_road: "The agent’s shift start is too far from a routable road. Correct the shift location and retry.",
+  deadline_before_service_window: "A visit time window is too short for the required service duration. Adjust the visit window.",
+  no_feasible_visit_windows: "No assigned case fits the affected agents’ shift and visit time windows.",
+  no_road_connected_agent: "An assigned case is not connected to an affected agent by the road network. Check locations.",
+  locked_case_not_feasible: "An existing case could not fit its current agent’s shift. Review workload or shift limits.",
+  agent_capacity_changed: "A shift capacity changed before publication. Review the shift and retry.",
+  queue_unavailable: "The route service could not start the update. Retry when it is available.",
+  route_refresh_could_not_be_queued: "The route service could not queue this update. Retry when it is available.",
+  route_geometry_incomplete: "A complete road route could not be validated, so it was not published.",
+  route_geometry_invalid: "The generated road geometry was invalid, so it was not published. Retry after checking locations.",
+  auto_route_incomplete: "Not every assigned case could be included, so the route was not published.",
+  osrm_snap_failed: "The road-routing service could not locate a road near a stop. Check locations and retry.",
+  osrm_table_unavailable: "The road travel-time service is unavailable. Retry when it is available.",
+  osrm_route_unavailable: "The road geometry service is unavailable. Retry when it is available.",
+  vroom_unavailable: "The route optimizer is unavailable. Retry when it is available.",
+  inputs_changed: "Assignments, locations, or shifts changed while the route was being built. Retry with current data.",
+  stale_plan: "The route inputs changed before publication. Retry with current data.",
+  optimization_failed: "The route could not be optimized. Check shifts and locations, then retry.",
+};
+
+export function routeRefreshErrorCopy(code: string) {
+  return routeRefreshMessages[code] ??
+    "The route could not be published. Check the affected agents’ shifts and locations, then retry.";
+}

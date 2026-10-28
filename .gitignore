@@ -11,6 +11,7 @@ venv/
 .env
 .env.*
 !.env.example
+!.env.production.example
 
 # Frontend dependencies and build output
 node_modules/
@@ -21,3 +22,7 @@ build/
 .DS_Store
 .vscode/
 *.swp
+
+# Downloaded routing graphs and OpenStreetMap extracts
+infrastructure/geospatial/osrm-data/*
+!infrastructure/geospatial/osrm-data/.gitkeep

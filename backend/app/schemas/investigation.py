@@ -32,6 +32,9 @@ class InvestigationCreate(BaseModel):
     barangay_code: str = Field(min_length=10, max_length=10)
     postal_code: str | None = Field(default=None, pattern=r"^\d{4}$")
     priority: InvestigationPriority = "normal"
+    service_duration_seconds: int = Field(default=2700, ge=300, le=28800)
+    visit_not_before_at: datetime | None = None
+    visit_due_at: datetime | None = None
 
     @field_validator("first_name", "last_name", mode="before")
     @classmethod
@@ -65,6 +68,16 @@ class InvestigationCreate(BaseModel):
         return self
 
     @model_validator(mode="after")
+    def validate_visit_window(self):
+        if self.visit_not_before_at and self.visit_not_before_at.tzinfo is None:
+            raise ValueError("Visit times must include a timezone offset")
+        if self.visit_due_at and self.visit_due_at.tzinfo is None:
+            raise ValueError("Visit times must include a timezone offset")
+        if self.visit_not_before_at and self.visit_due_at and self.visit_due_at <= self.visit_not_before_at:
+            raise ValueError("Visit due time must be after the earliest visit time")
+        return self
+
+    @model_validator(mode="after")
     def validate_geography(self):
         from app.services.locations import validate_address
 
@@ -94,9 +107,14 @@ class InvestigationResponse(BaseModel):
     postal_code: str | None
     status: InvestigationStatus
     priority: InvestigationPriority
+    service_duration_seconds: int = 2700
+    visit_not_before_at: datetime | None = None
+    visit_due_at: datetime | None = None
     assigned_agent_id: int | None
     created_at: datetime
     assigned_agent_name: str | None = None
+    location_confirmed: bool = False
+    location_confirmed_at: datetime | None = None
 
     @field_validator("first_name", "middle_name", "last_name", "subject_name", mode="before")
     @classmethod
@@ -124,6 +142,9 @@ class InvestigationUpdate(BaseModel):
     barangay_code: str | None = Field(default=None, min_length=10, max_length=10)
     postal_code: str | None = Field(default=None, pattern=r"^\d{4}$")
     priority: InvestigationPriority | None = None
+    service_duration_seconds: int | None = Field(default=None, ge=300, le=28800)
+    visit_not_before_at: datetime | None = None
+    visit_due_at: datetime | None = None
 
     @field_validator("first_name", "last_name", mode="before")
     @classmethod
@@ -178,3 +199,28 @@ class InvestigationUpdate(BaseModel):
 
             validate_address(self)
         return self
+
+    @model_validator(mode="after")
+    def validate_visit_window(self):
+        for value in (self.visit_not_before_at, self.visit_due_at):
+            if value is not None and value.tzinfo is None:
+                raise ValueError("Visit times must include a timezone offset")
+        if self.visit_not_before_at and self.visit_due_at and self.visit_due_at <= self.visit_not_before_at:
+            raise ValueError("Visit due time must be after the earliest visit time")
+        return self
+
+
+class InvestigationFacets(BaseModel):
+    status: dict[str, int]
+    priority: dict[str, int]
+    assigned: int
+    unassigned: int
+    location_unconfirmed: int
+
+
+class InvestigationPageResponse(BaseModel):
+    items: list[InvestigationResponse]
+    total: int
+    page: int
+    page_size: int
+    facets: InvestigationFacets

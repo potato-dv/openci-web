@@ -1,4 +1,5 @@
-from datetime import datetime
+from datetime import date, datetime
+from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field
 
@@ -6,6 +7,20 @@ from pydantic import BaseModel, ConfigDict, Field
 class AssignmentCreate(BaseModel):
     agent_id: int = Field(gt=0)
     note: str | None = Field(default=None, max_length=500)
+
+
+class AssignmentRouteRefresh(BaseModel):
+    status: Literal[
+        "queued",
+        "running",
+        "published",
+        "failed",
+        "partially_published",
+    ]
+    work_date: date
+    agent_ids: list[int] = Field(default_factory=list)
+    run_ids: list[int] = Field(default_factory=list)
+    errors: list[str] = Field(default_factory=list)
 
 
 class AssignmentResponse(BaseModel):
@@ -17,7 +32,9 @@ class AssignmentResponse(BaseModel):
     assigned_by_id: int
     agent_name: str
     assigned_by_name: str
+    assignment_source: Literal["automatic", "manual"] = "manual"
     note: str | None
     is_active: bool
     assigned_at: datetime
     unassigned_at: datetime | None
+    route_refresh: AssignmentRouteRefresh | None = None

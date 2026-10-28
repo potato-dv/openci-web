@@ -6,9 +6,9 @@ services:
     environment:
       POSTGRES_DB: openci
       POSTGRES_USER: openci
-      POSTGRES_PASSWORD: openci_password
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-openci_password}
     ports:
-      - "5432:5432"
+      - "127.0.0.1:5432:5432"
     volumes:
       - postgres_data:/var/lib/postgresql/data
     healthcheck:
@@ -22,7 +22,7 @@ services:
     container_name: openci-redis
     restart: unless-stopped
     ports:
-      - "6379:6379"
+      - "127.0.0.1:6379:6379"
     healthcheck:
       test: ["CMD", "redis-cli", "ping"]
       interval: 5s
@@ -42,9 +42,15 @@ services:
     ports:
       - "8000:8000"
     environment:
-      DATABASE_URL: postgresql+psycopg://openci:openci_password@postgres:5432/openci
+      DATABASE_URL: postgresql+psycopg://openci:${POSTGRES_PASSWORD:-openci_password}@postgres:5432/openci
       CELERY_BROKER_URL: redis://redis:6379/0
       JWT_SECRET_KEY: ${JWT_SECRET_KEY:?JWT_SECRET_KEY must be set in .env}
+      NOMINATIM_URL: http://nominatim:8080
+      OSRM_URL: http://osrm:5000
+      VROOM_URL: http://vroom:3000
+      OSRM_DATASET_VERSION: ${OSRM_DATASET_VERSION:-unconfigured}
+      GEOSPATIAL_HTTP_TIMEOUT_SECONDS: ${GEOSPATIAL_HTTP_TIMEOUT_SECONDS:-15}
+      PLANNING_MAX_LOCATIONS: ${PLANNING_MAX_LOCATIONS:-80}
     depends_on:
       postgres:
         condition: service_healthy
@@ -56,17 +62,84 @@ services:
       context: ./backend
     container_name: openci-celery-worker
     restart: unless-stopped
-    command: celery -A app.workers.celery_app worker --loglevel=info
+    command: celery -A app.workers.celery_app worker --loglevel=info --concurrency=${CELERY_WORKER_CONCURRENCY:-2} --max-tasks-per-child=100
     volumes:
       - ./backend:/app
     environment:
-      DATABASE_URL: postgresql+psycopg://openci:openci_password@postgres:5432/openci
+      DATABASE_URL: postgresql+psycopg://openci:${POSTGRES_PASSWORD:-openci_password}@postgres:5432/openci
       CELERY_BROKER_URL: redis://redis:6379/0
+      NOMINATIM_URL: http://nominatim:8080
+      OSRM_URL: http://osrm:5000
+      VROOM_URL: http://vroom:3000
+      OSRM_DATASET_VERSION: ${OSRM_DATASET_VERSION:-unconfigured}
+      GEOSPATIAL_HTTP_TIMEOUT_SECONDS: ${GEOSPATIAL_HTTP_TIMEOUT_SECONDS:-15}
+      PLANNING_MAX_LOCATIONS: ${PLANNING_MAX_LOCATIONS:-80}
     depends_on:
       postgres:
         condition: service_healthy
       redis:
         condition: service_healthy
+    mem_limit: ${CELERY_WORKER_MEMORY_LIMIT:-2g}
+    cpus: ${CELERY_WORKER_CPUS:-2.0}
+
+  nominatim:
+    image: mediagis/nominatim:5.3.2
+    profiles: [geospatial]
+    restart: unless-stopped
+    shm_size: 1gb
+    mem_limit: ${NOMINATIM_MEMORY_LIMIT:-32g}
+    cpus: ${NOMINATIM_CPUS:-8.0}
+    environment:
+      PBF_URL: ${NOMINATIM_PBF_URL:-https://download.geofabrik.de/asia/philippines-latest.osm.pbf}
+      UPDATE_MODE: none
+      IMPORT_STYLE: address
+      IMPORT_WIKIPEDIA: false
+      NOMINATIM_PASSWORD: ${NOMINATIM_PASSWORD:-local-geocoder-secret}
+      THREADS: ${NOMINATIM_IMPORT_THREADS:-4}
+      GUNICORN_WORKERS: 2
+    volumes:
+      - nominatim_data:/var/lib/postgresql/16/main
+    healthcheck:
+      test: ["CMD-SHELL", "curl -fsS 'http://localhost:8080/status?format=json' >/dev/null"]
+      interval: 30s
+      timeout: 10s
+      retries: 10
+      start_period: 10m
+
+  osrm:
+    image: ghcr.io/project-osrm/osrm-backend:v5.27.1
+    profiles: [geospatial]
+    restart: unless-stopped
+    command: ["osrm-routed", "--algorithm", "ch", "--max-table-size", "100", "/data/philippines.osrm"]
+    mem_limit: ${OSRM_MEMORY_LIMIT:-16g}
+    cpus: ${OSRM_CPUS:-8.0}
+    volumes:
+      - ${OSRM_DATA_DIR:-./infrastructure/geospatial/osrm-data}:/data:ro
+    healthcheck:
+      test: ["CMD", "bash", "-c", "exec 3<>/dev/tcp/127.0.0.1/5000"]
+      interval: 15s
+      timeout: 10s
+      retries: 5
+      start_period: 2m
+
+  vroom:
+    image: ghcr.io/vroom-project/vroom-docker:v1.15.0
+    profiles: [geospatial]
+    restart: unless-stopped
+    mem_limit: ${VROOM_MEMORY_LIMIT:-1g}
+    cpus: ${VROOM_CPUS:-2.0}
+    environment:
+      VROOM_ROUTER: osrm
+    volumes:
+      - ./infrastructure/geospatial/vroom-config.yml:/conf/config.yml:ro
+    depends_on:
+      osrm:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "curl -fsS 'http://localhost:3000/health' >/dev/null"]
+      interval: 15s
+      timeout: 10s
+      retries: 5
 
   frontend:
     build:
@@ -78,8 +151,12 @@ services:
     volumes:
       - ./frontend:/app
       - /app/node_modules
+    environment:
+      VITE_API_PROXY_TARGET: http://backend:8000
     depends_on:
       - backend
 
 volumes:
   postgres_data:
+  nominatim_data:
+  nominatim_flatnode:

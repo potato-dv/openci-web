@@ -487,7 +487,7 @@ class WorkflowTests(unittest.TestCase):
                         None,
                         SimpleNamespace(status=status),
                         None,
-                        None,
+                        SimpleNamespace(role="supervisor"),
                         None,
                     )
 

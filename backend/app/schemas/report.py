@@ -41,3 +41,24 @@ class ReportResponse(BaseModel):
     created_at: datetime
     updated_at: datetime
     submitted_at: datetime | None
+
+
+class ReportQueueItemResponse(BaseModel):
+    report_id: int
+    investigation_id: int
+    reference_number: str
+    subject_name: str
+    assigned_agent_name: str | None
+    author_name: str
+    version: int
+    priority: str
+    status: ReportStatus
+    submitted_at: datetime | None
+    updated_at: datetime
+
+
+class ReportQueueResponse(BaseModel):
+    items: list[ReportQueueItemResponse]
+    total: int
+    page: int
+    page_size: int
