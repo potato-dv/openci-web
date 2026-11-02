@@ -101,7 +101,7 @@ export function InvestigationTable({
                   <PriorityBadge priority={item.priority} />
                 </td>
                 <td>
-                  <StatusBadge status={item.status} />
+                  <StatusBadge status={item.status} reopenOn={item.reopen_on} />
                 </td>
                 <td>{item.assigned_agent_name || "Unassigned"}</td>
                 <td className="nowrap">{date(item.created_at)}</td>
@@ -164,7 +164,7 @@ export function InvestigationTable({
               <span>{item.subject_name}</span>
               <small>{item.address_display || item.legacy_address}</small>
               <div>
-                <StatusBadge status={item.status} />
+                <StatusBadge status={item.status} reopenOn={item.reopen_on} />
                 <PriorityBadge priority={item.priority} />
               </div>
             </Link>

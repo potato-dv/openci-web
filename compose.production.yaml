@@ -85,6 +85,9 @@ services:
       DATABASE_URL: postgresql+psycopg://openci:${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD}@postgres:5432/openci
       CELERY_BROKER_URL: redis://:${REDIS_PASSWORD:?Set REDIS_PASSWORD}@redis:6379/0
       JWT_SECRET_KEY: ${JWT_SECRET_KEY:?Set JWT_SECRET_KEY from the deployment secret store}
+      ACCESS_TOKEN_EXPIRE_MINUTES: ${ACCESS_TOKEN_EXPIRE_MINUTES:-15}
+      AUTH_REFRESH_COOKIE_SECURE: ${AUTH_REFRESH_COOKIE_SECURE:-true}
+      AUTH_REFRESH_COOKIE_SAMESITE: ${AUTH_REFRESH_COOKIE_SAMESITE:-lax}
       CORS_ALLOWED_ORIGINS: ${PUBLIC_WEB_ORIGIN:?Set PUBLIC_WEB_ORIGIN}
       PLANNING_ENABLED: ${PLANNING_ENABLED:-false}
       NOMINATIM_URL: http://nominatim:8080
@@ -136,6 +139,26 @@ services:
     cpus: ${CELERY_WORKER_CPUS:-2.0}
     logging: *default-logging
     networks: [backend, routing]
+
+  # Run exactly one Beat scheduler; scaling this service would duplicate ticks.
+  celery_beat:
+    build:
+      context: ./backend
+      args:
+        PYTHON_IMAGE: ${PYTHON_IMAGE:-docker.io/library/python:3.14-slim}
+    restart: unless-stopped
+    command: ["celery", "-A", "app.workers.celery_app", "beat", "--loglevel=info", "--schedule=/tmp/celerybeat-schedule"]
+    environment:
+      DATABASE_URL: postgresql+psycopg://openci:${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD}@postgres:5432/openci
+      CELERY_BROKER_URL: redis://:${REDIS_PASSWORD:?Set REDIS_PASSWORD}@redis:6379/0
+      PLANNING_ENABLED: ${PLANNING_ENABLED:-false}
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+      redis:
+        condition: service_healthy
+    logging: *default-logging
+    networks: [backend]
 
   frontend:
     build:

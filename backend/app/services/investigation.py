@@ -1,4 +1,4 @@
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from uuid import uuid4
 from zoneinfo import ZoneInfo
 
@@ -8,11 +8,18 @@ from sqlalchemy.orm import Session
 from app.models.assignment import InvestigationAssignment
 from app.models.investigation import Investigation
 from app.models.planning import AgentShift
+from app.models.agent_revisit import AgentRevisitRequest
 from app.models.report import InvestigationReport
 from app.models.review import InvestigationReview
 from app.models.activity import ActivityLog
 from app.models.user import User
 from app.schemas.investigation import InvestigationCreate, InvestigationUpdate
+
+
+def _as_utc(value: datetime) -> datetime:
+    if value.tzinfo is None:
+        value = value.replace(tzinfo=timezone.utc)
+    return value.astimezone(timezone.utc)
 
 
 def create_investigation(
@@ -103,6 +110,7 @@ def update_investigation(
         .one()
     )
     route_agent_id = investigation.assigned_agent_id
+    original_region_code = investigation.region_code
     update_data = data.model_dump(exclude_unset=True)
 
     address_fields = {
@@ -164,6 +172,11 @@ def update_investigation(
             {PlanningRun.status: "stale", PlanningRun.error_code: "investigation_changed"},
             synchronize_session=False,
         )
+        from app.services.agent_schedules import enqueue_planning_trigger
+
+        today = datetime.now(ZoneInfo("Asia/Manila")).date()
+        for region in {value for value in (original_region_code, investigation.region_code) if value}:
+            enqueue_planning_trigger(db, today, region, "investigation_planning_fields_changed")
 
     db.commit()
     db.refresh(investigation)
@@ -186,11 +199,12 @@ def is_valid_status_transition(
     next_status: str,
 ) -> bool:
     allowed_transitions = {
-        "pending": {"assigned"},
-        "assigned": {"in_progress"},
-        "in_progress": {"under_review"},
+        "pending": {"assigned", "cancelled"},
+        "assigned": {"in_progress", "cancelled"},
+        "in_progress": {"under_review", "cancelled"},
         "under_review": {"completed", "returned_for_correction"},
         "returned_for_correction": {"in_progress"},
+        "cancelled": {"pending"},
         "completed": set(),
     }
 
@@ -251,7 +265,7 @@ def assign_investigation(
     ).with_for_update().first()
     if shift is None or not shift.is_available:
         raise ValueError("The agent has no available shift today")
-    if shift.region_code != investigation.region_code:
+    if shift.region_code not in {investigation.region_code, "ALL"}:
         raise ValueError("The agent shift must match the investigation region")
 
     affected_runs = select(PlanningItem.planning_run_id).where(
@@ -313,6 +327,9 @@ def assign_investigation(
             {PlanningRun.status: "stale", PlanningRun.error_code: "assignment_changed"},
             synchronize_session=False,
         )
+        from app.services.agent_schedules import enqueue_planning_trigger
+
+        enqueue_planning_trigger(db, work_date, investigation.region_code, "manual_assignment_updated")
         if commit:
             db.commit()
             db.refresh(active_assignment)
@@ -354,6 +371,9 @@ def assign_investigation(
     investigation.status = "assigned"
 
     db.add(assignment)
+    from app.services.agent_schedules import enqueue_planning_trigger
+
+    enqueue_planning_trigger(db, work_date, investigation.region_code, "manual_assignment_changed")
     if commit:
         db.commit()
         db.refresh(assignment)
@@ -413,7 +433,12 @@ def save_report_draft(
             setattr(report, field, value)
 
     if investigation.status in {"assigned", "returned_for_correction"}:
-        investigation.status = "in_progress"
+        pending_revisit = db.query(AgentRevisitRequest).filter(
+            AgentRevisitRequest.investigation_id == investigation.id,
+            AgentRevisitRequest.status.in_(("waiting_for_shift", "queued", "routed")),
+        ).first()
+        if pending_revisit is None:
+            investigation.status = "in_progress"
 
     db.commit()
     db.refresh(report)
@@ -423,7 +448,24 @@ def save_report_draft(
 def submit_report(
     db: Session,
     investigation: Investigation,
+    actor: User | None = None,
+    now: datetime | None = None,
 ) -> InvestigationReport:
+    # Serialize with shift expiry and route publication. The controller's
+    # earlier authorization check is repeated against this locked row because
+    # automatic assignments are released when a cancellation reopens.
+    investigation = (
+        db.query(Investigation)
+        .filter(Investigation.id == investigation.id)
+        .with_for_update()
+        .populate_existing()
+        .one()
+    )
+    if actor is not None and (
+        actor.role != "agent" or investigation.assigned_agent_id != actor.id
+    ):
+        raise ValueError("This investigation is no longer assigned to you")
+
     report = get_report(db, investigation.id)
 
     if report is None or not report.content.strip():
@@ -441,12 +483,181 @@ def submit_report(
     if report.outcome == "verified" and not (report.verified_address or "").strip():
         raise ValueError("Verified address is required for a verified outcome")
 
-    if investigation.status not in {"in_progress", "returned_for_correction"}:
+    submitted_at = now or datetime.now(timezone.utc)
+    if submitted_at.tzinfo is None:
+        submitted_at = submitted_at.replace(tzinfo=timezone.utc)
+    else:
+        submitted_at = submitted_at.astimezone(timezone.utc)
+    manila_now = submitted_at.astimezone(ZoneInfo("Asia/Manila"))
+    late_cancelled_report = investigation.status == "cancelled"
+    expired_shift = None
+    if late_cancelled_report:
+        if (
+            investigation.reopen_on is None
+            or manila_now.date() >= investigation.reopen_on
+            or investigation.assigned_agent_id is None
+        ):
+            raise ValueError("The investigation has reopened; the expired shift cannot submit this report")
+        if report.visited_at is None:
+            raise ValueError("A visit timestamp within the expired shift is required")
+        expired_shift_date = investigation.reopen_on - timedelta(days=1)
+        expired_shift = (
+            db.query(AgentShift)
+            .filter(
+                AgentShift.agent_id == investigation.assigned_agent_id,
+                AgentShift.work_date == expired_shift_date,
+            )
+            .with_for_update()
+            .first()
+        )
+        if expired_shift is None:
+            raise ValueError("The expired shift could not be found for this report")
+        visit_at = report.visited_at
+        if visit_at.tzinfo is None:
+            visit_at = visit_at.replace(tzinfo=timezone.utc)
+        else:
+            visit_at = visit_at.astimezone(timezone.utc)
+        if not (
+            _as_utc(expired_shift.shift_starts_at)
+            <= visit_at
+            <= _as_utc(expired_shift.shift_ends_at)
+            and visit_at <= submitted_at
+        ):
+            raise ValueError("The report visit time must fall within the expired shift")
+    elif actor is not None:
+        visit_shift = (
+            db.query(AgentShift)
+            .filter(
+                AgentShift.agent_id == actor.id,
+                AgentShift.work_date == manila_now.date(),
+            )
+            .with_for_update()
+            .first()
+        )
+        if report.visited_at is not None:
+            visit_at = _as_utc(report.visited_at)
+            visit_work_date = visit_at.astimezone(ZoneInfo("Asia/Manila")).date()
+            if visit_at > submitted_at or visit_work_date != manila_now.date():
+                raise ValueError("A visit report must be submitted on the Manila workday when the visit occurred")
+            if visit_shift is not None and not (
+                _as_utc(visit_shift.shift_starts_at)
+                <= visit_at
+                <= _as_utc(visit_shift.shift_ends_at)
+            ):
+                raise ValueError("The report visit time must fall within the agent shift")
+        if (
+            visit_shift is not None
+            and submitted_at >= _as_utc(visit_shift.shift_ends_at)
+            and report.visited_at is None
+        ):
+            raise ValueError("A visit timestamp within the ended shift is required for a late report")
+
+    active_revisit = False
+    if investigation.status == "assigned" and investigation.assigned_agent_id is not None:
+        from app.models.agent_revisit import AgentRevisitRequest
+
+        active_revisit = db.query(AgentRevisitRequest.id).filter(
+            AgentRevisitRequest.investigation_id == investigation.id,
+            AgentRevisitRequest.agent_id == investigation.assigned_agent_id,
+            AgentRevisitRequest.status.in_(("queued", "routed")),
+        ).first() is not None
+    if (
+        investigation.status not in {"in_progress", "returned_for_correction"}
+        and not active_revisit
+        and not late_cancelled_report
+    ):
         raise ValueError("Investigation is not ready for report submission")
 
+    pending_revisit = None
+    if investigation.assigned_agent_id is not None:
+        from app.models.agent_revisit import AgentRevisitRequest
+
+        pending_revisit = db.query(AgentRevisitRequest).filter(
+            AgentRevisitRequest.investigation_id == investigation.id,
+            AgentRevisitRequest.agent_id == investigation.assigned_agent_id,
+            AgentRevisitRequest.status.in_(("waiting_for_shift", "queued", "routed")),
+        ).order_by(AgentRevisitRequest.created_at.desc(), AgentRevisitRequest.id.desc()).first()
+    if pending_revisit is not None and pending_revisit.status != "routed":
+        raise ValueError("Wait for the revisit route to be published before submitting the correction report")
+    if (
+        pending_revisit is not None
+        and pending_revisit.status == "routed"
+        and report.visit_outcome in {"visited", "no_access"}
+        and report.visited_at is not None
+    ):
+        revisit_visit_at = report.visited_at
+        request_created_at = pending_revisit.created_at
+        if revisit_visit_at.tzinfo is None:
+            revisit_visit_at = revisit_visit_at.replace(tzinfo=timezone.utc)
+        else:
+            revisit_visit_at = revisit_visit_at.astimezone(timezone.utc)
+        if request_created_at.tzinfo is None:
+            request_created_at = request_created_at.replace(tzinfo=timezone.utc)
+        else:
+            request_created_at = request_created_at.astimezone(timezone.utc)
+        if revisit_visit_at < request_created_at:
+            raise ValueError("Enter the date and time of the requested revisit before submitting the correction report")
+
     report.status = "submitted"
-    report.submitted_at = datetime.now(timezone.utc)
+    report.submitted_at = submitted_at
     investigation.status = "under_review"
+    investigation.reopen_on = None
+
+    if investigation.assigned_agent_id is not None:
+        submitted_at = report.submitted_at.astimezone(timezone.utc)
+        if (
+            report.visit_outcome in {"visited", "no_access"}
+            and report.visited_at is not None
+            and investigation.location_confirmed
+            and investigation.latitude is not None
+            and investigation.longitude is not None
+        ):
+            visited_at = report.visited_at
+            if visited_at.tzinfo is None:
+                visited_at = visited_at.replace(tzinfo=timezone.utc)
+            else:
+                visited_at = visited_at.astimezone(timezone.utc)
+            visit_work_date = visited_at.astimezone(ZoneInfo("Asia/Manila")).date()
+            visit_shift = db.query(AgentShift).filter(
+                AgentShift.agent_id == investigation.assigned_agent_id,
+                AgentShift.work_date == visit_work_date,
+            ).with_for_update().first()
+            if visit_shift is not None:
+                shift_start = visit_shift.shift_starts_at
+                shift_end = visit_shift.shift_ends_at
+                if shift_start.tzinfo is None:
+                    shift_start = shift_start.replace(tzinfo=timezone.utc)
+                else:
+                    shift_start = shift_start.astimezone(timezone.utc)
+                if shift_end.tzinfo is None:
+                    shift_end = shift_end.replace(tzinfo=timezone.utc)
+                else:
+                    shift_end = shift_end.astimezone(timezone.utc)
+                last_completed_at = visit_shift.last_completed_at
+                if last_completed_at is not None:
+                    if last_completed_at.tzinfo is None:
+                        last_completed_at = last_completed_at.replace(tzinfo=timezone.utc)
+                    else:
+                        last_completed_at = last_completed_at.astimezone(timezone.utc)
+                if (
+                    shift_start <= visited_at <= shift_end
+                    and visited_at <= submitted_at
+                    and (last_completed_at is None or last_completed_at <= visited_at)
+                ):
+                    visit_shift.last_completed_investigation_id = investigation.id
+                    visit_shift.last_completed_report_id = report.id
+                    visit_shift.last_completed_at = visited_at
+                    visit_shift.last_completed_latitude = investigation.latitude
+                    visit_shift.last_completed_longitude = investigation.longitude
+                    if visit_work_date == manila_now.date():
+                        visit_shift.current_planning_run_id = None
+
+        from app.services.agent_revisits import complete_agent_revisit_requests
+
+        complete_agent_revisit_requests(db, investigation.id, report.id, submitted_at)
+        from app.services.agent_schedules import enqueue_planning_trigger
+
+        enqueue_planning_trigger(db, manila_now.date(), investigation.region_code, "agent_report_submitted")
 
     db.commit()
     db.refresh(report)

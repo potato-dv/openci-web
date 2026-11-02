@@ -1,15 +1,24 @@
 import { useEffect, useState } from "react";
 
-import { getReport, saveReport, submitReport } from "@/features/reports/api";
+import {
+  getReport,
+  getReportVersions,
+  getRevisitRequest,
+  requestRevisit,
+  saveReport,
+  submitReport,
+} from "@/features/reports/api";
 import type {
   Investigation,
   InvestigationOutcome,
   OccupancyStatus,
   Report,
   ReportInput,
+  RevisitRequest,
   VisitOutcome,
 } from "@/types/api";
 import { formatUserName } from "@/utils/userName";
+import { PLANNING_ENABLED } from "@/config";
 
 type ReportEditorProps = {
   token: string;
@@ -32,9 +41,17 @@ function toLocalDateTime(value: string | null) {
   if (!value) return "";
   const date = new Date(value);
   if (Number.isNaN(date.getTime())) return "";
-  return new Date(date.getTime() - date.getTimezoneOffset() * 60_000)
-    .toISOString()
-    .slice(0, 16);
+  const parts = new Intl.DateTimeFormat("en-CA", {
+    timeZone: "Asia/Manila",
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+    hour: "2-digit",
+    minute: "2-digit",
+    hourCycle: "h23",
+  }).formatToParts(date);
+  const part = (type: string) => parts.find((item) => item.type === type)?.value ?? "00";
+  return `${part("year")}-${part("month")}-${part("day")}T${part("hour")}:${part("minute")}`;
 }
 
 function toPayload(report: ReportInput): ReportInput {
@@ -44,17 +61,22 @@ function toPayload(report: ReportInput): ReportInput {
     verified_address: report.verified_address?.trim() || null,
     property_condition: report.property_condition?.trim() || null,
     interaction_notes: report.interaction_notes?.trim() || null,
-    visited_at: report.visited_at ? new Date(report.visited_at).toISOString() : null,
+    visited_at: report.visited_at
+      ? new Date(`${report.visited_at}:00+08:00`).toISOString()
+      : null,
   };
 }
 
 export function ReportEditor({ token, investigation, onChanged }: ReportEditorProps) {
   const [report, setReport] = useState<Report | null>(null);
+  const [versions, setVersions] = useState<Report[]>([]);
+  const [revisitRequest, setRevisitRequest] = useState<RevisitRequest | null>(null);
   const [form, setForm] = useState<ReportInput>(emptyReport);
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState("");
   const [message, setMessage] = useState("");
+  const revisitRequestStatus = revisitRequest?.status;
 
   useEffect(() => {
     let cancelled = false;
@@ -64,9 +86,17 @@ export function ReportEditor({ token, investigation, onChanged }: ReportEditorPr
       setError("");
       setMessage("");
       try {
-        const reportData = await getReport(token, investigation.id);
+        const [reportData, reportVersions, revisitData] = await Promise.all([
+          getReport(token, investigation.id),
+          getReportVersions(token, investigation.id),
+          PLANNING_ENABLED
+            ? getRevisitRequest(token, investigation.id)
+            : Promise.resolve(null),
+        ]);
         if (cancelled) return;
         setReport(reportData);
+        setVersions(reportVersions);
+        setRevisitRequest(revisitData);
         setForm(reportData ? {
           content: reportData.content,
           visit_outcome: reportData.visit_outcome,
@@ -81,6 +111,7 @@ export function ReportEditor({ token, investigation, onChanged }: ReportEditorPr
         if (cancelled) return;
         if (err instanceof Error && err.message === "Report not found") {
           setReport(null);
+          setVersions([]);
           setForm(emptyReport);
         } else {
           setError(err instanceof Error ? err.message : "Could not load report.");
@@ -94,6 +125,30 @@ export function ReportEditor({ token, investigation, onChanged }: ReportEditorPr
     return () => { cancelled = true; };
   }, [investigation.id, token]);
 
+  useEffect(() => {
+    if (
+      !PLANNING_ENABLED ||
+      !revisitRequestStatus ||
+      !["waiting_for_shift", "queued"].includes(revisitRequestStatus)
+    ) {
+      return;
+    }
+    let cancelled = false;
+    const refreshStatus = async () => {
+      try {
+        const latest = await getRevisitRequest(token, investigation.id);
+        if (!cancelled && latest) setRevisitRequest(latest);
+      } catch {
+        // Keep the last known request state; the next poll can recover.
+      }
+    };
+    const intervalId = window.setInterval(() => void refreshStatus(), 15_000);
+    return () => {
+      cancelled = true;
+      window.clearInterval(intervalId);
+    };
+  }, [investigation.id, revisitRequestStatus, token]);
+
   function update<K extends keyof ReportInput>(key: K, value: ReportInput[K]) {
     setForm((current) => ({ ...current, [key]: value }));
   }
@@ -105,6 +160,10 @@ export function ReportEditor({ token, investigation, onChanged }: ReportEditorPr
     try {
       const saved = await saveReport(token, investigation.id, toPayload(form));
       setReport(saved);
+      setVersions((current) => [
+        ...current.filter((item) => item.id !== saved.id),
+        saved,
+      ].sort((left, right) => left.version - right.version));
       setForm((current) => ({ ...current, visited_at: toLocalDateTime(saved.visited_at) }));
       setMessage(`Version ${saved.version} draft saved.`);
       onChanged();
@@ -145,6 +204,15 @@ export function ReportEditor({ token, investigation, onChanged }: ReportEditorPr
       setReport(saved);
       const submitted = await submitReport(token, investigation.id);
       setReport(submitted);
+      setVersions((current) => [
+        ...current.filter((item) => item.id !== submitted.id),
+        submitted,
+      ].sort((left, right) => left.version - right.version));
+      setRevisitRequest((current) =>
+        current && current.report_id !== submitted.id
+          ? { ...current, status: "completed", completed_at: submitted.submitted_at }
+          : current,
+      );
       setMessage(`Version ${submitted.version} submitted for supervisor review.`);
       onChanged();
     } catch (err) {
@@ -154,8 +222,49 @@ export function ReportEditor({ token, investigation, onChanged }: ReportEditorPr
     }
   }
 
+  async function handleRequestRevisit() {
+    setSaving(true);
+    setError("");
+    setMessage("");
+    try {
+      const requested = await requestRevisit(token, investigation.id);
+      setRevisitRequest(requested);
+      setMessage(
+        requested.target_work_date
+          ? `Revisit route requested for ${requested.target_work_date}.`
+          : "Revisit requested. It will be routed when your next available shift is configured.",
+      );
+      onChanged();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Could not request a revisit route.");
+    } finally {
+      setSaving(false);
+    }
+  }
+
   const locked = report?.status === "submitted" || report?.status === "approved";
   const isReturned = report?.status === "returned_for_correction" || investigation.status === "returned_for_correction";
+  const latestReturnedReport = [...versions]
+    .filter((item) => item.status === "returned_for_correction")
+    .sort((left, right) => right.version - left.version)[0];
+  const requestMatchesReturnedReport = Boolean(
+    latestReturnedReport && revisitRequest?.report_id === latestReturnedReport.id,
+  );
+  const hasActiveRevisitRequest = requestMatchesReturnedReport && [
+    "waiting_for_shift", "queued", "routed",
+  ].includes(revisitRequest?.status ?? "");
+  const waitingForRevisitRoute = requestMatchesReturnedReport && [
+    "waiting_for_shift", "queued",
+  ].includes(revisitRequest?.status ?? "");
+  const correctionIsOpen =
+    investigation.status === "returned_for_correction" ||
+    investigation.status === "in_progress";
+  const canRequestRevisit = Boolean(
+    PLANNING_ENABLED &&
+      correctionIsOpen &&
+      latestReturnedReport &&
+      (!requestMatchesReturnedReport || !hasActiveRevisitRequest),
+  );
 
   return (
     <section className="workflow-panel">
@@ -168,6 +277,9 @@ export function ReportEditor({ token, investigation, onChanged }: ReportEditorPr
       </div>
 
       {isReturned && <p className="workflow-meta">This version was returned. Saving your corrections creates a new version and keeps this one in the history.</p>}
+      {!isReturned && canRequestRevisit && (
+        <p className="workflow-meta">A previous report version was returned. Request a route to revisit this investigation when you are ready to address the concern.</p>
+      )}
       {report?.author_name && <p className="workflow-meta">Report author: <strong>{formatUserName(report.author_name)}</strong></p>}
 
       <div className="report-fields">
@@ -200,7 +312,7 @@ export function ReportEditor({ token, investigation, onChanged }: ReportEditorPr
             <option value="not_applicable">Not applicable</option>
           </select>
         </label>
-        <label>Visit date and time <span className="optional-label">Required for Visited or No access</span>
+        <label>Visit date and time · Philippine time <span className="optional-label">Required for Visited or No access</span>
           <input type="datetime-local" value={form.visited_at ?? ""} onChange={(event) => update("visited_at", event.target.value || null)} disabled={loading || saving || locked} />
         </label>
       </div>
@@ -226,12 +338,37 @@ export function ReportEditor({ token, investigation, onChanged }: ReportEditorPr
       {error && <p className="error" role="alert">{error}</p>}
       {message && <p className="success-message" role="status">{message}</p>}
 
+      {requestMatchesReturnedReport && hasActiveRevisitRequest && revisitRequest && (
+        <p className="workflow-meta" role="status">
+          {revisitRequest.status === "waiting_for_shift"
+            ? revisitRequest.target_work_date
+              ? `Revisit requested for ${revisitRequest.target_work_date}; it will be routed when that shift begins. Submit after it is published and you complete the visit.`
+              : "Revisit requested; waiting for your next available shift. Submit after the route is published and you complete the visit."
+            : revisitRequest.status === "queued"
+              ? `Revisit route update queued${revisitRequest.target_work_date ? ` for ${revisitRequest.target_work_date}` : ""}. Submit after the route is published and you complete the visit.`
+              : `Revisit route published${revisitRequest.target_work_date ? ` for ${revisitRequest.target_work_date}` : ""}. Enter the return visit date and time before submitting.`}
+        </p>
+      )}
+
+      {canRequestRevisit && (
+        <div className="workflow-actions">
+          <button
+            type="button"
+            className="secondary-button"
+            onClick={() => void handleRequestRevisit()}
+            disabled={loading || saving}
+          >
+            {saving ? "Requesting route…" : "Continue correction · request revisit route"}
+          </button>
+        </div>
+      )}
+
       {!locked && (
         <div className="workflow-actions">
           <button type="button" className="secondary-button" onClick={() => void handleSave()} disabled={loading || saving || !form.content.trim()}>
             {saving ? "Saving…" : "Save draft"}
           </button>
-          <button type="button" className="primary-button compact-button" onClick={() => void handleSubmit()} disabled={loading || saving || !form.content.trim()}>
+          <button type="button" className="primary-button compact-button" onClick={() => void handleSubmit()} disabled={loading || saving || !form.content.trim() || waitingForRevisitRoute}>
             {saving ? "Submitting…" : "Submit report"}
           </button>
         </div>

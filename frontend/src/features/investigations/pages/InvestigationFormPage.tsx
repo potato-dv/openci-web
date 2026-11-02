@@ -30,6 +30,7 @@ import {
   SubjectFields,
 } from "@/features/investigations/components/InvestigationForm";
 import { PhilippineAddressFields } from "@/features/investigations/components/PhilippineAddressFields";
+import { InvestigationEditSections } from "@/features/investigations/components/InvestigationEditSections";
 import {
   LocationPicker,
   type ConfirmedPoint,
@@ -185,7 +186,7 @@ function Editor({
   }
   async function save(event: FormEvent) {
     event.preventDefault();
-    if (step < 4) {
+    if (!investigation && step < 4) {
       next();
       return;
     }
@@ -197,6 +198,10 @@ function Editor({
         setError(message);
         return;
       }
+    }
+    if (investigation && !formRef.current?.reportValidity()) {
+      setError("Review the highlighted fields before saving.");
+      return;
     }
     if (lock.current) return;
     lock.current = true;
@@ -238,12 +243,12 @@ function Editor({
   return (
     <>
       <PageHeader
-        title={
+        title={investigation ? "Edit investigation" : "New investigation"}
+        description={
           investigation
-            ? `Edit ${investigation.reference_number}`
-            : "New investigation"
+            ? `${investigation.reference_number} · Update the subject, visit requirements, address, or confirmed location.`
+            : "Confirm the subject, address, and visit requirements before saving."
         }
-        description="Confirm the subject, address, and visit requirements before saving."
         parent={{
           to: investigation
             ? `/investigations/${investigation.id}`
@@ -251,86 +256,119 @@ function Editor({
           label: investigation ? "Investigation" : "Investigations",
         }}
       />
-      <div className="form-workspace">
-        <InvestigationFormStepper
-          step={step}
-          onStep={(target) => {
-            if (target > step && !validateStep()) return;
-            setError("");
-            setStep(target);
-          }}
-          completed={completed}
-        />
+      <div
+        className={`form-workspace${investigation ? " form-workspace-edit" : ""}`}
+      >
+        {!investigation && (
+          <InvestigationFormStepper
+            step={step}
+            onStep={(target) => {
+              if (target > step && !validateStep()) return;
+              setError("");
+              setStep(target);
+            }}
+            completed={completed}
+          />
+        )}
         <form
           ref={formRef}
-          className="content-card investigation-form"
+          className={`content-card investigation-form${investigation ? " investigation-edit-form" : ""}`}
           onSubmit={save}
         >
-          <h2 ref={headingRef} tabIndex={-1}>
-            {
-              [
-                "Subject information",
-                "Investigation details",
-                "Philippine address",
-                "Location confirmation",
-                "Review and save",
-              ][step]
-            }
-          </h2>
-          {step === 0 && (
+          {investigation ? (
             <>
-              <p className="form-hint">
-                The investigation reference is generated automatically.
-              </p>
-              {investigation && !investigation.first_name && (
+              <div className="investigation-edit-heading">
+                <h2 ref={headingRef} tabIndex={-1}>
+                  Investigation details
+                </h2>
+                <p>
+                  Review the existing information and update only what needs to
+                  change.
+                </p>
+              </div>
+              {!investigation.first_name && (
                 <InlineAlert variant="warning">
                   Confirm the name parts for this legacy subject:{" "}
                   {investigation.subject_name}
                 </InlineAlert>
               )}
-              <SubjectFields value={value} onChange={change} />
-            </>
-          )}
-          {step === 1 && (
-            <InvestigationDetailFields value={value} onChange={change} />
-          )}
-          {step === 2 && (
-            <PhilippineAddressFields
-              token={token}
-              value={value}
-              onChange={change}
-            />
-          )}
-          {step === 3 && (
-            <>
-              <p className="form-hint">
-                Location confirmation is optional. Route optimization requires
-                confirmed coordinates.
-              </p>
-              <LocationPicker
-                key={`${value.region_code}:${value.street}:${value.barangay_code}`}
+              <InvestigationEditSections
                 token={token}
-                initial={
-                  point ??
-                  (!addressChanged && existingPoint
-                    ? {
-                        ...existingPoint,
-                        label: investigation?.address_display,
-                      }
-                    : null)
-                }
-                initialQuery={[value.house_number, value.street, "Philippines"]
-                  .filter(Boolean)
-                  .join(", ")}
-                onConfirm={(point) => {
-                  setPoint(point);
+                value={value}
+                onChange={change}
+                investigation={investigation}
+                existingPoint={existingPoint}
+                addressChanged={addressChanged}
+                point={point}
+                onPointChange={(nextPoint) => {
+                  setPoint(nextPoint);
                   setDirty(true);
                 }}
-                onDirty={() => {
+                onPointEdit={() => {
                   setPoint(null);
                   setDirty(true);
                 }}
               />
+            </>
+          ) : (
+            <>
+              <h2 ref={headingRef} tabIndex={-1}>
+                {
+                  [
+                    "Subject information",
+                    "Investigation details",
+                    "Philippine address",
+                    "Location confirmation",
+                    "Review and save",
+                  ][step]
+                }
+              </h2>
+              {step === 0 && (
+                <>
+                  <p className="form-hint">
+                    The investigation reference is generated automatically.
+                  </p>
+                  <SubjectFields value={value} onChange={change} />
+                </>
+              )}
+              {step === 1 && (
+                <InvestigationDetailFields value={value} onChange={change} />
+              )}
+              {step === 2 && (
+                <PhilippineAddressFields
+                  token={token}
+                  value={value}
+                  onChange={change}
+                />
+              )}
+              {step === 3 && (
+                <>
+                  <p className="form-hint">
+                    Location confirmation is optional. Route optimization
+                    requires confirmed coordinates.
+                  </p>
+                  <LocationPicker
+                    key={`${value.region_code}:${value.street}:${value.barangay_code}`}
+                    token={token}
+                    initial={point}
+                    initialQuery={[
+                      value.house_number,
+                      value.street,
+                      "Philippines",
+                    ]
+                      .filter(Boolean)
+                      .join(", ")}
+                    onConfirm={(point) => {
+                      setPoint(point);
+                      setDirty(true);
+                    }}
+                    onDirty={() => {
+                      setPoint(null);
+                      setDirty(true);
+                    }}
+                  />
+                </>
+              )}
             </>
           )}
           {step === 4 && (
@@ -394,7 +432,9 @@ function Editor({
             </>
           )}
           {error && <InlineAlert>{error}</InlineAlert>}
-          <footer className="form-footer">
+          <footer
+            className={`form-footer${investigation ? " investigation-edit-footer" : ""}`}
+          >
             <Link
               className="secondary-button"
               to={
@@ -406,7 +446,7 @@ function Editor({
               Cancel
             </Link>
             <div>
-              {step > 0 && (
+              {!investigation && step > 0 && (
                 <Button
                   disabled={busy}
                   onClick={() =>
@@ -419,7 +459,7 @@ function Editor({
               <Button variant="primary" type="submit" disabled={busy}>
                 {busy
                   ? "Saving…"
-                  : step === 4
+                  : investigation || step === 4
                     ? investigation
                       ? "Save changes"
                       : "Create investigation"

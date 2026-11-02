@@ -1,4 +1,4 @@
-import { useCallback, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import { Link, useSearchParams } from "react-router";
 import { useSession } from "@/app/session";
 import { getAgentRoster } from "@/features/agents/api";
@@ -39,6 +39,11 @@ export function FieldAgentsPage() {
       [token, date, region, inactive],
     ),
   );
+  useEffect(() => {
+    if (!selected || !roster.data) return;
+    const latest = roster.data.find((item) => item.agent.id === selected.agent.id);
+    if (latest) setSelected(latest);
+  }, [roster.data, selected]);
   function update(key: string, value: string) {
     const next = new URLSearchParams(params);
     if (value) next.set(key, value);
@@ -49,7 +54,7 @@ export function FieldAgentsPage() {
     <>
       <PageHeader
         title="Field Agents"
-        description="Configure daily availability, starting points, and current assigned workloads."
+        description="Set recurring workdays, depot locations, fixed breaks, and dated shift overrides."
         actions={
           <>
             <Button onClick={roster.refresh}>Refresh</Button>
@@ -114,7 +119,7 @@ export function FieldAgentsPage() {
                   <tr>
                     <th>Agent</th>
                     <th>Account</th>
-                    <th>Shift</th>
+                    <th>Availability</th>
                     <th>Hours · PHT</th>
                     <th>Starting point</th>
                     <th>Visit capacity</th>
@@ -137,22 +142,29 @@ export function FieldAgentsPage() {
                         </span>
                       </td>
                       <td>
-                        {!row.shift
-                          ? "No shift"
-                          : row.shift.is_available
-                            ? "Available"
-                            : "Unavailable"}
+                        {row.availability_day?.status === "day_off"
+                          ? "Day off"
+                          : row.availability_day?.status === "not_configured"
+                            ? "Not configured"
+                            : row.shift
+                              ? row.shift.is_available ? "Available" : "Unavailable"
+                              : row.availability_day?.is_available ? "Scheduled" : "No shift"}
+                        {row.shift?.source === "manual" && <small className="block">Manual override</small>}
                       </td>
                       <td className="nowrap">
                         {row.shift
                           ? `${time(row.shift.shift_starts_at)}–${time(row.shift.shift_ends_at)}`
+                          : row.availability_day?.shift_starts_at && row.availability_day.shift_ends_at
+                            ? `${time(row.availability_day.shift_starts_at)}–${time(row.availability_day.shift_ends_at)}`
                           : "—"}
                       </td>
                       <td className="location-cell">
                         {row.shift?.start_location_label ||
                           (row.shift
                             ? `${row.shift.start_latitude.toFixed(5)}, ${row.shift.start_longitude.toFixed(5)}`
-                            : "Not configured")}
+                            : row.availability_day?.start_latitude != null && row.availability_day.start_longitude != null
+                              ? `${row.availability_day.start_latitude.toFixed(5)}, ${row.availability_day.start_longitude.toFixed(5)}`
+                              : row.work_profile_set ? "Depot configured" : "Not configured")}
                       </td>
                       <td>{row.shift?.max_visits ?? "—"}</td>
                       <td>{row.assigned_workload_count}</td>
@@ -185,11 +197,12 @@ export function FieldAgentsPage() {
                     <div>
                       <dt>Shift</dt>
                       <dd>
-                        {!row.shift
-                          ? "Not configured"
-                          : row.shift.is_available
-                            ? "Available"
-                            : "Unavailable"}
+                        {row.availability_day?.status === "day_off"
+                          ? "Day off"
+                          : row.availability_day?.status === "not_configured"
+                            ? "Not configured"
+                            : row.shift ? row.shift.is_available ? "Available" : "Unavailable"
+                              : row.availability_day?.is_available ? "Scheduled" : "No shift"}
                       </dd>
                     </div>
                     <div>
@@ -197,6 +210,8 @@ export function FieldAgentsPage() {
                       <dd>
                         {row.shift
                           ? `${time(row.shift.shift_starts_at)}–${time(row.shift.shift_ends_at)}`
+                          : row.availability_day?.shift_starts_at && row.availability_day.shift_ends_at
+                            ? `${time(row.availability_day.shift_starts_at)}–${time(row.availability_day.shift_ends_at)}`
                           : "—"}
                       </dd>
                     </div>
@@ -206,7 +221,9 @@ export function FieldAgentsPage() {
                         {row.shift?.start_location_label ||
                           (row.shift
                             ? `${row.shift.start_latitude.toFixed(5)}, ${row.shift.start_longitude.toFixed(5)}`
-                            : "Not configured")}
+                            : row.availability_day?.start_latitude != null && row.availability_day.start_longitude != null
+                              ? `${row.availability_day.start_latitude.toFixed(5)}, ${row.availability_day.start_longitude.toFixed(5)}`
+                              : row.work_profile_set ? "Depot configured" : "Not configured")}
                       </dd>
                     </div>
                     <div>
@@ -241,6 +258,7 @@ export function FieldAgentsPage() {
           row={selected}
           regions={regions.data ?? []}
           onClose={() => setSelected(null)}
+          onUpdated={roster.refresh}
           onSaved={() => {
             setSelected(null);
             roster.refresh();

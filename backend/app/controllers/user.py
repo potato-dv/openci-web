@@ -13,11 +13,9 @@ from app.services.user import (
     get_user_by_email,
     get_user_by_id,
     authenticate_user,
-    set_user_active,
-    set_user_role,
 )
 
-from app.utils.security import create_access_token
+from app.services.auth_sessions import issue_session, revoke_user_sessions
 
 def create(db: Session, data: UserCreate, actor: User):
     existing_user = get_user_by_email(db, data.email)
@@ -77,18 +75,55 @@ def update_activation(db: Session, user_id: int, is_active: bool, actor: User):
         ).filter(
             InvestigationAssignment.agent_id == user.id,
             InvestigationAssignment.is_active.is_(True),
+            InvestigationAssignment.assignment_source == "manual",
             Investigation.status != "completed",
             Investigation.deleted_at.is_(None),
         ).count()
         if active_assignments:
-            raise HTTPException(status_code=409, detail="Reassign this agent’s active investigations before deactivation")
+            raise HTTPException(status_code=409, detail="Reassign this agent’s manually assigned investigations before deactivation")
 
     if user.role == "admin" and user.is_active and not is_active:
         active_admins = db.query(User).filter(User.role == "admin", User.is_active.is_(True)).count()
         if active_admins <= 1:
             raise HTTPException(status_code=409, detail="At least one active admin account must remain")
 
-    updated = set_user_active(db, user, is_active)
+    user.is_active = is_active
+    db.flush()
+    if not is_active:
+        revoke_user_sessions(db, user.id)
+    if user.role == "agent":
+        from datetime import datetime
+        from zoneinfo import ZoneInfo
+
+        from app.models.planning import AgentShift
+        from app.services.agent_schedules import enqueue_planning_trigger, materialize_work_date
+
+        today = datetime.now(ZoneInfo("Asia/Manila")).date()
+        if is_active:
+            materialize_work_date(db, today)
+        scopes = {
+            region_code for (region_code,) in db.query(AgentShift.region_code).filter(
+                AgentShift.agent_id == user.id,
+                AgentShift.work_date == today,
+            ).all()
+        }
+        scopes.update(
+            region_code for (region_code,) in db.query(Investigation.region_code).join(
+                InvestigationAssignment,
+                InvestigationAssignment.investigation_id == Investigation.id,
+            ).filter(
+                InvestigationAssignment.agent_id == user.id,
+                InvestigationAssignment.is_active.is_(True),
+                InvestigationAssignment.assignment_source == "automatic",
+                Investigation.status.in_(("pending", "assigned")),
+                Investigation.deleted_at.is_(None),
+            ).distinct().all() if region_code
+        )
+        for scope in scopes:
+            enqueue_planning_trigger(db, today, scope, "agent_activation_changed")
+    db.commit()
+    db.refresh(user)
+    updated = user
     from app.services.activity import record_activity
 
     record_activity(db, actor, "user.activation_changed", "user", user.id, {"is_active": is_active})
@@ -116,7 +151,13 @@ def update_role(db: Session, user_id: int, role: str, actor: User):
         if active_assignments:
             raise HTTPException(status_code=409, detail="Reassign this agent’s active investigations before changing their role")
     previous_role = user.role
-    updated = set_user_role(db, user, role)
+    if role != previous_role:
+        user.role = role
+        db.flush()
+        revoke_user_sessions(db, user.id)
+        db.commit()
+        db.refresh(user)
+    updated = user
     from app.services.activity import record_activity
 
     record_activity(db, actor, "user.role_changed", "user", user.id, {"from": previous_role, "to": role})
@@ -136,9 +177,4 @@ def login(db: Session, data: UserLogin):
             headers={"WWW-Authenticate": "Bearer"},
         )
 
-    access_token = create_access_token(subject=str(user.id))
-
-    return {
-        "access_token": access_token,
-        "token_type": "bearer",
-    }
+    return issue_session(db, user)

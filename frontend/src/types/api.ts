@@ -6,7 +6,8 @@ export type InvestigationStatus =
   | "in_progress"
   | "under_review"
   | "returned_for_correction"
-  | "completed";
+  | "completed"
+  | "cancelled";
 
 export type InvestigationPriority = "normal" | "high" | "urgent";
 export type VisitOutcome = "visited" | "no_access" | "unable_to_locate";
@@ -52,6 +53,7 @@ export type Investigation = {
   barangay_code: string | null;
   postal_code: string | null;
   status: InvestigationStatus;
+  reopen_on?: string | null;
   priority: InvestigationPriority;
   assigned_agent_id?: number | null;
   assigned_agent_name?: string | null;
@@ -125,6 +127,8 @@ export type AgentShiftInput = {
   is_available: boolean;
   shift_starts_at: string;
   shift_ends_at: string;
+  break_starts_at?: string | null;
+  break_ends_at?: string | null;
   start_latitude: number;
   start_longitude: number;
   end_latitude?: number | null;
@@ -142,6 +146,69 @@ export type AgentShift = AgentShiftInput & {
   id: number;
   agent_id: number;
   current_planning_run_id: number | null;
+  source?: "manual" | "recurring";
+  schedule_version_id?: number | null;
+  last_completed_investigation_id?: number | null;
+  last_completed_report_id?: number | null;
+  last_completed_at?: string | null;
+  last_completed_latitude?: number | null;
+  last_completed_longitude?: number | null;
+};
+export type AgentWorkProfile = {
+  id?: number;
+  agent_id?: number;
+  depot_latitude: number | null;
+  depot_longitude: number | null;
+  depot_label: string | null;
+  depot_source: "manual" | "nominatim" | null;
+  depot_provider_ref: string | null;
+  end_latitude: number | null;
+  end_longitude: number | null;
+  end_label: string | null;
+  end_source: "manual" | "nominatim" | null;
+  end_provider_ref: string | null;
+  updated_at?: string;
+};
+export type WeeklyScheduleDay = {
+  weekday: number;
+  is_working: boolean;
+  shift_start: string | null;
+  shift_end: string | null;
+  break_start: string | null;
+  break_end: string | null;
+};
+export type WeeklySchedule = {
+  id?: number;
+  agent_id?: number;
+  effective_from: string;
+  effective_until?: string | null;
+  enabled: boolean;
+  region_code: string;
+  max_visits: number;
+  max_open_cases: number;
+  days: WeeklyScheduleDay[];
+};
+export type AvailabilityDay = {
+  work_date: string;
+  status: "manual_override" | "scheduled" | "day_off" | "not_configured";
+  source: "manual" | "recurring" | null;
+  region_code: string | null;
+  is_available: boolean;
+  shift_starts_at: string | null;
+  shift_ends_at: string | null;
+  break_starts_at: string | null;
+  break_ends_at: string | null;
+  start_latitude: number | null;
+  start_longitude: number | null;
+  start_location_label: string | null;
+  max_visits: number | null;
+  max_open_cases: number | null;
+};
+export type AgentAvailability = {
+  agent_id: number;
+  from_date: string;
+  to_date: string;
+  days: AvailabilityDay[];
 };
 export type PlanningAgent = {
   start: RoutePoint;
@@ -198,6 +265,7 @@ export type PlanningMapData = {
     longitude: number;
     priority: InvestigationPriority;
     status: InvestigationStatus;
+    reopen_on?: string | null;
     region_code: string | null;
     assigned_agent_id: number | null;
     assigned_agent_name: string | null;
@@ -219,6 +287,7 @@ export type PlanningMapData = {
     id: number;
     reference_number: string;
     status: InvestigationStatus;
+    reopen_on?: string | null;
     region_code: string | null;
   }[];
   unlocated_agents: { id: number; name: string; is_active: boolean }[];
@@ -236,7 +305,8 @@ export type PlanningDashboard = {
   failed_planning_jobs: number;
   investigation_states: {
     investigation_id: number;
-    planning_status: "pending" | "optimizing" | "assigned" | "unassigned" | "failed";
+    planning_status:
+      "pending" | "optimizing" | "assigned" | "unassigned" | "failed";
     reason: string | null;
     planning_run_id: number | null;
     assignment_source: "automatic" | "manual" | null;
@@ -275,6 +345,8 @@ export type PlanningItem = {
   reason: string | null;
   sequence: number | null;
   estimated_arrival_at: string | null;
+  estimated_service_start_at?: string | null;
+  waiting_seconds?: number | null;
   travel_seconds: number | null;
   travel_metres: number | null;
 };
@@ -296,9 +368,13 @@ export type PlanningRun = {
   applied_at: string | null;
   warnings: {
     type: string;
-    latitude: number;
-    longitude: number;
-    distance_metres: number;
+    latitude?: number;
+    longitude?: number;
+    distance_metres?: number;
+    agent_id?: number;
+    investigation_id?: number;
+    reference_number?: string;
+    reason?: string;
   }[];
   items: PlanningItem[];
 };
@@ -325,6 +401,9 @@ export type PlanningRouteGeometry = {
   geometry_digest: string | null;
   total_distance_metres: number | null;
   total_travel_seconds: number | null;
+  total_service_seconds?: number | null;
+  total_waiting_seconds?: number | null;
+  total_break_seconds?: number | null;
   start: RoutePoint;
   end: RoutePoint | null;
 };
@@ -339,6 +418,19 @@ export type AgentRoute = {
     | null;
   shift: AgentShift | null;
   route: PlanningRouteGeometry | null;
+  completed_route_geometry?: LineStringGeometry | null;
+  cancelled_investigations?: {
+    id: number;
+    reference_number: string;
+    address_display: string;
+    status: "cancelled";
+    reopen_on: string;
+    priority: InvestigationPriority;
+    region_code: string | null;
+    latitude: number | null;
+    longitude: number | null;
+  }[];
+  revisit_requests?: RevisitRequest[];
   stops: {
     service_duration_seconds: number;
     investigation_id: number;
@@ -346,6 +438,8 @@ export type AgentRoute = {
     address_display: string;
     sequence: number | null;
     estimated_arrival_at: string | null;
+    estimated_service_start_at?: string | null;
+    waiting_seconds?: number | null;
     travel_seconds: number | null;
     travel_metres: number | null;
     latitude: number;
@@ -353,6 +447,18 @@ export type AgentRoute = {
     priority: InvestigationPriority;
     status: InvestigationStatus;
   }[];
+};
+export type RevisitRequest = {
+  id: number;
+  investigation_id: number;
+  reference_number?: string | null;
+  report_id: number;
+  agent_id: number;
+  target_work_date: string | null;
+  status: "waiting_for_shift" | "queued" | "routed" | "completed" | "cancelled";
+  planning_run_id: number | null;
+  created_at: string;
+  completed_at: string | null;
 };
 export type PlanningRouteOverviewAgent = {
   id: number;
@@ -369,6 +475,11 @@ export type PlanningRouteOverviewAgent = {
     | "partially_published"
     | "needs_refresh";
   refresh_errors: string[];
+  planning_warnings?: {
+    investigation_id: number;
+    reference_number: string;
+    reason: string;
+  }[];
   refresh_investigation_id: number | null;
   run_id: number | null;
   planning_status: "idle" | "queued" | "running" | "failed";
@@ -377,6 +488,7 @@ export type PlanningRouteOverviewAgent = {
   open_case_count: number;
   remaining_open_capacity: number | null;
   route: PlanningRouteGeometry | null;
+  completed_route_geometry?: LineStringGeometry | null;
   stops: AgentRoute["stops"];
 };
 export type PlanningRouteOverview = {
@@ -389,6 +501,9 @@ export type AgentRosterRow = {
   shift: AgentShift | null;
   assigned_workload_count: number;
   visit_workload_count: number;
+  schedule_enabled?: boolean;
+  work_profile_set?: boolean;
+  availability_day?: AvailabilityDay | null;
 };
 export type PageResult<T> = {
   items: T[];

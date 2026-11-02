@@ -1,7 +1,7 @@
-from datetime import datetime, timezone
+from datetime import date, datetime, timezone
 from typing import TYPE_CHECKING
 
-from sqlalchemy import CheckConstraint, DateTime, Float, ForeignKey, Index, Integer, String, text
+from sqlalchemy import CheckConstraint, Date, DateTime, Float, ForeignKey, Index, Integer, String, text
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.database import Base
@@ -18,8 +18,13 @@ class Investigation(Base):
     __table_args__ = (
         CheckConstraint(
             "status IN ('pending', 'assigned', 'in_progress', 'under_review', "
-            "'returned_for_correction', 'completed')",
+            "'returned_for_correction', 'completed', 'cancelled')",
             name="ck_investigations_status",
+        ),
+        CheckConstraint(
+            "(status = 'cancelled' AND reopen_on IS NOT NULL) OR "
+            "(status <> 'cancelled' AND reopen_on IS NULL)",
+            name="ck_investigations_reopen_on_status",
         ),
         CheckConstraint("priority IN ('normal', 'high', 'urgent')", name="ck_investigations_priority"),
         CheckConstraint(
@@ -90,6 +95,7 @@ class Investigation(Base):
     visit_not_before_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     visit_due_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     status: Mapped[str] = mapped_column(String(50), default="pending")
+    reopen_on: Mapped[date | None] = mapped_column(Date, nullable=True)
     priority: Mapped[str] = mapped_column(String(50), default="normal")
     assigned_agent_id: Mapped[int | None] = mapped_column(ForeignKey("users.id", ondelete="SET NULL"), nullable=True, index=True)
     created_at: Mapped[datetime] = mapped_column(

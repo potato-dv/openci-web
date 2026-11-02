@@ -20,6 +20,7 @@ const statuses: InvestigationStatus[] = [
   "under_review",
   "returned_for_correction",
   "completed",
+  "cancelled",
 ];
 
 export function InvestigationFilters({

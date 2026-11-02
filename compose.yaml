@@ -45,6 +45,9 @@ services:
       DATABASE_URL: postgresql+psycopg://openci:${POSTGRES_PASSWORD:-openci_password}@postgres:5432/openci
       CELERY_BROKER_URL: redis://redis:6379/0
       JWT_SECRET_KEY: ${JWT_SECRET_KEY:?JWT_SECRET_KEY must be set in .env}
+      ACCESS_TOKEN_EXPIRE_MINUTES: ${ACCESS_TOKEN_EXPIRE_MINUTES:-15}
+      AUTH_REFRESH_COOKIE_SECURE: ${AUTH_REFRESH_COOKIE_SECURE:-false}
+      AUTH_REFRESH_COOKIE_SAMESITE: ${AUTH_REFRESH_COOKIE_SAMESITE:-lax}
       NOMINATIM_URL: http://nominatim:8080
       OSRM_URL: http://osrm:5000
       VROOM_URL: http://vroom:3000
@@ -81,6 +84,25 @@ services:
         condition: service_healthy
     mem_limit: ${CELERY_WORKER_MEMORY_LIMIT:-2g}
     cpus: ${CELERY_WORKER_CPUS:-2.0}
+
+  # Run exactly one Beat scheduler for this Compose project.
+  celery_beat:
+    build:
+      context: ./backend
+    container_name: openci-celery-beat
+    restart: unless-stopped
+    command: celery -A app.workers.celery_app beat --loglevel=info --schedule=/tmp/celerybeat-schedule
+    volumes:
+      - ./backend:/app
+    environment:
+      DATABASE_URL: postgresql+psycopg://openci:${POSTGRES_PASSWORD:-openci_password}@postgres:5432/openci
+      CELERY_BROKER_URL: redis://redis:6379/0
+      PLANNING_ENABLED: ${PLANNING_ENABLED:-true}
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
 
   nominatim:
     image: mediagis/nominatim:5.3.2

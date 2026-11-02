@@ -117,6 +117,7 @@ export function InvestigationsPage() {
                 "under_review",
                 "returned_for_correction",
                 "completed",
+                "cancelled",
               ].map((status) => (
                 <option key={status} value={status}>
                   {status.replaceAll("_", " ")}

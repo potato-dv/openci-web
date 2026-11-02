@@ -11,6 +11,7 @@ export type MapAgent = {
   id: number;
   name: string;
   start: RoutePoint;
+  depot?: RoutePoint | null;
   is_active?: boolean;
   is_available?: boolean | null;
   route_status?:
@@ -32,6 +33,7 @@ export type MapInvestigation = {
   longitude: number;
   priority: InvestigationPriority;
   status: InvestigationStatus;
+  reopen_on?: string | null;
   region_code?: string | null;
   region_label?: string;
   sequence?: number | null;
@@ -51,21 +53,36 @@ export type MapRoute = {
   agent_id: number;
   agent_name: string;
   geometry: LineStringGeometry | null;
+  completed_geometry?: LineStringGeometry | null;
 };
 export type MapSelection = {
   type: "agent" | "investigation";
   id: number;
 } | null;
-export const routeColors = [
-  "#4658b9",
-  "#087e8b",
-  "#a05221",
-  "#8e4e99",
-  "#3c7b3a",
-  "#a33e58",
-];
-export function routeColor(index: number) {
-  return routeColors[index % routeColors.length];
+export const ROUTE_BLUE = "#4285f4";
+export const ESTIMATED_TRAVELED_GRAY = "#64748b";
+export const ESTIMATED_TRAVELED_OPACITY = 0.58;
+export type RouteLineStyle = {
+  color: string;
+  dashArray?: string;
+};
+
+export function routeColor(_agentId: number) {
+  return ROUTE_BLUE;
+}
+
+export function investigationPriorityColor(priority: InvestigationPriority) {
+  return {
+    normal: "#15803d",
+    high: "#eab308",
+    urgent: "#dc2626",
+  }[priority];
+}
+
+export function routeLineStyles(routes: readonly MapRoute[]) {
+  return new Map(
+    routes.map((route) => [route.agent_id, { color: ROUTE_BLUE }]),
+  );
 }
 export function leafletPositions(
   geometry: LineStringGeometry,

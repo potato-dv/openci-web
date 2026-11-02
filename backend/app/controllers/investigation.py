@@ -29,6 +29,50 @@ from app.schemas.assignment import AssignmentCreate
 from app.schemas.report import ReportUpsert
 from app.schemas.review import ReviewCreate
 
+
+def read_revisit_request(db: Session, investigation_id: int, current_user: User):
+    investigation = get_one(db, investigation_id, current_user)
+    if current_user.role == "agent" and investigation.assigned_agent_id != current_user.id:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Only the assigned agent can view this revisit request")
+    if investigation.assigned_agent_id is None:
+        return None
+    from app.services.agent_revisits import get_agent_revisit_request
+
+    return get_agent_revisit_request(db, investigation.id, investigation.assigned_agent_id)
+
+
+def create_revisit_request(db: Session, investigation_id: int, current_user: User):
+    investigation = get_one(db, investigation_id, current_user)
+    if current_user.role != "agent" or investigation.assigned_agent_id != current_user.id:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Only the assigned agent can request a revisit")
+    from app.services.agent_revisits import request_agent_revisit
+
+    try:
+        request = request_agent_revisit(db, investigation, current_user)
+        from app.services.activity import record_activity
+
+        record_activity(
+            db,
+            current_user,
+            "investigation.revisit_requested",
+            "investigation",
+            investigation.id,
+            {"target_work_date": str(request.target_work_date) if request.target_work_date else None},
+        )
+        db.commit()
+        db.refresh(request)
+        return request
+    except ValueError as error:
+        db.rollback()
+        messages = {
+            "investigation_not_found": (404, "Investigation not found"),
+            "agent_assignment_changed": (409, "This investigation is no longer assigned to you"),
+            "confirmed_location_required": (409, "The investigation needs a confirmed location before it can be routed"),
+            "returned_report_required": (409, "Only a returned report can be routed for correction"),
+        }
+        code, message = messages.get(str(error), (409, "Could not request a revisit"))
+        raise HTTPException(status_code=code, detail=message) from error
+
 def create(db: Session, data: InvestigationCreate, current_user: User):
     try:
         investigation = create_investigation(db, data)
@@ -97,7 +141,31 @@ def assign(
         # Route refresh is deliberately initiated only by the direct assignment
         # endpoint. Planning-run application also updates assignments and must
         # not recursively start another optimization.
-        if previous_agent_id != agent.id:
+        should_refresh_route = previous_agent_id != agent.id
+        if not should_refresh_route and assignment.auto_route_status not in {"queued", "running"}:
+            from datetime import datetime
+            from zoneinfo import ZoneInfo
+
+            from app.services.planning import planning_route_overview
+
+            work_date = datetime.now(ZoneInfo("Asia/Manila")).date()
+            overview = planning_route_overview(db, work_date, investigation.region_code)
+            current_agent_route = next(
+                (item for item in overview["agents"] if item["id"] == agent.id),
+                None,
+            )
+            has_current_route = bool(
+                current_agent_route
+                and current_agent_route["route"]
+                and current_agent_route["route"]["geometry_status"] == "ready"
+                and any(
+                    stop["investigation_id"] == investigation.id
+                    for stop in current_agent_route["stops"]
+                )
+            )
+            should_refresh_route = not has_current_route
+
+        if should_refresh_route:
             from app.services.planning import queue_assignment_route_refresh
 
             refreshed = queue_assignment_route_refresh(
@@ -187,10 +255,22 @@ def submit_investigation_report(
         )
 
     try:
-        report = submit_report(db, investigation)
+        report = submit_report(db, investigation, actor=current_user)
         from app.services.activity import record_activity
 
         record_activity(db, current_user, "report.submitted", "investigation", investigation.id)
+        try:
+            # The durable trigger is saved with the report. Dispatch it now so
+            # the remaining route does not wait for Beat's next scheduled tick.
+            from app.workers.tasks import dispatch_planning_triggers_task
+
+            dispatch_planning_triggers_task.delay()
+        except Exception:
+            import logging
+
+            logging.getLogger("app.planning").exception(
+                "Could not dispatch route refresh after report submission"
+            )
         return report
     except ValueError as error:
         raise HTTPException(

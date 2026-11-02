@@ -108,7 +108,10 @@ export function InvestigationDetailsPage({
           <div>
             <dt>Status</dt>
             <dd>
-              <StatusBadge status={investigation.status} />
+              <StatusBadge
+                status={investigation.status}
+                reopenOn={investigation.reopen_on}
+              />
             </dd>
           </div>
         </dl>

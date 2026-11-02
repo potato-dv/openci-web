@@ -1,5 +1,6 @@
 from datetime import datetime, timezone
 from typing import Literal
+from zoneinfo import ZoneInfo
 
 from sqlalchemy import select, func, case
 from fastapi import APIRouter, Depends, HTTPException, status, Query
@@ -8,10 +9,12 @@ from sqlalchemy.orm import Session, joinedload
 from app.controllers.investigation import (
     assign,
     create,
+    create_revisit_request,
     delete,
     get_trash,
     get_investigation_report,
     get_investigation_report_versions,
+    read_revisit_request,
     get_one,
     review_report,
     permanently_delete,
@@ -29,7 +32,7 @@ from app.models.review import InvestigationReview
 from app.models.user import User
 from app.schemas.investigation import InvestigationCreate, InvestigationResponse, InvestigationUpdate, InvestigationPageResponse
 from app.schemas.assignment import AssignmentCreate, AssignmentResponse
-from app.schemas.report import ReportResponse, ReportUpsert
+from app.schemas.report import ReportResponse, ReportUpsert, RevisitRequestResponse
 from app.schemas.review import ReviewCreate, ReviewResponse
 from app.schemas.planning import GeocodeCandidate, LocationConfirm, LocationResponse
 from app.services.search import investigation_search, subject_expression
@@ -160,6 +163,9 @@ def confirm_investigation_location(
         object_id=investigation.id,
         details={"source": data.source},
     ))
+    from app.services.agent_schedules import enqueue_planning_trigger
+
+    enqueue_planning_trigger(db, datetime.now(ZoneInfo("Asia/Manila")).date(), investigation.region_code, "investigation_location_confirmed")
     db.commit()
     db.refresh(investigation)
     if investigation.region_code and investigation.status in {"pending", "assigned"}:
@@ -220,6 +226,48 @@ def get_report_for_investigation(
     current_user: User = Depends(get_current_user),
 ):
     return get_investigation_report(db, investigation_id, current_user)
+
+
+@router.get(
+    "/{investigation_id}/revisit-request",
+    response_model=RevisitRequestResponse | None,
+    dependencies=[Depends(require_planning_enabled)],
+)
+def get_revisit_request_for_investigation(
+    investigation_id: int,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    request = read_revisit_request(db, investigation_id, current_user)
+    if request is None:
+        return None
+    return {
+        **{field: getattr(request, field) for field in (
+            "id", "investigation_id", "report_id", "agent_id", "target_work_date",
+            "status", "planning_run_id", "created_at", "completed_at",
+        )},
+        "reference_number": db.query(Investigation.reference_number).filter(Investigation.id == request.investigation_id).scalar(),
+    }
+
+
+@router.post(
+    "/{investigation_id}/revisit-request",
+    response_model=RevisitRequestResponse,
+    dependencies=[Depends(require_planning_enabled)],
+)
+def request_revisit_for_investigation(
+    investigation_id: int,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    request = create_revisit_request(db, investigation_id, current_user)
+    return {
+        **{field: getattr(request, field) for field in (
+            "id", "investigation_id", "report_id", "agent_id", "target_work_date",
+            "status", "planning_run_id", "created_at", "completed_at",
+        )},
+        "reference_number": db.query(Investigation.reference_number).filter(Investigation.id == request.investigation_id).scalar(),
+    }
 
 
 @router.get(
@@ -345,7 +393,7 @@ def get_investigations(
     status_counts = dict(base.with_entities(Investigation.status, func.count(Investigation.id)).group_by(Investigation.status).all())
     priority_counts = dict(base.with_entities(Investigation.priority, func.count(Investigation.id)).group_by(Investigation.priority).all())
     confirmed = (Investigation.latitude.is_not(None) & Investigation.longitude.is_not(None) & Investigation.location_confirmed_at.is_not(None))
-    facets = {"status": {key: status_counts.get(key, 0) for key in ("pending", "assigned", "in_progress", "under_review", "returned_for_correction", "completed")},
+    facets = {"status": {key: status_counts.get(key, 0) for key in ("pending", "assigned", "in_progress", "under_review", "returned_for_correction", "completed", "cancelled")},
         "priority": {key: priority_counts.get(key, 0) for key in ("normal", "high", "urgent")},
         "assigned": base.filter(Investigation.assigned_agent_id.is_not(None)).count(),
         "unassigned": base.filter(Investigation.assigned_agent_id.is_(None)).count(),

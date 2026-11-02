@@ -12,6 +12,10 @@ from app.models.report import InvestigationReport
 from app.models.review import InvestigationReview
 from app.models.user import User
 from app.models.planning import AgentShift, PlanningItem, PlanningRun
+from app.models.planning import PlanningRoute
+from app.models.agent_schedule import AgentWorkProfile, AgentWeeklySchedule, PlanningTrigger
+from app.models.agent_revisit import AgentRevisitRequest
+from app.models.auth_session import AuthSession, AuthRefreshToken
 
 config = context.config
 config.set_main_option("sqlalchemy.url", DATABASE_URL)

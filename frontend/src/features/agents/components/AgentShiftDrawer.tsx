@@ -4,10 +4,11 @@ import type {
   AgentShiftInput,
   LocationOption,
 } from "@/types/api";
-import { getManagerAgentRoute, saveAgentShift } from "@/features/agents/api";
+import { deleteAgentShiftOverride, getManagerAgentRoute, saveAgentShift } from "@/features/agents/api";
 import { useResource } from "@/hooks/useResource";
 import { LocationPicker, type ConfirmedPoint } from "@/components/map/LocationPicker";
 import { AgentRouteView } from "./AgentRouteView";
+import { AgentWeeklyScheduleEditor } from "./AgentWeeklyScheduleEditor";
 import {
   Button,
   Checkbox,
@@ -17,7 +18,7 @@ import {
   Skeleton,
   Tabs,
 } from "@/components/ui/Primitives";
-function localTime(value: string | undefined, fallback: string) {
+function localTime(value: string | null | undefined, fallback: string) {
   return value
     ? new Intl.DateTimeFormat("en-GB", {
         timeZone: "Asia/Manila",
@@ -34,6 +35,7 @@ export function AgentShiftDrawer({
   regions,
   onClose,
   onSaved,
+  onUpdated,
 }: {
   token: string;
   row: AgentRosterRow;
@@ -41,6 +43,7 @@ export function AgentShiftDrawer({
   regions: LocationOption[];
   onClose: () => void;
   onSaved: () => void;
+  onUpdated: () => void;
 }) {
   const shift = row.shift;
   const [tab, setTab] = useState("shift");
@@ -54,6 +57,9 @@ export function AgentShiftDrawer({
   const [endTime, setEndTime] = useState(
     localTime(shift?.shift_ends_at, "17:00"),
   );
+  const [breakEnabled, setBreakEnabled] = useState(Boolean(shift?.break_starts_at && shift.break_ends_at));
+  const [breakStart, setBreakStart] = useState(localTime(shift?.break_starts_at, "12:00"));
+  const [breakEnd, setBreakEnd] = useState(localTime(shift?.break_ends_at, "13:00"));
   const [visits, setVisits] = useState(shift?.max_visits ?? 8);
   const [open, setOpen] = useState(shift?.max_open_cases ?? 20);
   const [endEnabled, setEndEnabled] = useState(shift?.end_latitude != null);
@@ -105,6 +111,10 @@ export function AgentShiftDrawer({
       setError("The shift must end after it starts on the selected date.");
       return;
     }
+    if (breakEnabled && !(startTime < breakStart && breakStart < breakEnd && breakEnd < endTime)) {
+      setError("The break must fit inside the shift on the same day.");
+      return;
+    }
     if (lock.current) return;
     lock.current = true;
     setBusy(true);
@@ -115,6 +125,8 @@ export function AgentShiftDrawer({
       is_available: available,
       shift_starts_at: `${date}T${startTime}:00+08:00`,
       shift_ends_at: `${date}T${endTime}:00+08:00`,
+      break_starts_at: breakEnabled ? `${date}T${breakStart}:00+08:00` : null,
+      break_ends_at: breakEnabled ? `${date}T${breakEnd}:00+08:00` : null,
       start_latitude: start.latitude,
       start_longitude: start.longitude,
       start_location_label: start.label,
@@ -152,11 +164,21 @@ export function AgentShiftDrawer({
         onChange={setTab}
         label="Agent details"
         items={[
-          { value: "shift", label: "Shift" },
+          { value: "shift", label: "Dated shift" },
+          { value: "weekly", label: "Weekly schedule" },
           { value: "work", label: "Assigned work" },
         ]}
       />
-      {tab === "work" ? (
+      {tab === "weekly" ? (
+        <AgentWeeklyScheduleEditor
+          token={token}
+          agentId={row.agent.id}
+          date={date}
+          regions={regions}
+          onDirty={setDirty}
+          onUpdated={onUpdated}
+        />
+      ) : tab === "work" ? (
         route.loading ? (
           <Skeleton />
         ) : route.error ? (
@@ -184,6 +206,7 @@ export function AgentShiftDrawer({
                 onChange={(event) => setRegion(event.target.value)}
                 required
               >
+                <option value="ALL">All regions</option>
                 {regions.map((item) => (
                   <option value={item.code} key={item.code}>
                     {item.name}
@@ -211,6 +234,15 @@ export function AgentShiftDrawer({
               value={endTime}
               onChange={(event) => setEndTime(event.target.value)}
             />
+            <Checkbox checked={breakEnabled} onChange={(event) => setBreakEnabled(event.target.checked)}>
+              Schedule a fixed break
+            </Checkbox>
+            {breakEnabled && (
+              <>
+                <FormField label="Break starts · Philippine time" type="time" required value={breakStart} onChange={(event) => setBreakStart(event.target.value)} />
+                <FormField label="Break ends · Philippine time" type="time" required value={breakEnd} onChange={(event) => setBreakEnd(event.target.value)} />
+              </>
+            )}
             <FormField
               label="Maximum visits"
               type="number"
@@ -230,7 +262,14 @@ export function AgentShiftDrawer({
               onChange={(event) => setOpen(Number(event.target.value))}
             />
           </div>
-          <h3>Configured starting point</h3>
+          {shift && (
+            <InlineAlert variant="info">
+              {shift.source === "manual"
+                ? "This dated shift is a manual override."
+                : "This shift was copied from the weekly schedule. Saving it here creates a manual override."}
+            </InlineAlert>
+          )}
+          <h3>Starting point for this date</h3>
           <LocationPicker
             token={token}
             initial={start}
@@ -272,6 +311,26 @@ export function AgentShiftDrawer({
           )}
           {error && <InlineAlert>{error}</InlineAlert>}
           <div className="form-footer">
+            {shift?.source === "manual" && (
+              <Button
+                disabled={busy}
+                onClick={async () => {
+                  setBusy(true);
+                  setError("");
+                  try {
+                    await deleteAgentShiftOverride(token, row.agent.id, date);
+                    setDirty(false);
+                    onSaved();
+                  } catch (removeError) {
+                    setError(removeError instanceof Error ? removeError.message : "Could not remove the override.");
+                  } finally {
+                    setBusy(false);
+                  }
+                }}
+              >
+                Return to weekly schedule
+              </Button>
+            )}
             <Button onClick={close} disabled={busy}>
               Cancel
             </Button>

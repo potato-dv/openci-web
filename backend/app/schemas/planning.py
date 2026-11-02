@@ -1,8 +1,9 @@
-from datetime import date, datetime
+from datetime import date, datetime, time
 from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 from app.schemas.user import UserResponse
+from app.schemas.report import RevisitRequestResponse
 
 
 class LocationConfirm(BaseModel):
@@ -35,10 +36,12 @@ class AgentShiftInput(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     work_date: date
-    region_code: str = Field(min_length=10, max_length=10)
+    region_code: str = Field(min_length=3, max_length=10)
     is_available: bool = True
     shift_starts_at: datetime
     shift_ends_at: datetime
+    break_starts_at: datetime | None = None
+    break_ends_at: datetime | None = None
     start_latitude: float = Field(ge=-90, le=90)
     start_longitude: float = Field(ge=-180, le=180)
     end_latitude: float | None = Field(default=None, ge=-90, le=90)
@@ -58,6 +61,13 @@ class AgentShiftInput(BaseModel):
             raise ValueError("Shift timestamps must include a timezone offset")
         if self.shift_ends_at <= self.shift_starts_at:
             raise ValueError("Shift end must be after shift start")
+        if (self.break_starts_at is None) != (self.break_ends_at is None):
+            raise ValueError("Break start and end must be supplied together")
+        if self.break_starts_at is not None:
+            if self.break_starts_at.tzinfo is None or self.break_ends_at.tzinfo is None:
+                raise ValueError("Break timestamps must include a timezone offset")
+            if not self.shift_starts_at < self.break_starts_at < self.break_ends_at < self.shift_ends_at:
+                raise ValueError("The break must fall inside the same-day shift")
         if (self.end_latitude is None) != (self.end_longitude is None):
             raise ValueError("End latitude and longitude must be supplied together")
         for prefix in ("start", "end"):
@@ -78,6 +88,10 @@ class AgentShiftResponse(BaseModel):
     is_available: bool
     shift_starts_at: datetime
     shift_ends_at: datetime
+    source: Literal["manual", "recurring"] = "manual"
+    schedule_version_id: int | None = None
+    break_starts_at: datetime | None = None
+    break_ends_at: datetime | None = None
     start_latitude: float
     start_longitude: float
     end_latitude: float | None
@@ -91,6 +105,116 @@ class AgentShiftResponse(BaseModel):
     max_visits: int
     max_open_cases: int
     current_planning_run_id: int | None
+    last_completed_investigation_id: int | None = None
+    last_completed_report_id: int | None = None
+    last_completed_at: datetime | None = None
+    last_completed_latitude: float | None = None
+    last_completed_longitude: float | None = None
+
+
+class AgentWorkProfileInput(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    depot_latitude: float | None = Field(default=None, ge=-90, le=90)
+    depot_longitude: float | None = Field(default=None, ge=-180, le=180)
+    depot_label: str | None = Field(default=None, max_length=500)
+    depot_source: Literal["manual", "nominatim"] | None = None
+    depot_provider_ref: str | None = Field(default=None, max_length=100)
+    end_latitude: float | None = Field(default=None, ge=-90, le=90)
+    end_longitude: float | None = Field(default=None, ge=-180, le=180)
+    end_label: str | None = Field(default=None, max_length=500)
+    end_source: Literal["manual", "nominatim"] | None = None
+    end_provider_ref: str | None = Field(default=None, max_length=100)
+
+    @model_validator(mode="after")
+    def validate_points(self):
+        if (self.depot_latitude is None) != (self.depot_longitude is None):
+            raise ValueError("Depot latitude and longitude must be supplied together")
+        if (self.end_latitude is None) != (self.end_longitude is None):
+            raise ValueError("End latitude and longitude must be supplied together")
+        for prefix in ("depot", "end"):
+            source = getattr(self, f"{prefix}_source")
+            ref = getattr(self, f"{prefix}_provider_ref")
+            if ref and source != "nominatim":
+                raise ValueError("Provider references require a Nominatim location")
+        return self
+
+
+class AgentWorkProfileResponse(AgentWorkProfileInput):
+    model_config = ConfigDict(from_attributes=True)
+
+    id: int
+    agent_id: int
+    updated_at: datetime
+
+
+class WeeklyScheduleDayInput(BaseModel):
+    weekday: int = Field(ge=0, le=6)  # Monday is 0.
+    is_working: bool
+    shift_start: time | None = None
+    shift_end: time | None = None
+    break_start: time | None = None
+    break_end: time | None = None
+
+    @model_validator(mode="after")
+    def validate_day(self):
+        if self.is_working and (self.shift_start is None or self.shift_end is None):
+            raise ValueError("Working days need a start and end time")
+        if self.is_working and self.shift_end <= self.shift_start:
+            raise ValueError("Weekly shifts must start and end on the same day")
+        if (self.break_start is None) != (self.break_end is None):
+            raise ValueError("Break start and end must be supplied together")
+        if self.break_start is not None:
+            if not self.is_working or not self.shift_start < self.break_start < self.break_end < self.shift_end:
+                raise ValueError("The break must fall inside the same-day working hours")
+        return self
+
+
+class WeeklyScheduleInput(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    effective_from: date
+    enabled: bool = True
+    region_code: str = Field(min_length=3, max_length=10)
+    max_visits: int = Field(ge=1, le=50)
+    max_open_cases: int = Field(ge=1, le=200)
+    days: list[WeeklyScheduleDayInput] = Field(min_length=7, max_length=7)
+
+    @model_validator(mode="after")
+    def validate_week(self):
+        if {day.weekday for day in self.days} != set(range(7)):
+            raise ValueError("Provide exactly one entry for each weekday")
+        return self
+
+
+class WeeklyScheduleResponse(WeeklyScheduleInput):
+    id: int
+    agent_id: int
+    effective_until: date | None = None
+
+
+class AvailabilityDayResponse(BaseModel):
+    work_date: date
+    status: Literal["manual_override", "scheduled", "day_off", "not_configured"]
+    source: Literal["manual", "recurring"] | None = None
+    region_code: str | None = None
+    is_available: bool = False
+    shift_starts_at: datetime | None = None
+    shift_ends_at: datetime | None = None
+    break_starts_at: datetime | None = None
+    break_ends_at: datetime | None = None
+    start_latitude: float | None = None
+    start_longitude: float | None = None
+    start_location_label: str | None = None
+    max_visits: int | None = None
+    max_open_cases: int | None = None
+
+
+class AgentAvailabilityResponse(BaseModel):
+    agent_id: int
+    from_date: date
+    to_date: date
+    days: list[AvailabilityDayResponse]
 
 
 class LockedAssignment(BaseModel):
@@ -100,10 +224,11 @@ class LockedAssignment(BaseModel):
 
 class PlanningRunCreate(BaseModel):
     work_date: date
-    region_code: str = Field(min_length=10, max_length=10)
+    region_code: str = Field(min_length=3, max_length=10)
     investigation_ids: list[int] = Field(min_length=1, max_length=80)
     agent_ids: list[int] = Field(max_length=200)
     locked_assignments: list[LockedAssignment] = Field(default_factory=list)
+    movable_investigation_ids: list[int] = Field(default_factory=list)
 
     @model_validator(mode="after")
     def validate_unique_ids(self):
@@ -119,6 +244,10 @@ class PlanningRunCreate(BaseModel):
             raise ValueError("Locked investigations must be included in the run")
         if any(item.agent_id not in self.agent_ids for item in self.locked_assignments):
             raise ValueError("Locked agents must be included in the run")
+        if any(value < 1 for value in self.movable_investigation_ids) or len(set(self.movable_investigation_ids)) != len(self.movable_investigation_ids):
+            raise ValueError("Movable investigation IDs must be unique positive IDs")
+        if any(value not in self.investigation_ids for value in self.movable_investigation_ids):
+            raise ValueError("Movable investigations must be included in the run")
         return self
 
 
@@ -138,6 +267,8 @@ class PlanningItemResponse(BaseModel):
     reason: str | None
     sequence: int | None
     estimated_arrival_at: datetime | None
+    estimated_service_start_at: datetime | None = None
+    waiting_seconds: int | None = None
     travel_seconds: int | None
     travel_metres: int | None
 
@@ -168,6 +299,9 @@ class PlanningRouteResponse(BaseModel):
     geometry_digest: str | None
     total_distance_metres: int | None
     total_travel_seconds: int | None
+    total_service_seconds: int | None = None
+    total_waiting_seconds: int | None = None
+    total_break_seconds: int | None = None
     start: RoutePoint
     end: RoutePoint | None
 
@@ -280,6 +414,7 @@ class PlanningMapInvestigationResponse(BaseModel):
     longitude: float
     priority: str
     status: str
+    reopen_on: date | None = None
     region_code: str | None
     assigned_agent_id: int | None
     assigned_agent_name: str | None
@@ -303,6 +438,7 @@ class PlanningMapUnlocatedInvestigationResponse(BaseModel):
     id: int
     reference_number: str
     status: str
+    reopen_on: date | None = None
     region_code: str | None
 
 
@@ -328,12 +464,32 @@ class AgentRouteStop(BaseModel):
     address_display: str
     sequence: int | None
     estimated_arrival_at: datetime | None
+    estimated_service_start_at: datetime | None = None
+    waiting_seconds: int | None = None
     travel_seconds: int | None
     travel_metres: int | None
     latitude: float
     longitude: float
     priority: str
     status: str
+
+
+class AgentCancelledInvestigation(BaseModel):
+    id: int
+    reference_number: str
+    address_display: str
+    status: Literal["cancelled"] = "cancelled"
+    reopen_on: date
+    priority: str
+    region_code: str | None = None
+    latitude: float | None = None
+    longitude: float | None = None
+
+
+class PlanningRouteWarning(BaseModel):
+    investigation_id: int
+    reference_number: str
+    reason: str
 
 
 class PlanningRouteOverviewAgentResponse(BaseModel):
@@ -347,6 +503,7 @@ class PlanningRouteOverviewAgentResponse(BaseModel):
         "partially_published", "needs_refresh",
     ] = "none"
     refresh_errors: list[str] = Field(default_factory=list)
+    planning_warnings: list[PlanningRouteWarning] = Field(default_factory=list)
     refresh_investigation_id: int | None = None
     run_id: int | None = None
     planning_status: Literal["idle", "queued", "running", "failed"] = "idle"
@@ -355,6 +512,7 @@ class PlanningRouteOverviewAgentResponse(BaseModel):
     open_case_count: int = 0
     remaining_open_capacity: int | None = None
     route: PlanningRouteResponse | None = None
+    completed_route_geometry: LineStringGeometry | None = None
     stops: list[AgentRouteStop] = Field(default_factory=list)
 
 
@@ -394,7 +552,10 @@ class AgentRouteResponse(BaseModel):
     ] | None = None
     shift: AgentShiftResponse | None = None
     route: PlanningRouteResponse | None = None
+    completed_route_geometry: LineStringGeometry | None = None
     stops: list[AgentRouteStop] = Field(default_factory=list)
+    cancelled_investigations: list[AgentCancelledInvestigation] = Field(default_factory=list)
+    revisit_requests: list[RevisitRequestResponse] = Field(default_factory=list)
 
 
 class AgentRosterResponse(BaseModel):
@@ -402,3 +563,6 @@ class AgentRosterResponse(BaseModel):
     shift: AgentShiftResponse | None
     assigned_workload_count: int
     visit_workload_count: int
+    schedule_enabled: bool = False
+    work_profile_set: bool = False
+    availability_day: AvailabilityDayResponse | None = None

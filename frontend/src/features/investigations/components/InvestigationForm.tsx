@@ -3,12 +3,16 @@ import { FormField } from "@/components/ui/Primitives";
 export function SubjectFields({
   value,
   onChange,
+  paired = false,
 }: {
   value: NewInvestigation;
   onChange: (value: NewInvestigation) => void;
+  paired?: boolean;
 }) {
   return (
-    <div className="subject-name-grid">
+    <div
+      className={`subject-name-grid${paired ? " subject-name-grid-paired" : ""}`}
+    >
       <FormField
         label="First name"
         autoComplete="given-name"
@@ -63,7 +67,7 @@ export function InvestigationDetailFields({
           .replace(" ", "T")
       : "";
   return (
-    <div className="form-grid">
+    <div className="form-grid investigation-detail-grid">
       <label>
         Priority
         <select

@@ -75,29 +75,40 @@
 .symbol-icon {
   display: grid;
   place-items: center;
-  background: #fff;
-  border: 1px solid #a2a9b5;
+  background: var(--marker-color, #4658b9);
+  border: 1px solid var(--marker-color, #4658b9);
   border-radius: 7px;
   width: 34px;
   height: 36px;
   box-shadow: 0 2px 5px rgb(30 40 60 / 18%);
 }
 .map-symbol.agent .symbol-icon {
+  border: 1px solid #1a73e8;
   border-radius: 50%;
+  background: #4285f4;
+  box-shadow: none;
+  height: 34px;
 }
-.map-symbol.selected .symbol-icon {
+.map-symbol.depot .depot-symbol-icon {
+  display: grid;
+  place-items: center;
+  width: 32px;
+  height: 32px;
+  border: 2px solid #fff;
+  border-radius: 8px;
+  color: #fff;
+  background: #64748b;
+  box-shadow: 0 2px 5px rgb(30 40 60 / 26%);
+}
+.symbol-icon svg {
+  color: inherit;
+}
+.map-symbol.selected:not(.agent) .symbol-icon {
   outline: 3px solid var(--color-accent);
   outline-offset: 2px;
 }
-.map-symbol.not-included {
-  opacity: 0.58;
-}
-.map-symbol.not-included .symbol-icon {
-  border-style: dashed;
-  box-shadow: none;
-}
-.map-symbol.not-included b {
-  background: #747984;
+.map-symbol.review-pending {
+  opacity: 0.48;
 }
 .map-symbol b {
   position: absolute;
@@ -198,8 +209,35 @@
   border-radius: 50%;
   background: #fff;
 }
+.map-legend i.map-key-symbol.agent {
+  background: #4285f4;
+  border-color: #1a73e8;
+}
 .map-legend i.map-key-symbol.investigation {
   border-radius: 3px;
+  background: #15803d;
+  border-color: #15803d;
+}
+.map-legend i.map-key-symbol.depot {
+  border-radius: 4px;
+  background: #64748b;
+  border-color: #475569;
+}
+.map-legend span.map-priority-key {
+  flex-wrap: wrap;
+  gap: 5px;
+}
+.map-legend .map-priority-key i {
+  width: 11px;
+  height: 11px;
+  border-radius: 3px;
+}
+.map-legend i.map-route-key {
+  height: 3px;
+}
+.map-legend i.map-route-key-completed {
+  background: #64748b;
+  opacity: 0.58;
 }
 .map-region-filter {
   display: flex;
@@ -313,6 +351,85 @@
   font-weight: 600;
   font-variant-numeric: tabular-nums;
 }
+.agent-route-view {
+  display: grid;
+  gap: 16px;
+  min-width: 0;
+}
+.agent-route-view .route-metrics {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(112px, 1fr));
+  gap: 12px;
+  margin: 0;
+}
+.agent-route-view .route-metrics > div,
+.agent-stop-timings > div {
+  min-width: 0;
+  padding: 10px 12px;
+  border: 1px solid var(--color-border);
+  border-radius: 8px;
+  background: var(--color-surface);
+}
+.agent-stop-timings {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 8px;
+  margin: 12px 0 0 36px;
+}
+.agent-stop-timings dt {
+  color: var(--color-text-muted);
+  font-size: 11px;
+  line-height: 1.4;
+}
+.agent-stop-timings dd {
+  margin: 3px 0 0;
+  font-size: 12px;
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+}
+.route-revisit-requests {
+  padding: 14px;
+  border: 1px solid var(--color-border);
+  border-radius: 8px;
+  background: var(--color-surface);
+}
+.route-revisit-requests h3 {
+  margin: 0 0 10px;
+  font-size: 14px;
+}
+.route-revisit-requests ul {
+  display: grid;
+  gap: 10px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+.route-revisit-requests li {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  min-width: 0;
+  font-size: 12px;
+}
+.route-revisit-requests li > span {
+  display: grid;
+  gap: 3px;
+  min-width: 0;
+}
+.route-revisit-requests li > span > span {
+  color: var(--color-text-muted);
+}
+.route-revisit-requests a {
+  flex: 0 0 auto;
+}
+.route-split.route-origin-only {
+  grid-template-columns: 1fr;
+}
+.route-origin-only .published-route-map {
+  min-height: 280px;
+  height: 38dvh;
+}
 .route-split {
   display: grid;
   grid-template-columns: 1.3fr 1fr;
@@ -398,6 +515,18 @@
   }
   .route-split {
     display: block;
+  }
+  .agent-stop-timings {
+    margin-left: 0;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+  .route-revisit-requests li {
+    align-items: flex-start;
+    flex-direction: column;
+  }
+  .route-origin-only .published-route-map {
+    min-height: 260px;
+    height: 38dvh;
   }
   .published-route-map {
     min-height: 300px;

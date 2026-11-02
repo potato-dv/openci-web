@@ -1,4 +1,4 @@
-from datetime import datetime
+from datetime import date, datetime
 from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field
@@ -62,3 +62,18 @@ class ReportQueueResponse(BaseModel):
     total: int
     page: int
     page_size: int
+
+
+class RevisitRequestResponse(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    id: int
+    investigation_id: int
+    reference_number: str | None = None
+    report_id: int
+    agent_id: int
+    target_work_date: date | None
+    status: Literal["waiting_for_shift", "queued", "routed", "completed", "cancelled"]
+    planning_run_id: int | None
+    created_at: datetime
+    completed_at: datetime | None

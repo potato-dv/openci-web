@@ -259,6 +259,126 @@
   gap: 16px;
 }
 
+.planning-route-scope-summary {
+  display: grid;
+  gap: 9px;
+  padding: 16px;
+  border-bottom: 1px solid var(--color-border);
+  font-size: 12px;
+  line-height: 1.5;
+}
+
+.planning-route-scope-summary h3 {
+  margin: 0;
+  font-size: 13px;
+  font-weight: 600;
+}
+
+.planning-route-scope-summary p {
+  margin: 0;
+  color: var(--color-text-muted);
+}
+
+.planning-route-scope-summary .planning-route-scope-count {
+  color: var(--color-text);
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+}
+
+.planning-route-scope-summary .planning-route-scope-empty {
+  padding: 9px 10px;
+  background: var(--color-surface-muted);
+  border-radius: var(--radius-sm);
+}
+
+.route-cancelled-investigations {
+  display: grid;
+  gap: 10px;
+  padding: 14px;
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-md);
+  background: var(--color-surface-muted);
+}
+
+.route-cancelled-investigations h3 {
+  margin: 0;
+  font-size: 13px;
+  font-weight: 600;
+}
+
+.route-cancelled-investigations ul {
+  display: grid;
+  gap: 8px;
+  padding: 0;
+  margin: 0;
+  list-style: none;
+}
+
+.route-cancelled-investigations li {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 9px 10px;
+  border-radius: var(--radius-sm);
+  background: var(--color-surface);
+}
+
+.route-cancelled-investigations li > span {
+  display: grid;
+  gap: 4px;
+  min-width: 0;
+}
+
+.route-cancelled-investigations li > span > span {
+  color: var(--color-text-muted);
+  font-size: 12px;
+}
+
+.route-cancelled-investigations a {
+  flex: 0 0 auto;
+  font-size: 12px;
+}
+
+@media (max-width: 600px) {
+  .route-cancelled-investigations li {
+    align-items: flex-start;
+    flex-direction: column;
+  }
+}
+
+@media (min-width: 1440px) {
+  .route-planning-page .map-legend {
+    left: 324px;
+    bottom: 12px;
+    max-width: min(260px, calc(100% - 660px));
+  }
+}
+
+@media (max-width: 1439px) {
+  .route-planning-page .map-legend {
+    left: 12px;
+    right: 12px;
+    bottom: 12px;
+    max-width: none;
+    max-height: min(22vh, 150px);
+  }
+}
+
+@media (max-width: 767px) {
+  .route-planning-page .map-legend {
+    left: 10px;
+    right: 10px;
+    bottom: 10px;
+    max-height: 104px;
+    padding: 7px 8px;
+  }
+
+  .route-planning-toolbar-controls .route-visibility-button {
+    flex: 1 1 auto;
+  }
+}
+
 .planning-route-summary {
   display: grid;
   gap: 14px;

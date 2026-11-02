@@ -27,6 +27,7 @@ class PlanningRun(Base):
     investigation_ids: Mapped[list[int]] = mapped_column(JSON, nullable=False)
     agent_ids: Mapped[list[int]] = mapped_column(JSON, nullable=False)
     locked_assignments: Mapped[list[dict]] = mapped_column(JSON, nullable=False, default=list)
+    movable_investigation_ids: Mapped[list[int]] = mapped_column(JSON, nullable=False, default=list, server_default=text("'[]'"))
     status: Mapped[str] = mapped_column(String(20), nullable=False, default="queued", server_default=text("'queued'"), index=True)
     input_digest: Mapped[str | None] = mapped_column(String(64), nullable=True)
     result_digest: Mapped[str | None] = mapped_column(String(80), nullable=True)
@@ -46,6 +47,19 @@ class AgentShift(Base):
         CheckConstraint("shift_ends_at > shift_starts_at", name="ck_agent_shifts_time_order"),
         CheckConstraint("max_visits > 0", name="ck_agent_shifts_max_visits_positive"),
         CheckConstraint("max_open_cases > 0", name="ck_agent_shifts_max_open_cases_positive"),
+        CheckConstraint("source IN ('manual', 'recurring')", name="ck_agent_shifts_source"),
+        CheckConstraint(
+            "(break_starts_at IS NULL AND break_ends_at IS NULL) OR "
+            "(break_starts_at IS NOT NULL AND break_ends_at IS NOT NULL "
+            "AND break_ends_at > break_starts_at "
+            "AND break_starts_at >= shift_starts_at AND break_ends_at <= shift_ends_at)",
+            name="ck_agent_shifts_break_interval",
+        ),
+        CheckConstraint(
+            "(last_completed_latitude IS NULL AND last_completed_longitude IS NULL) OR "
+            "(last_completed_latitude BETWEEN -90 AND 90 AND last_completed_longitude BETWEEN -180 AND 180)",
+            name="ck_agent_shifts_last_stop_coordinates",
+        ),
         CheckConstraint(
             "(start_latitude IS NULL AND start_longitude IS NULL) OR "
             "(start_latitude BETWEEN -90 AND 90 AND start_longitude BETWEEN -180 AND 180)",
@@ -64,9 +78,13 @@ class AgentShift(Base):
     agent_id: Mapped[int] = mapped_column(ForeignKey("users.id", ondelete="CASCADE"), nullable=False)
     work_date: Mapped[date] = mapped_column(Date, nullable=False)
     region_code: Mapped[str] = mapped_column(String(10), nullable=False)
+    source: Mapped[str] = mapped_column(String(20), nullable=False, default="manual", server_default=text("'manual'"))
+    schedule_version_id: Mapped[int | None] = mapped_column(ForeignKey("agent_weekly_schedules.id", ondelete="SET NULL"), nullable=True)
     is_available: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True, server_default=text("true"))
     shift_starts_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
     shift_ends_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    break_starts_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    break_ends_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     start_latitude: Mapped[float] = mapped_column(Float, nullable=False)
     start_longitude: Mapped[float] = mapped_column(Float, nullable=False)
     end_latitude: Mapped[float | None] = mapped_column(Float, nullable=True)
@@ -77,6 +95,11 @@ class AgentShift(Base):
     end_location_label: Mapped[str | None] = mapped_column(String(500), nullable=True)
     end_location_source: Mapped[str | None] = mapped_column(String(20), nullable=True)
     end_location_provider_ref: Mapped[str | None] = mapped_column(String(100), nullable=True)
+    last_completed_investigation_id: Mapped[int | None] = mapped_column(ForeignKey("investigations.id", ondelete="SET NULL"), nullable=True)
+    last_completed_report_id: Mapped[int | None] = mapped_column(ForeignKey("investigation_reports.id", ondelete="SET NULL"), nullable=True)
+    last_completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    last_completed_latitude: Mapped[float | None] = mapped_column(Float, nullable=True)
+    last_completed_longitude: Mapped[float | None] = mapped_column(Float, nullable=True)
     max_visits: Mapped[int] = mapped_column(Integer, nullable=False)
     max_open_cases: Mapped[int] = mapped_column(Integer, nullable=False)
     current_planning_run_id: Mapped[int | None] = mapped_column(ForeignKey("planning_runs.id", ondelete="SET NULL"), nullable=True)
@@ -101,6 +124,8 @@ class PlanningItem(Base):
     estimated_arrival_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     travel_seconds: Mapped[int | None] = mapped_column(Integer, nullable=True)
     travel_metres: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    estimated_service_start_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    waiting_seconds: Mapped[int | None] = mapped_column(Integer, nullable=True)
     prior_assignment_id: Mapped[int | None] = mapped_column(ForeignKey("investigation_assignments.id", ondelete="SET NULL"), nullable=True)
     applied_assignment_id: Mapped[int | None] = mapped_column(ForeignKey("investigation_assignments.id", ondelete="SET NULL"), nullable=True)
 
@@ -122,5 +147,8 @@ class PlanningRoute(Base):
     geometry_digest: Mapped[str | None] = mapped_column(String(64), nullable=True)
     total_distance_metres: Mapped[int | None] = mapped_column(Integer, nullable=True)
     total_travel_seconds: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    total_service_seconds: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    total_waiting_seconds: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    total_break_seconds: Mapped[int | None] = mapped_column(Integer, nullable=True)
     start: Mapped[dict] = mapped_column(JSON, nullable=False)
     end: Mapped[dict | None] = mapped_column(JSON, nullable=True)

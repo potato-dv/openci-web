@@ -1,4 +1,4 @@
-import type { PageResult, Report, ReportInput, ReportQueueItem, Review } from "@/types/api";
+import type { PageResult, Report, ReportInput, ReportQueueItem, RevisitRequest, Review } from "@/types/api";
 import { requestJson } from "@/services/http";
 
 export function getReportQueue(
@@ -40,6 +40,20 @@ export function saveReport(
 export function submitReport(token: string, investigationId: number) {
   return requestJson<Report>(
     `/investigations/${investigationId}/report/submit`,
+    { method: "POST", token },
+  );
+}
+
+export function getRevisitRequest(token: string, investigationId: number) {
+  return requestJson<RevisitRequest | null>(
+    `/investigations/${investigationId}/revisit-request`,
+    { token },
+  );
+}
+
+export function requestRevisit(token: string, investigationId: number) {
+  return requestJson<RevisitRequest>(
+    `/investigations/${investigationId}/revisit-request`,
     { method: "POST", token },
   );
 }

@@ -1,4 +1,4 @@
-import { useCallback } from "react";
+import { useCallback, useEffect } from "react";
 import { useSearchParams } from "react-router";
 import { useSession } from "@/app/session";
 import { getAgentRoute } from "@/features/route-planning/api";
@@ -14,11 +14,23 @@ export function MyRoutePage() {
   const resource = useResource(
     useCallback((signal) => getAgentRoute(token, date, signal), [token, date]),
   );
+  const routeRefreshPending =
+    resource.data?.reason === "route_refresh_pending";
+  useEffect(() => {
+    const refresh = () => {
+      if (document.visibilityState === "visible") resource.refresh();
+    };
+    const timer = window.setInterval(
+      refresh,
+      routeRefreshPending ? 4000 : 10000,
+    );
+    return () => window.clearInterval(timer);
+  }, [resource.refresh, routeRefreshPending]);
   return (
     <>
       <PageHeader
         title="My Route"
-        description="Your current investigation route. Routes refresh automatically after assignments. Starting points are manually configured."
+        description="Your remaining route starts from your latest reported visit when available, then falls back to your configured shift location. Reported locations are estimates, not live GPS."
         actions={
           <>
             <label>
@@ -34,7 +46,7 @@ export function MyRoutePage() {
         }
       />
       <section className="content-card">
-        {resource.loading ? (
+        {resource.loading && !resource.data ? (
           <Skeleton rows={6} />
         ) : resource.error ? (
           <InlineAlert onRetry={resource.refresh}>{resource.error}</InlineAlert>

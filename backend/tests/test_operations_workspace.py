@@ -7,6 +7,7 @@ from types import SimpleNamespace
 from unittest.mock import Mock, patch
 
 import httpx
+from fastapi import HTTPException
 from alembic.migration import MigrationContext
 from alembic.operations import Operations
 from fastapi.testclient import TestClient
@@ -23,7 +24,7 @@ from app.services import planning
 from app.services.planning import PlanningConflict, apply_run
 from app.services.geospatial import cells_for_point
 from app.services.routing import OSRMClient, RoutingUnavailable
-from app.utils.auth import get_current_user
+from app.utils.auth import get_current_user, require_roles
 from app.utils.features import require_planning_enabled
 
 
@@ -46,7 +47,21 @@ class RoadGeometryTests(unittest.TestCase):
                 client.route([(14, 121), (15, 122)])
 
     def test_geometry_uses_vroom_order_and_keeps_failed_proposal(self):
-        shift = SimpleNamespace(agent_id=7, start_latitude=14.1, start_longitude=121.1, end_latitude=14.9, end_longitude=121.9, start_location_label="Office", end_location_label="End")
+        shift = SimpleNamespace(
+            agent_id=7,
+            work_date=date(2026, 11, 4),
+            shift_starts_at=datetime(2026, 11, 4, 0, tzinfo=timezone.utc),
+            shift_ends_at=datetime(2026, 11, 4, 9, tzinfo=timezone.utc),
+            last_completed_at=None,
+            last_completed_latitude=None,
+            last_completed_longitude=None,
+            start_latitude=14.1,
+            start_longitude=121.1,
+            end_latitude=14.9,
+            end_longitude=121.9,
+            start_location_label="Office",
+            end_location_label="End",
+        )
         cases = [SimpleNamespace(id=1, latitude=14.2, longitude=121.2), SimpleNamespace(id=2, latitude=14.3, longitude=121.3)]
         outcomes = {1: {"investigation_id": 1, "agent_id": 7, "outcome": "assigned", "sequence": 2}, 2: {"investigation_id": 2, "agent_id": 7, "outcome": "assigned", "sequence": 1}}
         osrm = Mock()
@@ -67,9 +82,10 @@ class WorkspaceAPITests(unittest.TestCase):
         Base.metadata.create_all(self.engine)
         self.db = Session(self.engine)
         self.supervisor = User(name="Supervisor", email="supervisor@example.test", role="supervisor", password="hash")
+        self.admin = User(name="Admin", email="admin@example.test", role="admin", password="hash")
         self.agent = User(name="Agent", email="agent@example.test", role="agent", password="hash")
         self.other = User(name="Other", email="other@example.test", role="agent", password="hash")
-        self.db.add_all([self.supervisor, self.agent, self.other]); self.db.flush()
+        self.db.add_all([self.supervisor, self.admin, self.agent, self.other]); self.db.flush()
         self.case = Investigation(reference_number="INV-001", first_name="Fictional", last_name="Subject", house_number="12", street="Example Road", region_code="1300000000", priority="high", status="pending", latitude=14.5, longitude=121, location_source="manual", location_confirmed_at=datetime.now(timezone.utc), **cells_for_point(14.5, 121))
         self.second = Investigation(reference_number="INV-002", first_name="Another", last_name="Subject", house_number="15", street="Second Road", region_code="1300000000", priority="urgent", status="assigned", assigned_agent_id=self.other.id)
         self.db.add_all([self.case, self.second]); self.db.commit()
@@ -192,7 +208,29 @@ class WorkspaceAPITests(unittest.TestCase):
         self.assertEqual(route_agent["route_status"], "published")
         self.assertEqual(route_agent["stops"][0]["investigation_id"], self.case.id)
         self.assertEqual(route_agent["route"]["agent_name"], self.agent.name)
+        self.assertEqual(
+            route_agent["route"]["geometry"]["coordinates"],
+            [[121.1, 14.6], [121.0, 14.5]],
+        )
         self.assertEqual(route_agent["shift"]["start_location_label"], "District Office")
+
+        run.region_code = "0400000000"
+        self.db.commit()
+        wrong_region = planning.planning_route_overview(self.db, work_date, "1300000000")
+        wrong_region_agent = next(item for item in wrong_region["agents"] if item["id"] == self.agent.id)
+        self.assertIsNone(wrong_region_agent["route"])
+        self.assertEqual(wrong_region_agent["route_status"], "needs_refresh")
+        run.region_code = "1300000000"
+        self.db.commit()
+
+        self.case.status = "completed"
+        self.db.commit()
+        removed_stop = planning.planning_route_overview(self.db, work_date, "1300000000")
+        removed_stop_agent = next(item for item in removed_stop["agents"] if item["id"] == self.agent.id)
+        self.assertIsNone(removed_stop_agent["route"])
+        self.assertEqual(removed_stop_agent["stops"], [])
+        self.case.status = "assigned"
+        self.db.commit()
 
         extra_case = Investigation(
             reference_number="INV-003",
@@ -218,6 +256,55 @@ class WorkspaceAPITests(unittest.TestCase):
         stale_agent = next(item for item in stale["agents"] if item["id"] == self.agent.id)
         self.assertIsNone(stale_agent["route"])
         self.assertEqual(stale_agent["route_status"], "needs_refresh")
+
+    def test_route_overview_supports_all_and_region_scopes_for_admins_and_supervisors(self):
+        work_date = date(2026, 11, 4)
+        for agent, region_code, latitude, longitude in (
+            (self.agent, "1300000000", 14.6, 121.1),
+            (self.other, "0400000000", 14.3, 121.0),
+        ):
+            planning.set_agent_shift(
+                self.db,
+                agent.id,
+                AgentShiftInput(
+                    work_date=work_date,
+                    region_code=region_code,
+                    shift_starts_at="2026-11-04T08:00:00+08:00",
+                    shift_ends_at="2026-11-04T17:00:00+08:00",
+                    start_latitude=latitude,
+                    start_longitude=longitude,
+                    max_visits=8,
+                    max_open_cases=20,
+                ),
+            )
+
+        all_regions = PlanningRouteOverviewResponse.model_validate(
+            planning.planning_route_overview(self.db, work_date)
+        ).model_dump(mode="json")
+        self.assertIsNone(all_regions["region_code"])
+        self.assertEqual(
+            {agent["region_code"] for agent in all_regions["agents"]},
+            {"1300000000", "0400000000"},
+        )
+
+        selected_region = PlanningRouteOverviewResponse.model_validate(
+            planning.planning_route_overview(self.db, work_date, "0400000000")
+        ).model_dump(mode="json")
+        self.assertEqual(selected_region["region_code"], "0400000000")
+        self.assertEqual(
+            {agent["id"] for agent in selected_region["agents"]},
+            {self.other.id},
+        )
+
+        with self.assertRaises(PlanningConflict):
+            planning.planning_route_overview(self.db, work_date, "9999999999")
+
+        guard = require_roles("admin", "supervisor")
+        self.assertIs(guard(self.supervisor), self.supervisor)
+        self.assertIs(guard(self.admin), self.admin)
+        with self.assertRaises(HTTPException) as denied:
+            guard(self.agent)
+        self.assertEqual(denied.exception.status_code, 403)
 
     def test_partial_geometry_blocks_automatic_publication_without_losing_items(self):
         from app.schemas.planning import AgentShiftInput, PlanningRunCreate

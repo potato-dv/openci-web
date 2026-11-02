@@ -60,7 +60,12 @@ const inventory: PlanningMapData = {
     },
   ],
   unlocated_investigations: [
-    { id: 13, reference_number: "INV-0013", status: "pending", region_code: "1300000000" },
+    {
+      id: 13,
+      reference_number: "INV-0013",
+      status: "pending",
+      region_code: "1300000000",
+    },
   ],
   unlocated_agents: [{ id: 8, name: "Morgan Lee", is_active: true }],
 };
@@ -110,7 +115,13 @@ const overview: PlanningRouteOverview = {
         agent_name: "Avery Santos",
         geometry_status: "ready",
         geometry_error_code: null,
-        geometry: { type: "LineString", coordinates: [[121, 14.6], [121.05, 14.65]] },
+        geometry: {
+          type: "LineString",
+          coordinates: [
+            [121, 14.6],
+            [121.05, 14.65],
+          ],
+        },
         geometry_digest: "digest",
         total_distance_metres: 4500,
         total_travel_seconds: 900,
@@ -187,10 +198,19 @@ describe("buildPublishedRouteMapData", () => {
   });
 
   it("keeps assigned investigations visible without fabricating a route stop", () => {
-    const result = buildPublishedRouteMapData(inventory, {
-      ...overview,
-      agents: overview.agents.map((agent) => ({ ...agent, route: null, stops: [], route_status: "failed" })),
-    }, new Map());
+    const result = buildPublishedRouteMapData(
+      inventory,
+      {
+        ...overview,
+        agents: overview.agents.map((agent) => ({
+          ...agent,
+          route: null,
+          stops: [],
+          route_status: "failed",
+        })),
+      },
+      new Map(),
+    );
 
     expect(result.investigations).toHaveLength(2);
     expect(result.investigations[0].agent_name).toBe("Avery Santos");
@@ -198,40 +218,64 @@ describe("buildPublishedRouteMapData", () => {
     expect(result.routes).toHaveLength(0);
   });
 
-  it("maps backend planning state and assignment source without inventing an assignment", () => {
+  it("keeps valid route geometry visible when another assigned case is blocked", () => {
     const result = buildPublishedRouteMapData(
       inventory,
-      overview,
-      new Map(),
       {
-        work_date: "2026-10-23",
-        region_code: null,
-        total_investigations: 2,
-        automatically_assigned: 1,
-        unassigned_investigations: 1,
-        active_agents: 2,
-        available_agents: 1,
-        optimizing_routes: 1,
-        published_routes: 1,
-        failed_planning_jobs: 0,
-        investigation_states: [
-          {
-            investigation_id: 11,
-            planning_status: "assigned",
-            reason: null,
-            planning_run_id: 41,
-            assignment_source: "automatic",
-          },
-          {
-            investigation_id: 12,
-            planning_status: "optimizing",
-            reason: null,
-            planning_run_id: 42,
-            assignment_source: null,
-          },
-        ],
+        ...overview,
+        agents: overview.agents.map((agent) =>
+          agent.id === 7
+            ? {
+                ...agent,
+                route_status: "partially_published",
+                planning_warnings: [
+                  {
+                    investigation_id: 13,
+                    reference_number: "INV-0013",
+                    reason: "location_unconfirmed",
+                  },
+                ],
+              }
+            : agent,
+        ),
       },
+      new Map(),
     );
+
+    expect(result.agents[0].route_status).toBe("partially_published");
+    expect(result.routes).toHaveLength(1);
+    expect(result.routes[0].agent_id).toBe(7);
+  });
+
+  it("maps backend planning state and assignment source without inventing an assignment", () => {
+    const result = buildPublishedRouteMapData(inventory, overview, new Map(), {
+      work_date: "2026-10-23",
+      region_code: null,
+      total_investigations: 2,
+      automatically_assigned: 1,
+      unassigned_investigations: 1,
+      active_agents: 2,
+      available_agents: 1,
+      optimizing_routes: 1,
+      published_routes: 1,
+      failed_planning_jobs: 0,
+      investigation_states: [
+        {
+          investigation_id: 11,
+          planning_status: "assigned",
+          reason: null,
+          planning_run_id: 41,
+          assignment_source: "automatic",
+        },
+        {
+          investigation_id: 12,
+          planning_status: "optimizing",
+          reason: null,
+          planning_run_id: 42,
+          assignment_source: null,
+        },
+      ],
+    });
 
     expect(result.investigations[0]).toMatchObject({
       planning_status: "assigned",

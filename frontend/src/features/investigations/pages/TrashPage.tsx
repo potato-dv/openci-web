@@ -115,7 +115,7 @@ export function TrashPage({
                     />
                   </td>
                   <td>{item.address_display || item.legacy_address || "—"}</td>
-                  <td><StatusBadge status={item.status} /></td>
+                  <td><StatusBadge status={item.status} reopenOn={item.reopen_on} /></td>
                   <td>{item.assigned_agent_name ? formatUserName(item.assigned_agent_name) : "Unassigned"}</td>
                   <td>
                     <RowActions label={item.reference_number}>

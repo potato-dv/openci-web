@@ -1,4 +1,4 @@
-from datetime import datetime
+from datetime import date, datetime
 from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
@@ -12,6 +12,7 @@ InvestigationStatus = Literal[
     "under_review",
     "returned_for_correction",
     "completed",
+    "cancelled",
 ]
 InvestigationPriority = Literal["normal", "high", "urgent"]
 
@@ -106,6 +107,7 @@ class InvestigationResponse(BaseModel):
     barangay_code: str | None
     postal_code: str | None
     status: InvestigationStatus
+    reopen_on: date | None = None
     priority: InvestigationPriority
     service_duration_seconds: int = 2700
     visit_not_before_at: datetime | None = None

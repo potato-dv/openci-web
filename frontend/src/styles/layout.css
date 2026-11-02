@@ -88,7 +88,9 @@
   text-decoration: none;
   font-size: 13px;
   font-weight: 500;
-  transition: color 140ms ease, background-color 140ms ease;
+  transition:
+    color 140ms ease,
+    background-color 140ms ease;
 }
 .nav-item.active {
   color: var(--color-accent-strong);
@@ -360,9 +362,34 @@
   width: 100%;
   margin-top: 8px;
 }
+.reauth-backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 10000;
+  display: grid;
+  place-items: center;
+  overflow-y: auto;
+  padding: 24px;
+  background: rgb(12 22 38 / 62%);
+  backdrop-filter: blur(3px);
+}
+.reauth-card {
+  width: min(100%, 420px);
+  padding: 32px;
+  border: 1px solid var(--color-border);
+  border-radius: 12px;
+  background: #fff;
+  box-shadow: 0 24px 72px rgb(0 0 0 / 24%);
+}
+.reauth-card h1 {
+  margin-bottom: 4px;
+}
 .form-workspace {
   max-width: 1050px;
   margin: 0 auto;
+}
+.form-workspace-edit {
+  max-width: 960px;
 }
 .form-stepper {
   display: flex;
@@ -411,6 +438,94 @@
 }
 .investigation-form > h2 {
   margin-bottom: 24px;
+}
+.investigation-edit-form {
+  padding: 0;
+}
+.investigation-edit-heading {
+  padding: 26px 28px 16px;
+}
+.investigation-edit-heading h2 {
+  margin: 0 0 5px;
+}
+.investigation-edit-heading p,
+.investigation-edit-section-copy {
+  max-width: 70ch;
+  margin: 0;
+  color: var(--color-text-muted);
+  font-size: 13px;
+}
+.investigation-edit-form > .inline-alert {
+  margin: 0 28px 12px;
+}
+.investigation-edit-sections {
+  padding: 0 28px;
+}
+.investigation-edit-section,
+.investigation-edit-sections > .address-fields {
+  display: block;
+  min-width: 0;
+  padding: 22px 0;
+  margin: 0;
+  border: 0;
+  border-bottom: 1px solid var(--color-border);
+}
+.investigation-edit-section > legend,
+.investigation-edit-sections > .address-fields > legend {
+  display: block;
+  width: 100%;
+  padding: 0;
+  margin: 0 0 5px;
+  color: var(--color-text);
+  font-size: 16px;
+  font-weight: 600;
+  line-height: 1.4;
+}
+.investigation-edit-section-copy {
+  margin-bottom: 16px;
+}
+.investigation-edit-sections > .address-fields > legend {
+  margin-bottom: 7px;
+}
+.investigation-edit-sections > .address-fields .address-fields-grid {
+  gap: 16px;
+}
+.investigation-edit-section:last-child {
+  border-bottom: 0;
+}
+.investigation-edit-location h2 {
+  margin: 0 0 5px;
+  font-size: 16px;
+  font-weight: 600;
+}
+.investigation-edit-location .location-picker {
+  margin-top: 16px;
+}
+.subject-name-grid-paired {
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 16px;
+}
+.subject-name-grid-paired > .form-field:nth-child(3) {
+  grid-column: 2;
+  grid-row: 1;
+}
+.subject-name-grid-paired > .form-field:nth-child(2) {
+  grid-column: 1;
+  grid-row: 2;
+  max-width: calc(50% - 8px);
+}
+.investigation-detail-grid {
+  gap: 16px;
+}
+.investigation-edit-footer {
+  padding: 16px 28px 24px;
+  margin: 0;
+  background: var(--color-surface);
+  border-top: 1px solid var(--color-border);
+}
+.investigation-edit-footer .primary-button,
+.investigation-edit-footer .secondary-button {
+  min-height: 40px;
 }
 .subject-name-grid {
   gap: 16px;
@@ -480,6 +595,107 @@
 }
 .shift-editor .form-footer {
   margin: 0;
+}
+.agent-schedule-editor {
+  display: grid;
+  gap: 20px;
+}
+.schedule-section {
+  display: grid;
+  gap: 14px;
+  padding-bottom: 18px;
+  border-bottom: 1px solid var(--color-border);
+}
+.schedule-section-heading {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+}
+.schedule-section-heading h3 {
+  margin: 0 0 4px;
+  font-size: 14px;
+}
+.schedule-section-heading p {
+  margin: 0;
+  color: var(--color-text-muted);
+  font-size: 12px;
+  line-height: 1.45;
+}
+.agent-schedule-editor .shift-editor h4 {
+  margin: 0;
+  font-size: 13px;
+}
+.schedule-days {
+  display: grid;
+  gap: 6px;
+}
+.schedule-day {
+  display: grid;
+  grid-template-columns: 92px 130px minmax(90px, 1fr) minmax(90px, 1fr) minmax(
+      180px,
+      2fr
+    );
+  align-items: end;
+  gap: 8px;
+  min-width: 0;
+  margin: 0;
+  padding: 8px 0;
+  border: 0;
+  border-bottom: 1px solid var(--color-border);
+}
+.schedule-day legend {
+  float: left;
+  width: 92px;
+  padding: 0;
+  font-size: 12px;
+  font-weight: 600;
+}
+.schedule-day > .check-row {
+  align-self: center;
+  margin: 0;
+  font-size: 12px;
+}
+.schedule-day .form-field {
+  min-width: 0;
+  margin: 0;
+}
+.schedule-day .form-field label {
+  font-size: 11px;
+}
+.schedule-break-fields {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 8px;
+}
+.availability-preview {
+  display: grid;
+  max-height: 330px;
+  overflow-y: auto;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  overscroll-behavior: contain;
+}
+.availability-preview li {
+  display: grid;
+  grid-template-columns: 95px 128px minmax(0, 1fr);
+  align-items: center;
+  gap: 8px;
+  min-height: 38px;
+  padding: 6px 2px;
+  border-bottom: 1px solid var(--color-border);
+  font-size: 12px;
+}
+.availability-preview time {
+  font-variant-numeric: tabular-nums;
+}
+.availability-state {
+  color: var(--color-text-muted);
+}
+.availability-hours {
+  color: var(--color-text);
+  font-variant-numeric: tabular-nums;
 }
 .row-actions-menu a {
   padding: 9px 10px;
@@ -704,11 +920,39 @@
   .investigation-form {
     padding: 20px 16px;
   }
+  .form-workspace-edit {
+    max-width: none;
+  }
+  .investigation-edit-form {
+    padding: 0;
+  }
+  .investigation-edit-heading {
+    padding: 20px 16px 14px;
+  }
+  .investigation-edit-form > .inline-alert {
+    margin: 0 16px 12px;
+  }
+  .investigation-edit-sections {
+    padding: 0 16px;
+  }
+  .investigation-edit-section,
+  .investigation-edit-sections > .address-fields {
+    padding: 20px 0;
+  }
+  .investigation-edit-footer {
+    padding: 12px 16px calc(12px + env(safe-area-inset-bottom));
+  }
   .subject-name-grid,
   .address-fields-grid,
   .user-form-grid,
   .report-fields {
     grid-template-columns: 1fr;
+  }
+  .subject-name-grid-paired > .form-field:nth-child(2),
+  .subject-name-grid-paired > .form-field:nth-child(3) {
+    grid-column: auto;
+    grid-row: auto;
+    max-width: none;
   }
   .details-grid {
     grid-template-columns: 1fr 1fr;
@@ -743,6 +987,27 @@
     width: 44px;
     height: 44px;
     flex-basis: 44px;
+  }
+  .schedule-day {
+    grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+    align-items: center;
+    gap: 8px 12px;
+  }
+  .schedule-day legend {
+    float: none;
+    grid-column: 1 / -1;
+    width: auto;
+    margin-bottom: 2px;
+  }
+  .schedule-day > .check-row,
+  .schedule-break-fields {
+    grid-column: 1 / -1;
+  }
+  .availability-preview li {
+    grid-template-columns: 85px minmax(0, 1fr);
+  }
+  .availability-hours {
+    grid-column: 2;
   }
 }
 .primary-button,

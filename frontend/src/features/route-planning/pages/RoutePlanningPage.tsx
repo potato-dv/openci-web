@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
-import { Link, useSearchParams } from "react-router";
+import { Link, useLocation, useSearchParams } from "react-router";
 import {
   CalendarDays,
   ChevronRight,
@@ -82,6 +82,7 @@ const routePlanningClasses = {
 
 export function RoutePlanningPage() {
   const { token } = useSession();
+  const location = useLocation();
   const [params, setParams] = useSearchParams();
   const regions = useResource(useCallback(() => getRegions(token), [token]));
   const workDate = params.get("date") ?? manilaToday();
@@ -128,8 +129,18 @@ export function RoutePlanningPage() {
       [token, workDate, regionCode, densityResolution],
     ),
   );
-  const [mapSearchSlot, setMapSearchSlot] = useState<HTMLDivElement | null>(null);
-  const [selection, setSelection] = useState<MapSelection>(null);
+  const [mapSearchSlot, setMapSearchSlot] = useState<HTMLDivElement | null>(
+    null,
+  );
+  const [selectionState, setSelectionState] = useState<{
+    locationKey: string;
+    selection: MapSelection;
+  }>(() => ({ locationKey: location.key, selection: null }));
+  const selection =
+    selectionState.locationKey === location.key
+      ? selectionState.selection
+      : null;
+  const [routesVisible, setRoutesVisible] = useState(true);
   const [tab, setTab] = useState("map");
   const [drawer, setDrawer] = useState<"records" | "routes" | null>(null);
   const [leftCollapsed, setLeftCollapsed] = useState(
@@ -170,14 +181,58 @@ export function RoutePlanningPage() {
     densityResource.data.resolution === densityResolution
       ? densityResource.data
       : null;
-  const mapData = buildPublishedRouteMapData(
-    inventoryForScope,
-    routesForScope,
-    regionLabels,
-    dashboardForScope,
+  const mapData = useMemo(
+    () =>
+      buildPublishedRouteMapData(
+        inventoryForScope,
+        routesForScope,
+        regionLabels,
+        dashboardForScope,
+      ),
+    [dashboardForScope, inventoryForScope, regionLabels, routesForScope],
   );
   const agents = mapData.agents;
   const investigations = mapData.investigations;
+  const selectionIsInScope =
+    selection === null
+      ? true
+      : selection.type === "agent"
+        ? Boolean(
+            routesForScope?.agents.some((agent) => agent.id === selection.id),
+          )
+        : Boolean(
+            inventoryForScope?.investigations.some(
+              (investigation) => investigation.id === selection.id,
+            ) ||
+            inventoryForScope?.unlocated_investigations.some(
+              (investigation) => investigation.id === selection.id,
+            ),
+          );
+  const selectionForScope = selectionIsInScope ? selection : null;
+  const selectedAgentId =
+    selectionForScope?.type === "agent"
+      ? selectionForScope.id
+      : selectionForScope?.type === "investigation"
+        ? (investigations.find((item) => item.id === selectionForScope.id)
+            ?.agent_id ?? null)
+        : null;
+  const routeFitRequest = useMemo(
+    () =>
+      routesForScope && inventoryForScope
+        ? {
+            key: `${workDate}|${regionCode}|${routesVisible ? "visible" : "hidden"}|${selectedAgentId ?? "all"}`,
+            agentId: selectedAgentId,
+          }
+        : null,
+    [
+      inventoryForScope,
+      regionCode,
+      routesForScope,
+      routesVisible,
+      selectedAgentId,
+      workDate,
+    ],
+  );
   const publishedCount = dashboardForScope?.published_routes ?? 0;
   const optimizingCount = dashboardForScope?.optimizing_routes ?? 0;
   const failedCount = dashboardForScope?.failed_planning_jobs ?? 0;
@@ -194,19 +249,38 @@ export function RoutePlanningPage() {
         agent.planning_status === "running",
     ) ??
       false);
+  const hasStaleRoute =
+    routesForScope?.agents.some(
+      (agent) =>
+        agent.route_status === "needs_refresh" ||
+        agent.route_status === "failed",
+    ) ?? false;
   const refreshMapData = mapInventory.refresh;
   const refreshRouteData = routeOverview.refresh;
   const refreshDashboard = dashboard.refresh;
+  const scopeLabel = regionCode
+    ? (regionLabels.get(regionCode) ?? "Selected region")
+    : "All service regions";
 
   useEffect(() => {
-    if (!hasQueuedRefresh) return;
-    const timer = window.setTimeout(() => {
-      refreshRouteData();
-      refreshMapData();
-      refreshDashboard();
-    }, 2500);
-    return () => window.clearTimeout(timer);
-  }, [hasQueuedRefresh, refreshDashboard, refreshMapData, refreshRouteData]);
+    const timer = window.setInterval(
+      () => {
+        refreshRouteData();
+        if (hasQueuedRefresh || hasStaleRoute) {
+          refreshMapData();
+          refreshDashboard();
+        }
+      },
+      hasQueuedRefresh ? 2500 : 10000,
+    );
+    return () => window.clearInterval(timer);
+  }, [
+    hasQueuedRefresh,
+    hasStaleRoute,
+    refreshDashboard,
+    refreshMapData,
+    refreshRouteData,
+  ]);
 
   function updateScope(key: "date" | "region", value: string) {
     const next = new URLSearchParams(params);
@@ -217,13 +291,31 @@ export function RoutePlanningPage() {
     setSelection(null);
   }
 
+  function setSelection(next: MapSelection) {
+    setSelectionState({ locationKey: location.key, selection: next });
+  }
+
   function select(next: MapSelection) {
     setSelection(next);
     setRightCollapsed(false);
     if (window.innerWidth < 1440) {
-      setTab("routes");
-      if (window.innerWidth >= 768) setDrawer("routes");
+      if (next?.type === "agent") {
+        setTab("map");
+        setDrawer(null);
+      } else if (next) {
+        setTab("routes");
+        if (window.innerWidth >= 768) setDrawer("routes");
+      } else {
+        setTab("map");
+        setDrawer(null);
+      }
     }
+  }
+
+  function toggleRoutes() {
+    const showAllRoutes = !routesVisible;
+    if (showAllRoutes) select(null);
+    setRoutesVisible(showAllRoutes);
   }
 
   function refreshAll() {
@@ -279,7 +371,7 @@ export function RoutePlanningPage() {
       investigations={investigations}
       issues={inventoryForScope}
       routeAgents={routesForScope?.agents ?? []}
-      selection={selection}
+      selection={selectionForScope}
       date={workDate}
       headerAction={
         <IconButton
@@ -302,8 +394,11 @@ export function RoutePlanningPage() {
       unlocatedInvestigations={
         inventoryForScope?.unlocated_investigations ?? []
       }
-      selection={selection}
+      selection={selectionForScope}
       date={workDate}
+      scopeLabel={scopeLabel}
+      routesVisible={routesVisible}
+      loading={routeOverview.loading && !routesForScope}
       retryingAgentId={retryingAgentId}
       onRetry={(agent) => void retryRoute(agent.id)}
       retryingPlanningId={retryingPlanningId}
@@ -311,9 +406,6 @@ export function RoutePlanningPage() {
       onSelect={select}
     />
   );
-  const scopeLabel = regionCode
-    ? (regionLabels.get(regionCode) ?? "Selected region")
-    : "All service regions";
   const overviewMessage =
     routeOverview.loading && !routesForScope
       ? "Loading published routes…"
@@ -438,6 +530,15 @@ export function RoutePlanningPage() {
             </select>
           </label>
           <Button
+            className="route-visibility-button min-h-9! shrink-0 whitespace-nowrap"
+            variant="secondary"
+            aria-pressed={routesVisible}
+            onClick={toggleRoutes}
+          >
+            <Route size={15} aria-hidden="true" />
+            {routesVisible ? "Hide All Routes" : "Show All Routes"}
+          </Button>
+          <Button
             className="route-refresh-button min-h-9! shrink-0 whitespace-nowrap"
             onClick={refreshAll}
             disabled={mapInventory.loading || routeOverview.loading}
@@ -548,7 +649,13 @@ export function RoutePlanningPage() {
           <OperationsMap
             token={token}
             searchTarget={mapSearchSlot}
-            showLegend={false}
+            showLegend
+            showMarkerKey={false}
+            routeVisibility={routesVisible}
+            onRouteVisibilityChange={setRoutesVisible}
+            showRouteLayerToggle={false}
+            routeFitRequest={routeFitRequest}
+            clearSelectionOnBackgroundClick
             agents={agents}
             investigations={investigations}
             routes={mapData.routes}
@@ -560,14 +667,8 @@ export function RoutePlanningPage() {
             resolution={densityResolution}
             onResolutionChange={setDensityResolution}
             densityAvailable={Boolean(regionCode && densityForScope)}
-            selection={selection}
+            selection={selectionForScope}
             onSelect={select}
-            onViewRoute={(id) => {
-              select({ type: "agent", id });
-              setTab("routes");
-              if (window.innerWidth >= 768 && window.innerWidth < 1440)
-                setDrawer("routes");
-            }}
           />
         </section>
         <aside className={rightPanelClass}>

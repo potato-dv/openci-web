@@ -2,15 +2,12 @@ import { Link } from "react-router";
 import { X } from "lucide-react";
 import type { PlanningRouteOverviewAgent } from "@/types/api";
 import type { MapInvestigation, MapSelection } from "@/components/map/mapTypes";
-import {
-  Button,
-  EmptyState,
-  InlineAlert,
-} from "@/components/ui/Primitives";
+import { Button, EmptyState, InlineAlert } from "@/components/ui/Primitives";
 import { distance, duration, time } from "@/utils/format";
 import { routeRefreshErrorCopy } from "@/utils/routeRefresh";
 import {
   planningReasonCopy,
+  routePlanningWarningCopy,
   planningStatusLabel,
   routeStatusLabel,
 } from "./publishedRouteData";
@@ -26,6 +23,9 @@ type Props = {
   }[];
   selection: MapSelection;
   date: string;
+  scopeLabel: string;
+  routesVisible: boolean;
+  loading: boolean;
   retryingAgentId: number | null;
   onRetry: (agent: PlanningRouteOverviewAgent) => void;
   retryingPlanningId: number | null;
@@ -45,6 +45,9 @@ export function PublishedRoutePanel({
   unlocatedInvestigations,
   selection,
   date,
+  scopeLabel,
+  routesVisible,
+  loading,
   retryingAgentId,
   onRetry,
   retryingPlanningId,
@@ -59,31 +62,46 @@ export function PublishedRoutePanel({
     selection?.type === "investigation"
       ? unlocatedInvestigations.find((item) => item.id === selection.id)
       : null;
-  const defaultAgent =
-    agents.find((item) => item.route_status === "published") ??
-    agents.find((item) => item.stops.length > 0) ??
-    agents[0];
   const agentId =
     selection?.type === "agent"
       ? selection.id
       : selection?.type === "investigation"
         ? selectedCase?.agent_id
-        : defaultAgent?.id;
+        : undefined;
   const agent = agents.find((item) => item.id === agentId);
   const selectedStop = agent?.stops.find(
     (item) => item.investigation_id === selectedCase?.id,
   );
   const route = agent?.route;
   const shift = agent?.shift;
+  const routeOrigin =
+    route?.start ??
+    (shift?.last_completed_latitude != null &&
+    shift.last_completed_longitude != null
+      ? { label: "Latest completed visit (estimated)" }
+      : shift
+        ? {
+            label:
+              shift.start_location_label ??
+              `${shift.start_latitude.toFixed(5)}, ${shift.start_longitude.toFixed(5)}`,
+          }
+        : null);
   const serviceSeconds =
     agent?.stops.reduce(
       (sum, stop) => sum + stop.service_duration_seconds,
       0,
     ) ?? 0;
-  const expectedWorkload =
-    route?.total_travel_seconds != null
-      ? duration(route.total_travel_seconds + serviceSeconds)
-      : "Unavailable";
+  const publishedRouteCount = agents.filter(
+    (item) =>
+      ["published", "partially_published"].includes(item.route_status) &&
+      item.route?.geometry_status === "ready" &&
+      item.route.geometry,
+  ).length;
+  const blockedAssignmentCount = agents.reduce(
+    (count, item) => count + (item.planning_warnings?.length ?? 0),
+    0,
+  );
+  const planningWarnings = agent?.planning_warnings ?? [];
 
   return (
     <div className="planning-route-detail published-route-detail">
@@ -201,10 +219,10 @@ export function PublishedRoutePanel({
             {selectedCase.estimated_arrival_at && (
               <div className={investigationFactClasses.row}>
                 <dt className={investigationFactClasses.label}>
-                  Scheduled visit
+                  Estimated service start
                 </dt>
                 <dd className={investigationFactClasses.value}>
-                  {time(selectedCase.estimated_arrival_at)}
+                  {time(selectedStop?.estimated_service_start_at ?? selectedCase.estimated_arrival_at)}
                 </dd>
               </div>
             )}
@@ -234,12 +252,49 @@ export function PublishedRoutePanel({
           )}
         </div>
       )}
-      {!agent && !selectedUnlocated ? (
+      {!selection ? (
+        <section
+          className="planning-route-scope-summary"
+          aria-label="Route scope summary"
+        >
+          <h3>Published routes</h3>
+          <p className="planning-route-scope-count">
+            {publishedRouteCount}{" "}
+            {publishedRouteCount === 1 ? "route" : "routes"} · {scopeLabel}
+          </p>
+          <p>
+            {routesVisible
+              ? "All published routes are shown. Select an agent to inspect its route and ordered stops."
+              : "Routes are hidden. Agent and investigation markers remain on the map."}
+          </p>
+          {!loading && publishedRouteCount === 0 && (
+            <p className="planning-route-scope-empty" role="status">
+              No published routes are available for {date} in this scope. The
+              map still shows available planning locations.
+            </p>
+          )}
+          {!loading && blockedAssignmentCount > 0 && (
+            <InlineAlert variant="warning">
+              {blockedAssignmentCount} assigned{" "}
+              {blockedAssignmentCount === 1
+                ? "investigation is"
+                : "investigations are"}{" "}
+              excluded from routes. Select an affected agent to review the
+              reason.
+            </InlineAlert>
+          )}
+          {loading && (
+            <p className="planning-route-scope-empty" role="status">
+              Loading published routes…
+            </p>
+          )}
+        </section>
+      ) : !agent && !selectedUnlocated ? (
         <EmptyState
           title={
             selectedCase
               ? "No current route for this investigation"
-              : "Select an agent or investigation"
+              : "Agent is no longer in this scope"
           }
         >
           {selectedCase
@@ -250,7 +305,7 @@ export function PublishedRoutePanel({
                 : selectedCase.planning_status === "unassigned"
                   ? "No eligible feasible assignment was found. Review the reason above or update the shift and investigation constraints."
                   : "This confirmed investigation is waiting for automatic planning."
-            : "Choose a marker or a record from the list to inspect its assignment and published route."}
+            : "Choose an agent from the current region and work date."}
         </EmptyState>
       ) : agent ? (
         <>
@@ -278,13 +333,9 @@ export function PublishedRoutePanel({
                 </dd>
               </div>
               <div>
-                <dt>Starting point</dt>
+                <dt>Route origin</dt>
                 <dd>
-                  {route?.start.label ??
-                    (shift
-                      ? (shift.start_location_label ??
-                        `${shift.start_latitude.toFixed(5)}, ${shift.start_longitude.toFixed(5)}`)
-                      : "Unavailable")}
+                  {routeOrigin?.label ?? "Unavailable"}
                 </dd>
               </div>
               {shift && (
@@ -314,20 +365,24 @@ export function PublishedRoutePanel({
                   <dd>{agent.stops.length}</dd>
                 </div>
                 <div>
-                  <dt>Road travel</dt>
+                  <dt>Driving time</dt>
                   <dd>{duration(route.total_travel_seconds)}</dd>
                 </div>
                 <div>
-                  <dt>Distance</dt>
+                  <dt>Road distance</dt>
                   <dd>{distance(route.total_distance_metres)}</dd>
                 </div>
                 <div>
-                  <dt>Investigation time</dt>
-                  <dd>{duration(serviceSeconds)}</dd>
+                  <dt>Investigation service time</dt>
+                  <dd>{duration(route.total_service_seconds ?? serviceSeconds)}</dd>
                 </div>
                 <div>
-                  <dt>Estimated workload</dt>
-                  <dd>{expectedWorkload}</dd>
+                  <dt>Waiting time</dt>
+                  <dd>{duration(route.total_waiting_seconds)}</dd>
+                </div>
+                <div>
+                  <dt>Scheduled break</dt>
+                  <dd>{duration(route.total_break_seconds)}</dd>
                 </div>
               </dl>
             )}
@@ -338,21 +393,53 @@ export function PublishedRoutePanel({
             )}
           </section>
 
+          {planningWarnings.length > 0 && (
+            <div className="route-refresh-issue">
+              <InlineAlert variant="warning">
+                <div>
+                  <p className="mb-2!">
+                    These assigned investigations are excluded from this route:
+                  </p>
+                  <ul className="list-disc space-y-1 pl-5">
+                    {planningWarnings.map((warning) => (
+                      <li key={warning.investigation_id}>
+                        <Link
+                          to={`/investigations/${warning.investigation_id}`}
+                        >
+                          {warning.reference_number}
+                        </Link>
+                        {": "}
+                        {routePlanningWarningCopy(warning.reason)}
+                      </li>
+                    ))}
+                  </ul>
+                </div>
+              </InlineAlert>
+            </div>
+          )}
+
           {(agent.route_status === "failed" ||
             agent.route_status === "partially_published") && (
             <div className="route-refresh-issue">
-              <InlineAlert variant="warning">
-                {agent.refresh_errors.length
-                  ? [
-                      ...new Set(
-                        agent.refresh_errors.map(routeRefreshErrorCopy),
-                      ),
-                    ].join(" ")
-                  : "The assignment is saved, but a current route could not be published. Review the shift and investigation locations, then retry."}
-              </InlineAlert>
+              {agent.refresh_errors.length > 0 && (
+                <InlineAlert variant="warning">
+                  {[
+                    ...new Set(agent.refresh_errors.map(routeRefreshErrorCopy)),
+                  ].join(" ")}
+                </InlineAlert>
+              )}
+              {agent.refresh_errors.length === 0 &&
+                planningWarnings.length === 0 && (
+                  <InlineAlert variant="warning">
+                    The assignment is saved, but a current route could not be
+                    published. Review the shift and investigation locations,
+                    then retry.
+                  </InlineAlert>
+                )}
               {(agent.route_status === "failed" ||
                 agent.route_status === "partially_published") &&
-                agent.refresh_investigation_id && (
+                agent.refresh_investigation_id &&
+                agent.refresh_errors.length > 0 && (
                   <Button
                     disabled={retryingAgentId === agent.id}
                     onClick={() => onRetry(agent)}
@@ -435,9 +522,13 @@ export function PublishedRoutePanel({
                       <small>{stop.address_display}</small>
                       <span className="planning-stop-metrics">
                         <span>
-                          <small>ETA</small>
+                            <small>Arrival</small>
                           <strong>{time(stop.estimated_arrival_at)}</strong>
                         </span>
+                          <span>
+                            <small>Service starts</small>
+                            <strong>{time(stop.estimated_service_start_at ?? stop.estimated_arrival_at)}</strong>
+                          </span>
                         <span>
                           <small>From previous stop</small>
                           <strong>

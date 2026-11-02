@@ -181,6 +181,11 @@
   background: #f0fdf4;
 }
 
+.status-cancelled {
+  color: #475569;
+  background: #e2e8f0;
+}
+
 .account-active {
   color: #187449;
   background: #eaf7ef;
