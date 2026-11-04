@@ -61,6 +61,10 @@ describe("reauthentication overlay", () => {
     mockAuth.value = authState({ reauthRequired: true });
     view.rerender(<App />);
     expect(screen.getByRole("dialog")).toBeInTheDocument();
+    expect(screen.getByText("Collector")).toBeInTheDocument();
+    expect(screen.getByText("Field operations")).toBeInTheDocument();
+    expect(screen.queryByRole("img", { name: "Collector" })).not.toBeInTheDocument();
+    expect(view.container.querySelector('img[src="/collector-mark.svg"]')).toHaveAttribute("alt", "");
 
     mockAuth.value = authState({ accessToken: "rotated-access-token" });
     view.rerender(<App />);

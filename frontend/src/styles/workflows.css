@@ -169,6 +169,7 @@
 .status-under-review {
   color: #6d28d9;
   background: #f5f3ff;
+  border: 1px solid #ddd6fe;
 }
 
 .status-returned-for-correction {
@@ -209,6 +210,7 @@
 .priority-urgent {
   color: #a13b30;
   background: #fff0ee;
+  border: 1px solid var(--color-danger-border);
 }
 
 /* Investigation detail and embedded workflow panels */

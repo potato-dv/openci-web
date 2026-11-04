@@ -348,6 +348,9 @@ describe("RoutePlanningPage", () => {
     );
 
     const map = await screen.findByTestId("operations-map");
+    expect(
+      screen.getByRole("link", { name: "Collector" }),
+    ).toHaveAttribute("href", "/dashboard");
     await waitFor(() =>
       expect(map).toHaveAttribute("data-visible-route-ids", "7,8"),
     );
@@ -466,9 +469,7 @@ describe("RoutePlanningPage", () => {
       "Automatically assigned",
       "Unassigned",
       "Agents available",
-      "Routes optimizing",
       "Published routes",
-      "Failed planning jobs",
     ]) {
       expect(within(counts).getByText(label)).toBeInTheDocument();
     }

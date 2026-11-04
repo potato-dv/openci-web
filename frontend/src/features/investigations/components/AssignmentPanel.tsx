@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useState } from "react";
+import { UsersRound } from "lucide-react";
 
 import {
   assignInvestigation,
@@ -173,15 +174,22 @@ export function AssignmentPanel({
   const routeRetryable = routeRefresh && ["failed", "partially_published"].includes(routeRefresh.status);
 
   return (
-    <section className="workflow-panel">
+    <section className="workflow-panel investigation-assignment-panel">
       <div className="section-heading">
         <div>
-          <h3>Agent assignment</h3>
-          <p>
-            {canAssign
-          ? "Manual override. Only active agents with an available matching shift and remaining capacity are listed."
-              : "Assignment is closed while this investigation is being handled or reviewed."}
-          </p>
+          <div className="workflow-title">
+            <span className="workflow-title-icon" aria-hidden="true">
+              <UsersRound size={17} strokeWidth={2} />
+            </span>
+            <div>
+              <h3>Agent assignment</h3>
+              <p>
+                {canAssign
+                  ? "Manual override. Only active agents with an available matching shift and remaining capacity are listed."
+                  : "Assignment is closed while this investigation is being handled or reviewed."}
+              </p>
+            </div>
+          </div>
         </div>
       </div>
 

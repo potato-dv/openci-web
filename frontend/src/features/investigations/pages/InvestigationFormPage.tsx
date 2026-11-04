@@ -6,6 +6,7 @@ import {
   type FormEvent,
 } from "react";
 import { Link, useNavigate, useParams } from "react-router";
+import { FilePenLine } from "lucide-react";
 import { useSession } from "@/app/session";
 import {
   confirmInvestigationLocation,
@@ -24,6 +25,8 @@ import type {
 } from "@/types/api";
 import { PageHeader } from "@/components/layout/PageHeader";
 import { Button, InlineAlert, Skeleton } from "@/components/ui/Primitives";
+import { PriorityBadge } from "@/components/ui/PriorityBadge";
+import { StatusBadge } from "@/components/ui/StatusBadge";
 import {
   InvestigationDetailFields,
   InvestigationFormStepper,
@@ -246,8 +249,30 @@ function Editor({
         title={investigation ? "Edit investigation" : "New investigation"}
         description={
           investigation
-            ? `${investigation.reference_number} · Update the subject, visit requirements, address, or confirmed location.`
+            ? "Update subject details, visit timing, address, and map location."
             : "Confirm the subject, address, and visit requirements before saving."
+        }
+        actions={
+          investigation ? (
+            <div className="flex w-full flex-wrap items-center gap-2 sm:w-auto sm:justify-end">
+              <span className="inline-flex min-w-0 max-w-full items-center gap-2 rounded-lg border border-openci-border bg-openci-surface px-3 py-2 text-openci-text shadow-sm">
+                <span className="shrink-0 text-[10px] font-semibold uppercase tracking-[0.08em] text-openci-text-subtle">
+                  Reference
+                </span>
+                <code
+                  className="max-w-[220px] truncate font-mono text-xs text-openci-text"
+                  title={investigation.reference_number}
+                >
+                  {investigation.reference_number}
+                </code>
+              </span>
+              <StatusBadge
+                status={investigation.status}
+                reopenOn={investigation.reopen_on}
+              />
+              <PriorityBadge priority={investigation.priority} />
+            </div>
+          ) : undefined
         }
         parent={{
           to: investigation
@@ -277,14 +302,26 @@ function Editor({
         >
           {investigation ? (
             <>
-              <div className="investigation-edit-heading">
-                <h2 ref={headingRef} tabIndex={-1}>
-                  Investigation details
-                </h2>
-                <p>
-                  Review the existing information and update only what needs to
-                  change.
-                </p>
+              <div className="investigation-edit-heading flex items-center gap-3 rounded-xl border border-openci-border bg-gradient-to-r from-openci-surface-selected to-openci-surface p-4 shadow-sm md:p-5">
+                <span className="grid size-11 shrink-0 place-items-center rounded-xl bg-openci-accent text-white shadow-sm">
+                  <FilePenLine size={20} strokeWidth={1.9} aria-hidden="true" />
+                </span>
+                <div className="min-w-0">
+                  <p className="mb-1 text-[11px] font-bold uppercase tracking-[0.08em] text-openci-accent-strong">
+                    Record editor
+                  </p>
+                  <h2
+                    ref={headingRef}
+                    tabIndex={-1}
+                    className="mb-0 w-fit max-w-full text-base leading-tight font-semibold tracking-[-0.015em] text-openci-text"
+                  >
+                    Investigation details
+                  </h2>
+                  <p className="mt-1 mb-0 text-[13px] text-openci-text-muted">
+                    Review the existing information and update only what needs
+                    to change.
+                  </p>
+                </div>
               </div>
               {!investigation.first_name && (
                 <InlineAlert variant="warning">

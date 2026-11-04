@@ -11,6 +11,7 @@ import { PriorityBadge } from "@/components/ui/PriorityBadge";
 import { Modal } from "@/components/ui/Modal";
 import { LocationConfirmationPanel } from "@/features/investigations/components/LocationConfirmationPanel";
 import { PLANNING_ENABLED } from "@/config";
+import { duration as formatDuration } from "@/utils/format";
 
 type InvestigationDetailsPageProps = {
   token: string;
@@ -28,6 +29,10 @@ export function InvestigationDetailsPage({
   onDeleted,
 }: InvestigationDetailsPageProps) {
   const canManage = user.role === "admin" || user.role === "supervisor";
+  const hasVisitRequirements =
+    investigation.service_duration_seconds != null ||
+    investigation.visit_not_before_at != null ||
+    investigation.visit_due_at != null;
   const [softDeleting, setSoftDeleting] = useState(false);
   const [confirmDelete, setConfirmDelete] = useState(false);
   const deleteInFlight = useRef(false);
@@ -54,12 +59,19 @@ export function InvestigationDetailsPage({
   }
 
   return (
-    <div className="details-layout">
-      <section className="details-summary">
+    <div
+      className={`details-layout investigation-details ${
+        canManage ? "investigation-manager-details" : "investigation-agent-details"
+      }`}
+    >
+      <section className="details-summary investigation-overview">
         <div className="details-page-heading">
           <div className="details-page-identity">
-            <h1>{formatUserName(investigation.subject_name)}</h1>
+            <h1 id="investigation-name">
+              {formatUserName(investigation.subject_name)}
+            </h1>
             <p className="details-reference">
+              <span className="details-reference-label">Reference</span>
               {investigation.reference_number}
             </p>
           </div>
@@ -86,10 +98,19 @@ export function InvestigationDetailsPage({
             )}
           </div>
         </div>
-        <dl className="details-grid">
-          <div>
+        <dl className="details-grid investigation-overview-grid">
+          <div className="investigation-overview-address">
             <dt>Address</dt>
             <dd>{investigation.address_display}</dd>
+          </div>
+          <div>
+            <dt>Investigation status</dt>
+            <dd>
+              <StatusBadge
+                status={investigation.status}
+                reopenOn={investigation.reopen_on}
+              />
+            </dd>
           </div>
           <div>
             <dt>Priority</dt>
@@ -105,16 +126,48 @@ export function InvestigationDetailsPage({
                 : "Unassigned"}
             </dd>
           </div>
-          <div>
-            <dt>Status</dt>
-            <dd>
-              <StatusBadge
-                status={investigation.status}
-                reopenOn={investigation.reopen_on}
-              />
-            </dd>
-          </div>
         </dl>
+        {hasVisitRequirements && (
+          <section
+            className="visit-requirements"
+            aria-labelledby="visit-requirements-title"
+          >
+            <div className="visit-requirements-heading">
+              <div>
+                <h2 id="visit-requirements-title">Visit requirements</h2>
+                <p>All times use Philippine time (UTC+8).</p>
+              </div>
+            </div>
+            <dl className="visit-requirements-grid">
+              <div>
+                <dt>Estimated visit duration</dt>
+                <dd>
+                  {investigation.service_duration_seconds != null
+                    ? formatDuration(investigation.service_duration_seconds)
+                    : "Not provided"}
+                </dd>
+              </div>
+              <div>
+                <dt>Earliest visit</dt>
+                <dd>
+                  {formatManilaDateTime(
+                    investigation.visit_not_before_at,
+                    "No earliest visit set",
+                  )}
+                </dd>
+              </div>
+              <div>
+                <dt>Completion deadline</dt>
+                <dd>
+                  {formatManilaDateTime(
+                    investigation.visit_due_at,
+                    "No deadline set",
+                  )}
+                </dd>
+              </div>
+            </dl>
+          </section>
+        )}
       </section>
 
       {canManage && (
@@ -157,41 +210,60 @@ export function InvestigationDetailsPage({
           </div>
         </Modal>
       )}
-      {PLANNING_ENABLED &&
-        (user.role === "supervisor" || user.role === "admin") && (
-          <LocationConfirmationPanel
-            token={token}
-            investigation={investigation}
-            onChanged={onChanged}
-          />
+      <div className="investigation-workspace-grid">
+        {canManage && (
+          <div className="investigation-workspace-column investigation-planning-column">
+            {PLANNING_ENABLED && (
+              <LocationConfirmationPanel
+                token={token}
+                investigation={investigation}
+                onChanged={onChanged}
+              />
+            )}
+            <div id="assignment">
+              <AssignmentPanel
+                token={token}
+                investigation={investigation}
+                onChanged={onChanged}
+              />
+            </div>
+          </div>
         )}
+        <div
+          id="report"
+          className="investigation-workspace-column investigation-report-column"
+        >
+          {user.role === "agent" && (
+            <ReportEditor
+              token={token}
+              investigation={investigation}
+              onChanged={onChanged}
+            />
+          )}
 
-      <div id="assignment">
-        {(user.role === "supervisor" || user.role === "admin") && (
-          <AssignmentPanel
-            token={token}
-            investigation={investigation}
-            onChanged={onChanged}
-          />
-        )}
-      </div>
-      <div id="report">
-        {user.role === "agent" && (
-          <ReportEditor
-            token={token}
-            investigation={investigation}
-            onChanged={onChanged}
-          />
-        )}
-
-        {(user.role === "supervisor" || user.role === "admin") && (
-          <ReviewPanel
-            token={token}
-            investigation={investigation}
-            onChanged={onChanged}
-          />
-        )}
+          {(user.role === "supervisor" || user.role === "admin") && (
+            <ReviewPanel
+              token={token}
+              investigation={investigation}
+              onChanged={onChanged}
+            />
+          )}
+        </div>
       </div>
     </div>
   );
+}
+
+function formatManilaDateTime(
+  value: string | null | undefined,
+  emptyLabel: string,
+) {
+  if (!value) return emptyLabel;
+  const parsed = new Date(value);
+  if (Number.isNaN(parsed.getTime())) return emptyLabel;
+  return new Intl.DateTimeFormat("en-PH", {
+    dateStyle: "medium",
+    timeStyle: "short",
+    timeZone: "Asia/Manila",
+  }).format(parsed);
 }

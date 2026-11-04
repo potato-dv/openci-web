@@ -12,6 +12,18 @@ import {
   logoutRemoteSession,
 } from "@/services/http";
 
+const ACTIVITY_EVENTS: ReadonlyArray<{
+  type: string;
+  options?: AddEventListenerOptions;
+}> = [
+  { type: "click", options: { passive: true } },
+  { type: "keydown" },
+  { type: "scroll", options: { capture: true, passive: true } },
+  { type: "touchstart", options: { passive: true } },
+  { type: "pointerdown", options: { passive: true } },
+  { type: "dragstart", options: { passive: true } },
+];
+
 export function useAuth() {
   const [accessToken, setAccessToken] = useState("");
   const [user, setUser] = useState<User | null>(null);
@@ -63,7 +75,7 @@ export function useAuth() {
   useEffect(() => {
     if (!user || reauthRequired) return;
 
-    const recordActivity = () => {
+    const recordActivity: EventListener = () => {
       if (document.visibilityState === "hidden") return;
       const now = Date.now();
       if (now - lastActivitySentAt.current < 60_000) return;
@@ -74,15 +86,15 @@ export function useAuth() {
       });
     };
 
-    document.addEventListener("click", recordActivity, { passive: true });
-    document.addEventListener("keydown", recordActivity);
-    document.addEventListener("touchstart", recordActivity, { passive: true });
+    for (const { type, options } of ACTIVITY_EVENTS) {
+      document.addEventListener(type, recordActivity, options);
+    }
     return () => {
-      document.removeEventListener("click", recordActivity);
-      document.removeEventListener("keydown", recordActivity);
-      document.removeEventListener("touchstart", recordActivity);
+      for (const { type, options } of ACTIVITY_EVENTS) {
+        document.removeEventListener(type, recordActivity, options);
+      }
     };
-  }, [user?.id, reauthRequired, accessToken]);
+  }, [user, reauthRequired, accessToken]);
 
   async function finishLogin(email: string, password: string) {
     const data = await loginRequest(email, password);

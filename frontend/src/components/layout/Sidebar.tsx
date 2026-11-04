@@ -14,6 +14,7 @@ import {
 import type { User } from "../../types/api";
 import { PLANNING_ENABLED } from "../../config";
 import { IconButton } from "../ui/Primitives";
+import { CollectorBrand } from "./CollectorBrand";
 export function Sidebar({
   user,
   onNavigate,
@@ -33,14 +34,10 @@ export function Sidebar({
           to="/dashboard"
           className="sidebar-brand"
           onClick={onNavigate}
-          aria-label="OpenCI field operations home"
-          title={collapsed ? "OpenCI · Field operations" : undefined}
+          aria-label="Collector field operations home"
+          title={collapsed ? "Collector · Field operations" : undefined}
         >
-          <img className="sidebar-brand-icon" src="/favicon.svg" alt="" />
-          <span className="sidebar-brand-copy">
-            <strong>OpenCI</strong>
-            <small>Field operations</small>
-          </span>
+          <CollectorBrand variant="sidebar" />
         </NavLink>
         {onToggleCollapse && (
           <IconButton

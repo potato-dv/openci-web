@@ -6,6 +6,7 @@ import {
   getReviews,
   reviewReport,
 } from "@/features/reports/api";
+import { CheckCircle2, CircleAlert, CircleHelp, ClipboardCheck } from "lucide-react";
 import type { Investigation, Report, Review } from "@/types/api";
 import { formatUserName } from "@/utils/userName";
 
@@ -20,19 +21,63 @@ function displayValue(value: string | null | undefined) {
 }
 
 function ReportDetails({ report }: { report: Report }) {
+  const visitOutcomeClass = (report.visit_outcome ?? "unknown").replaceAll(
+    "_",
+    "-",
+  );
+
   return (
     <div className="reviewed-report">
+      <div className={`report-visit-result is-${visitOutcomeClass}`}>
+        <span className="report-visit-result-icon" aria-hidden="true">
+          {report.visit_outcome === "visited" ? (
+            <CheckCircle2 size={19} strokeWidth={2.1} />
+          ) : report.visit_outcome ? (
+            <CircleAlert size={19} strokeWidth={2.1} />
+          ) : (
+            <CircleHelp size={19} strokeWidth={2.1} />
+          )}
+        </span>
+        <div>
+          <span className="report-visit-result-label">Visit outcome</span>
+          <strong>{displayValue(report.visit_outcome)}</strong>
+        </div>
+      </div>
       <dl className="report-detail-grid">
-        <div><dt>Visit outcome</dt><dd>{displayValue(report.visit_outcome)}</dd></div>
-        <div><dt>Investigation outcome</dt><dd>{displayValue(report.outcome)}</dd></div>
-        <div><dt>Occupancy</dt><dd>{displayValue(report.occupancy_status)}</dd></div>
+        <div>
+          <dt>Investigation outcome</dt>
+          <dd>
+            <span className={`report-fact-badge is-${(report.outcome ?? "unknown").replaceAll("_", "-")}`}>
+              {displayValue(report.outcome)}
+            </span>
+          </dd>
+        </div>
+        <div>
+          <dt>Occupancy</dt>
+          <dd>
+            <span className={`report-fact-badge is-${(report.occupancy_status ?? "unknown").replaceAll("_", "-")}`}>
+              {displayValue(report.occupancy_status)}
+            </span>
+          </dd>
+        </div>
         <div><dt>Visited at</dt><dd>{report.visited_at ? new Date(report.visited_at).toLocaleString() : "—"}</dd></div>
         <div><dt>Verified address</dt><dd>{report.verified_address || "—"}</dd></div>
         <div><dt>Author</dt><dd>{formatUserName(report.author_name)}</dd></div>
       </dl>
       {report.property_condition && <div className="report-copy"><h4>Property condition</h4><p>{report.property_condition}</p></div>}
       {report.interaction_notes && <div className="report-copy"><h4>Interaction notes</h4><p>{report.interaction_notes}</p></div>}
-      <div className="report-copy"><h4>Detailed findings</h4><p>{report.content}</p></div>
+      <section className="report-findings" aria-label="Agent findings">
+        <div className="report-findings-heading">
+          <span className="report-findings-icon" aria-hidden="true">
+            <ClipboardCheck size={18} strokeWidth={2} />
+          </span>
+          <div>
+            <h4>Agent findings</h4>
+            <p>Detailed notes recorded during the field visit</p>
+          </div>
+        </div>
+        <p className="report-findings-content">{report.content}</p>
+      </section>
     </div>
   );
 }
@@ -101,13 +146,25 @@ export function ReviewPanel({ token, investigation, onChanged }: ReviewPanelProp
   }
 
   return (
-    <section className="workflow-panel">
+    <section className="workflow-panel investigation-report-panel">
       <div className="section-heading">
         <div>
-          <h3>Report review</h3>
-          <p>Review submitted findings and request corrections when needed.</p>
+          <div className="workflow-title">
+            <span className="workflow-title-icon" aria-hidden="true">
+              <ClipboardCheck size={17} strokeWidth={2} />
+            </span>
+            <div>
+              <h3>Report review</h3>
+              <p>Review submitted findings and request corrections when needed.</p>
+            </div>
+          </div>
         </div>
-        {report && <span className="count-badge">Version {report.version} · {report.status.replaceAll("_", " ")}</span>}
+        {report && (
+          <span className="count-badge report-status-badge">
+            Report · version {report.version} ·{" "}
+            {report.status.replaceAll("_", " ")}
+          </span>
+        )}
       </div>
 
       {loading && <p className="muted">Loading report and review history…</p>}

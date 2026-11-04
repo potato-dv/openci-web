@@ -1,7 +1,45 @@
 import os
+import logging
+from datetime import timedelta, timezone
 
 from celery import Celery
+from celery.beat import PersistentScheduler
 from celery.schedules import crontab
+
+
+logger = logging.getLogger("app.celery_beat")
+
+
+class ClockRollbackSafeScheduler(PersistentScheduler):
+    """Rebase future persisted run times after the system clock moves back."""
+
+    future_tolerance = timedelta(minutes=2)
+
+    @staticmethod
+    def _utc(value):
+        if value.tzinfo is None:
+            value = value.replace(tzinfo=timezone.utc)
+        return value.astimezone(timezone.utc)
+
+    def setup_schedule(self):
+        super().setup_schedule()
+        now = self.app.now()
+        now_utc = self._utc(now)
+        rebased = []
+        for name, entry in self.schedule.items():
+            last_run_at = entry.last_run_at
+            if last_run_at is None or self._utc(last_run_at) <= now_utc + self.future_tolerance:
+                continue
+            entry.last_run_at = now
+            rebased.append(name)
+
+        if rebased:
+            self.sync()
+            logger.warning(
+                "celery_beat_clock_rollback_rebased entries=%s observed_at=%s",
+                sorted(rebased),
+                now_utc.isoformat(),
+            )
 
 celery_app = Celery(
     "openci",
@@ -18,6 +56,7 @@ celery_app = Celery(
 celery_app.conf.update(
     timezone="Asia/Manila",
     enable_utc=True,
+    beat_scheduler="app.workers.celery_app.ClockRollbackSafeScheduler",
     task_acks_late=True,
     task_reject_on_worker_lost=True,
     broker_transport_options={"visibility_timeout": 360},

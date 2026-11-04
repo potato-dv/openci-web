@@ -4,6 +4,7 @@ import {
   clearCurrentAccessToken,
   requestJson,
   setCurrentAccessToken,
+  subscribeToReauthenticationRequired,
 } from "./http";
 
 function jsonResponse(status: number, body: unknown): Response {
@@ -105,6 +106,75 @@ describe("shared API request handling", () => {
     expect(new Headers(refreshOptions.headers).get("X-CSRF-Token")).toBe("1");
     const [, retryOptions] = fetchMock.mock.calls[2] as [string, RequestInit];
     expect(new Headers(retryOptions.headers).get("Authorization")).toBe(`Bearer ${refreshedToken}`);
+  });
+
+  it("does not require reauthentication when a successful refresh retries the request", async () => {
+    const refreshedToken = jwtFor(7);
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValueOnce(jsonResponse(401, { detail: { code: "access_token_expired" } }))
+      .mockResolvedValueOnce(jsonResponse(200, { access_token: refreshedToken, token_type: "bearer" }))
+      .mockResolvedValueOnce(jsonResponse(200, { ok: true }));
+    vi.stubGlobal("fetch", fetchMock);
+    vi.stubGlobal("BroadcastChannel", undefined);
+    setCurrentAccessToken("expired-token", 7);
+    const onReauthenticationRequired = vi.fn();
+    const unsubscribe = subscribeToReauthenticationRequired(onReauthenticationRequired);
+
+    await expect(requestJson("/protected")).resolves.toEqual({ ok: true });
+
+    expect(onReauthenticationRequired).not.toHaveBeenCalled();
+    unsubscribe();
+  });
+
+  it("shares one refresh operation across concurrent expired-token requests", async () => {
+    const refreshedToken = jwtFor(7);
+    let protectedRequestCount = 0;
+    const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
+      const url = String(input);
+      if (url.endsWith("/users/refresh")) {
+        return jsonResponse(200, { access_token: refreshedToken, token_type: "bearer" });
+      }
+      protectedRequestCount += 1;
+      return protectedRequestCount <= 2
+        ? jsonResponse(401, { detail: { code: "access_token_expired" } })
+        : jsonResponse(200, { ok: true });
+    });
+    vi.stubGlobal("fetch", fetchMock);
+    setCurrentAccessToken("expired-token", 7);
+
+    await expect(
+      Promise.all([requestJson("/protected/one"), requestJson("/protected/two")]),
+    ).resolves.toEqual([{ ok: true }, { ok: true }]);
+
+    const refreshRequests = fetchMock.mock.calls.filter(([input]) =>
+      String(input).endsWith("/users/refresh"),
+    );
+    expect(refreshRequests).toHaveLength(1);
+    expect(protectedRequestCount).toBe(4);
+  });
+
+  it("requires reauthentication when the refresh session has genuinely expired", async () => {
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValueOnce(jsonResponse(401, { detail: { code: "access_token_expired" } }))
+      .mockResolvedValueOnce(jsonResponse(401, { detail: { code: "session_idle" } }));
+    vi.stubGlobal("fetch", fetchMock);
+    vi.stubGlobal("BroadcastChannel", undefined);
+    setCurrentAccessToken("expired-token", 7);
+    const onReauthenticationRequired = vi.fn();
+    const unsubscribe = subscribeToReauthenticationRequired(onReauthenticationRequired);
+
+    await expect(requestJson("/protected")).rejects.toMatchObject({
+      status: 401,
+      code: "session_idle",
+    });
+
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+    expect(onReauthenticationRequired).toHaveBeenCalledWith(
+      expect.objectContaining({ code: "session_idle" }),
+    );
+    unsubscribe();
   });
 
   it("does not refresh for unrelated 401 responses", async () => {

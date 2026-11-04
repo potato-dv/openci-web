@@ -455,13 +455,7 @@ test("assignment-generated routes fit supported viewports without manual plan ac
     "Agents available",
   );
   await expect(page.locator(".route-planning-stats")).toContainText(
-    "Routes optimizing",
-  );
-  await expect(page.locator(".route-planning-stats")).toContainText(
     "Published routes",
-  );
-  await expect(page.locator(".route-planning-stats")).toContainText(
-    "Failed planning jobs",
   );
   const wideLayout = await page.evaluate(() => {
     const canvas = document.querySelector(".route-planning-page")!;

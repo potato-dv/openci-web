@@ -235,7 +235,7 @@ export function DashboardPage() {
                     </strong>
                     <span>{stop.address_display}</span>
                     <small>
-                      Estimated arrival {time(stop.estimated_arrival_at)}
+                      Planned arrival {stop.planned_arrival_at ? time(stop.planned_arrival_at) : "Not available"}
                     </small>
                   </Link>
                 </li>

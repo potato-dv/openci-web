@@ -304,9 +304,9 @@ export function AgentWeeklyScheduleEditor({
               <li key={day.work_date}>
                 <time dateTime={day.work_date}>{localDate(day.work_date)}</time>
                 <span className={`availability-state availability-${day.status}`}>
-                  {day.status === "manual_override" ? "Manual override" : day.status === "scheduled" ? "Scheduled" : day.status === "day_off" ? "Day off" : "Not configured"}
+                  {day.status === "manual_override" ? "Manual override" : day.status === "scheduled" ? "Scheduled" : day.status === "shift_ended" ? "Shift ended" : day.status === "day_off" ? "Day off" : "Not configured"}
                 </span>
-                {day.is_available && day.shift_starts_at && day.shift_ends_at && (
+                {day.shift_starts_at && day.shift_ends_at && (
                   <span className="availability-hours">
                     {localTime(day.shift_starts_at)}–{localTime(day.shift_ends_at)}
                     {day.break_starts_at && day.break_ends_at ? ` · break ${localTime(day.break_starts_at)}–${localTime(day.break_ends_at)}` : ""}

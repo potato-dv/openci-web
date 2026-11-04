@@ -49,7 +49,6 @@ import { routesForSelection } from "./routeSelection";
 import { IconButton } from "../ui/Primitives";
 import { MapZoomControls } from "./MapZoomControls";
 import { MapSizeInvalidator } from "./MapSizeInvalidator";
-import { date as formatDate } from "@/utils/format";
 import "leaflet/dist/leaflet.css";
 import "../../styles/maps.css";
 type Props = {
@@ -241,10 +240,7 @@ export function InvestigationMarker({
     ? `Assigned to ${item.agent_name ?? `Agent ${item.agent_id}`}`
     : "Unassigned";
   const routeStop = item.sequence ? `Stop ${item.sequence}` : null;
-  const statusLabel =
-    item.status === "cancelled" && item.reopen_on
-      ? `cancelled · reopens ${formatDate(item.reopen_on)}`
-      : item.status.replaceAll("_", " ");
+  const statusLabel = item.status.replaceAll("_", " ");
   const markerLabel = `${item.reference_number} · ${item.region_label ?? "Region not set"} · ${statusLabel} · ${item.planning_status ?? (item.agent_id ? "assigned" : "pending")} · ${assignment}${routeStop ? ` · ${routeStop}` : ""} · ${item.priority} priority${item.planning_reason ? ` · ${item.planning_reason.replaceAll("_", " ")}` : ""}`;
   return (
     <Marker

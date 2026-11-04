@@ -225,15 +225,32 @@ class AuthSessionAPITests(unittest.TestCase):
         self.db.refresh(session)
         self.assertEqual(session.revoke_reason, "idle_expired")
 
+    def test_absolute_expiration_revokes_active_session(self):
+        login = self.login()
+        session = self.db.query(AuthSession).one()
+        session.last_interactive_at = utc_now()
+        session.absolute_expires_at = utc_now() - timedelta(seconds=1)
+        self.db.commit()
+
+        with self.assertRaises(HTTPException) as raised:
+            get_current_auth_context(login.json()["access_token"], self.db)
+
+        self.assertEqual(raised.exception.status_code, 401)
+        self.assertEqual(raised.exception.detail["code"], "session_expired")
+        self.db.refresh(session)
+        self.assertEqual(session.revoke_reason, "absolute_expired")
+
     def test_interactive_activity_extends_only_the_idle_timestamp(self):
         login = self.login()
         context = get_current_auth_context(login.json()["access_token"], self.db)
         before = context.session.last_interactive_at
+        absolute_expiry_before = context.session.absolute_expires_at
         response = Response()
         record_user_activity(response, context, self.db)
         self.assertEqual(response.status_code, 204)
         self.db.refresh(context.session)
         self.assertGreaterEqual(context.session.last_interactive_at, before)
+        self.assertEqual(context.session.absolute_expires_at, absolute_expiry_before)
 
     def test_role_change_and_deactivation_revoke_existing_sessions(self):
         self.login()

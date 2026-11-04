@@ -8,7 +8,7 @@ cliArgs:
   logsize: 100M
   maxlocations: 100
   maxvehicles: 20
-  override: []
+  override: ['l']
   path: ""
   port: 3000
   router: osrm

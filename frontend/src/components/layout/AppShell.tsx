@@ -11,7 +11,7 @@ export function AppShell() {
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
   const location = useLocation();
   useEffect(() => {
-    document.title = `${location.pathname.split("/")[1]?.replaceAll("-", " ") || "Dashboard"} · Collector Operations`;
+    document.title = `${location.pathname.split("/")[1]?.replaceAll("-", " ") || "Dashboard"} · Collector`;
     document.getElementById("main-content")?.focus();
   }, [location.pathname]);
   return (

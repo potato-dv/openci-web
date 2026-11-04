@@ -12,9 +12,15 @@ type Props = {
   token: string;
   value: NewInvestigation;
   onChange: (next: NewInvestigation) => void;
+  presentation?: "default" | "embedded";
 };
 
-export function PhilippineAddressFields({ token, value, onChange }: Props) {
+export function PhilippineAddressFields({
+  token,
+  value,
+  onChange,
+  presentation = "default",
+}: Props) {
   const [regions, setRegions] = useState<LocationOption[]>([]);
   const [provinces, setProvinces] = useState<LocationOption[]>([]);
   const [cities, setCities] = useState<LocationOption[]>([]);
@@ -61,8 +67,16 @@ export function PhilippineAddressFields({ token, value, onChange }: Props) {
   }
 
   return (
-    <fieldset className="address-fields">
-      <legend>Investigation address</legend>
+    <fieldset
+      className={
+        presentation === "embedded"
+          ? "m-0 min-w-0 border-0 bg-transparent p-0"
+          : "address-fields"
+      }
+    >
+      <legend className={presentation === "embedded" ? "sr-only" : undefined}>
+        Investigation address
+      </legend>
       <div className="address-fields-grid">
         <label>House/building number<input required maxLength={100} value={value.house_number} onChange={(event) => update({ house_number: event.target.value })} /></label>
         <label>Unit/floor/building name <span className="optional-label">Optional</span><input maxLength={150} value={value.unit_floor_building_name} onChange={(event) => update({ unit_floor_building_name: event.target.value })} /></label>

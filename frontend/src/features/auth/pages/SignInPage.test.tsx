@@ -4,6 +4,15 @@ import { describe, expect, it, vi } from "vitest";
 import { SignInPage } from "./SignInPage";
 
 describe("SignInPage", () => {
+  it("shows the Collector wordmark with its C mark and field operations descriptor", () => {
+    const { container } = render(<SignInPage onSignIn={vi.fn().mockResolvedValue(undefined)} />);
+
+    expect(screen.getByText("Collector")).toBeInTheDocument();
+    expect(screen.getByText("Field operations")).toBeInTheDocument();
+    expect(screen.getByText("Sign in to your account.")).toBeInTheDocument();
+    expect(container.querySelector('img[src="/collector-mark.svg"]')).toHaveAttribute("alt", "");
+  });
+
   it("submits credentials to the auth boundary and clears the password", async () => {
     const user = userEvent.setup();
     const onSignIn = vi.fn().mockResolvedValue(undefined);

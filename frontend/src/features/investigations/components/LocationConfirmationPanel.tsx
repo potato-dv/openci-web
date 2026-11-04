@@ -1,4 +1,5 @@
 import { useCallback, useState } from "react";
+import { MapPinCheck } from "lucide-react";
 import {
   confirmInvestigationLocation,
   getInvestigationLocation,
@@ -26,11 +27,18 @@ export function LocationConfirmationPanel({
   const [error, setError] = useState("");
   const [message, setMessage] = useState("");
   return (
-    <section id="location" className="workflow-panel">
+    <section id="location" className="workflow-panel investigation-location-panel">
       <div className="section-heading">
         <div>
-          <h3>Investigation location</h3>
-          <p>A confirmed location is required for route optimization.</p>
+          <div className="workflow-title">
+            <span className="workflow-title-icon" aria-hidden="true">
+              <MapPinCheck size={17} strokeWidth={2} />
+            </span>
+            <div>
+              <h3>Investigation location</h3>
+              <p>A confirmed location is required for route optimization.</p>
+            </div>
+          </div>
         </div>
         <span className="count-badge">
           {investigation.location_confirmed ? "Confirmed" : "Unconfirmed"}
@@ -85,8 +93,8 @@ export function LocationConfirmationPanel({
         )
       )}
       {resource.data && (
-        <details className="workflow-history">
-          <summary>Location index details</summary>
+        <details className="workflow-history location-index-details">
+          <summary>Technical details · H3 cell IDs</summary>
           <p>
             H3 resolution 7: {resource.data.h3_r7}
             <br />

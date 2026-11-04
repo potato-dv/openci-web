@@ -1,5 +1,6 @@
 import { useState, type FormEvent } from "react";
 import { Button, FormField, InlineAlert } from "@/components/ui/Primitives";
+import { CollectorBrand } from "@/components/layout/CollectorBrand";
 
 type Props = {
   onReauthenticate: (email: string, password: string) => Promise<void>;
@@ -34,7 +35,7 @@ export function ReauthenticationOverlay({ onReauthenticate }: Props) {
         aria-labelledby="reauth-title"
         aria-describedby="reauth-description"
       >
-        <img className="login-logo" src="/favicon.svg" alt="Collector" />
+        <CollectorBrand variant="auth" />
         <h1 id="reauth-title">Sign in to continue</h1>
         <p id="reauth-description" className="login-description">
           Your session ended. Sign in to resume this page and any unsaved work.

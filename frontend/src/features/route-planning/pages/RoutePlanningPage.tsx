@@ -235,7 +235,6 @@ export function RoutePlanningPage() {
   );
   const publishedCount = dashboardForScope?.published_routes ?? 0;
   const optimizingCount = dashboardForScope?.optimizing_routes ?? 0;
-  const failedCount = dashboardForScope?.failed_planning_jobs ?? 0;
   const mappedCount = investigations.length;
   const availableAgentCount = dashboardForScope?.available_agents ?? 0;
   const activeAgentCount = dashboardForScope?.active_agents ?? 0;
@@ -411,7 +410,7 @@ export function RoutePlanningPage() {
       ? "Loading published routes…"
       : dashboard.loading && !dashboardForScope
         ? "Loading live assignment status…"
-        : `${optimizingCount} planning ${optimizingCount === 1 ? "run" : "runs"} active · ${failedCount} failed`;
+        : null;
   const statItems = [
     {
       label: "Total investigations",
@@ -438,19 +437,9 @@ export function RoutePlanningPage() {
       Icon: UserRoundCheck,
     },
     {
-      label: "Routes optimizing",
-      value: dashboardForScope ? optimizingCount : "—",
-      Icon: Route,
-    },
-    {
       label: "Published routes",
       value: dashboardForScope ? publishedCount : "—",
       Icon: Route,
-    },
-    {
-      label: "Failed planning jobs",
-      value: dashboardForScope ? failedCount : "—",
-      Icon: RefreshCw,
     },
   ];
   const leftPanelClass = [
@@ -486,7 +475,7 @@ export function RoutePlanningPage() {
               className="text-openci-accent-strong no-underline"
               to="/dashboard"
             >
-              Collector Operations
+              Collector
             </Link>
             <ChevronRight size={14} aria-hidden="true" />
             <span aria-current="page">Route Planning</span>
@@ -585,12 +574,14 @@ export function RoutePlanningPage() {
             <span className={routePlanningClasses.statLabel}>{label}</span>
           </div>
         ))}
-        <span
-          className="route-planning-live-status col-span-full min-h-6 justify-self-start rounded-full border border-openci-border bg-white px-2.5 py-1 text-xs text-openci-text-muted min-[1440px]:mx-0!"
-          role="status"
-        >
-          {overviewMessage}
-        </span>
+        {overviewMessage && (
+          <span
+            className="route-planning-live-status col-span-full min-h-6 justify-self-start rounded-full border border-openci-border bg-white px-2.5 py-1 text-xs text-openci-text-muted min-[1440px]:mx-0!"
+            role="status"
+          >
+            {overviewMessage}
+          </span>
+        )}
       </div>
 
       <div className={routePlanningClasses.viewSwitch}>

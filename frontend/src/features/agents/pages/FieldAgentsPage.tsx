@@ -15,6 +15,19 @@ import {
 } from "@/components/ui/Primitives";
 import { manilaToday, time } from "@/utils/format";
 import type { AgentRosterRow } from "@/types/api";
+
+function shiftStatusLabel(row: AgentRosterRow): string {
+  const status = row.availability_day?.status;
+  if (status === "shift_ended") return "Shift ended";
+  if (status === "day_off") return "Day off";
+  if (status === "not_configured") return "Not configured";
+  if (row.shift) {
+    if (row.shift.is_available) return "Available";
+    return status === "scheduled" ? "Scheduled · unavailable" : "Unavailable";
+  }
+  return row.availability_day?.is_available ? "Scheduled" : "No shift";
+}
+
 export function FieldAgentsPage() {
   const { token, user } = useSession();
   const [params, setParams] = useSearchParams();
@@ -142,13 +155,7 @@ export function FieldAgentsPage() {
                         </span>
                       </td>
                       <td>
-                        {row.availability_day?.status === "day_off"
-                          ? "Day off"
-                          : row.availability_day?.status === "not_configured"
-                            ? "Not configured"
-                            : row.shift
-                              ? row.shift.is_available ? "Available" : "Unavailable"
-                              : row.availability_day?.is_available ? "Scheduled" : "No shift"}
+                        {shiftStatusLabel(row)}
                         {row.shift?.source === "manual" && <small className="block">Manual override</small>}
                       </td>
                       <td className="nowrap">
@@ -196,14 +203,7 @@ export function FieldAgentsPage() {
                   <dl className="mobile-row-facts">
                     <div>
                       <dt>Shift</dt>
-                      <dd>
-                        {row.availability_day?.status === "day_off"
-                          ? "Day off"
-                          : row.availability_day?.status === "not_configured"
-                            ? "Not configured"
-                            : row.shift ? row.shift.is_available ? "Available" : "Unavailable"
-                              : row.availability_day?.is_available ? "Scheduled" : "No shift"}
-                      </dd>
+                      <dd>{shiftStatusLabel(row)}</dd>
                     </div>
                     <div>
                       <dt>Hours · PHT</dt>

@@ -1,5 +1,6 @@
 import { useState, type FormEvent } from "react";
 import { Button, FormField, InlineAlert } from "@/components/ui/Primitives";
+import { CollectorBrand } from "@/components/layout/CollectorBrand";
 
 type SignInPageProps = {
   onSignIn: (email: string, password: string) => Promise<void>;
@@ -32,9 +33,9 @@ export function SignInPage({ onSignIn }: SignInPageProps) {
   return (
     <main className="login-page">
       <section className="login-card">
-        <img className="login-logo" src="/favicon.svg" alt="Collector" />
+        <CollectorBrand variant="auth" />
         <h1>Welcome back</h1>
-        <p className="login-description">Sign in to Collector Operations</p>
+        <p className="login-description">Sign in to your account.</p>
         <form className="login-form" onSubmit={submit}>
           <FormField
             label="Email address"
