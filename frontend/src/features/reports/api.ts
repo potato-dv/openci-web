@@ -1,5 +1,38 @@
-import type { PageResult, Report, ReportInput, ReportQueueItem, RevisitRequest, Review } from "@/types/api";
+import type { PageResult, Report, ReportInput, ReportQueueItem, RevisitRequest, Review, RouteAttempt } from "@/types/api";
 import { requestJson } from "@/services/http";
+
+type RouteAction = { work_date: string; route_revision: number };
+export type UnableToProceedPayload = RouteAction & {
+  reason: "no_contact_person" | "nobody_at_location" | "requested_later_visit" | "other";
+  notes?: string | null;
+  contact_available_from?: string | null;
+  contact_available_until?: string | null;
+};
+
+export function startInvestigation(token: string, investigationId: number, action: RouteAction) {
+  return requestJson<{ investigation_id: number; route_revision: number; started: boolean }>(
+    `/investigations/${investigationId}/start`,
+    { method: "POST", token, body: JSON.stringify(action) },
+  );
+}
+
+export function unableToProceed(token: string, investigationId: number, action: UnableToProceedPayload) {
+  return requestJson<RouteAttempt>(`/investigations/${investigationId}/unable-to-proceed`, {
+    method: "POST", token, body: JSON.stringify(action),
+  });
+}
+
+export function finalizeNoContactReport(
+  token: string,
+  investigationId: number,
+  eventId: number,
+  action: RouteAction,
+) {
+  return requestJson<RouteAttempt>(`/investigations/${investigationId}/no-contact-report`, {
+    method: "POST", token,
+    body: JSON.stringify({ ...action, event_id: eventId }),
+  });
+}
 
 export function getReportQueue(
   token: string,
@@ -29,18 +62,22 @@ export function saveReport(
   token: string,
   investigationId: number,
   report: ReportInput,
+  routeAction: RouteAction,
 ) {
-  return requestJson<Report>(`/investigations/${investigationId}/report`, {
+  const params = new URLSearchParams({ work_date: routeAction.work_date });
+  return requestJson<Report>(`/investigations/${investigationId}/report?${params}`, {
     method: "PUT",
     token,
+    headers: { "X-Route-Revision": String(routeAction.route_revision) },
     body: JSON.stringify(report),
   });
 }
 
-export function submitReport(token: string, investigationId: number) {
+export function submitReport(token: string, investigationId: number, routeAction: RouteAction) {
+  const params = new URLSearchParams({ work_date: routeAction.work_date });
   return requestJson<Report>(
-    `/investigations/${investigationId}/report/submit`,
-    { method: "POST", token },
+    `/investigations/${investigationId}/report/submit?${params}`,
+    { method: "POST", token, headers: { "X-Route-Revision": String(routeAction.route_revision) } },
   );
 }
 

@@ -1,7 +1,7 @@
 import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { MemoryRouter } from "react-router";
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import type { Investigation, Report, RevisitRequest } from "@/types/api";
+import type { AgentRoute, Investigation, Report, RevisitRequest } from "@/types/api";
 
 const api = vi.hoisted(() => ({
   getReport: vi.fn(),
@@ -11,8 +11,10 @@ const api = vi.hoisted(() => ({
   saveReport: vi.fn(),
   submitReport: vi.fn(),
 }));
+const routeApi = vi.hoisted(() => ({ getAgentRoute: vi.fn() }));
 
 vi.mock("@/features/reports/api", () => api);
+vi.mock("@/features/route-planning/api", () => routeApi);
 
 import { ReportEditor } from "./ReportEditor";
 
@@ -71,6 +73,49 @@ const pendingRequest: RevisitRequest = {
   completed_at: null,
 };
 
+function routeForStop(
+  overrides: Partial<AgentRoute["stops"][number]> = {},
+  currentId = investigation.id,
+): AgentRoute {
+  const stop = {
+    service_duration_seconds: 1800,
+    investigation_id: investigation.id,
+    reference_number: investigation.reference_number,
+    address_display: investigation.address_display,
+    sequence: 1,
+    estimated_arrival_at: null,
+    earliest_arrival_estimate_at: null,
+    planned_arrival_at: null,
+    estimated_service_start_at: null,
+    waiting_seconds: null,
+    planned_waiting_seconds: null,
+    travel_seconds: null,
+    travel_metres: null,
+    latitude: 14.65,
+    longitude: 121.05,
+    priority: "high" as const,
+    status: "returned_for_correction" as const,
+    sequence_state: "current" as const,
+    actionable: true,
+    can_start: false,
+    can_report: true,
+    active_attempt_id: null,
+    can_finalize_no_contact: false,
+    priority_order_exception_reason: null,
+    attempt_history: [],
+    ...overrides,
+  };
+  return {
+    work_date: "2026-11-05",
+    route_revision: 3,
+    current_actionable_investigation_id: currentId,
+    reason: null,
+    shift: null,
+    route: null,
+    stops: [stop],
+  };
+}
+
 function renderEditor() {
   return render(
     <MemoryRouter>
@@ -86,6 +131,7 @@ describe("ReportEditor revisit action", () => {
     api.getReportVersions.mockResolvedValue([returnedReport]);
     api.getRevisitRequest.mockResolvedValue(null);
     api.requestRevisit.mockResolvedValue(pendingRequest);
+    routeApi.getAgentRoute.mockResolvedValue(null);
   });
 
   it("requests the revisit explicitly and shows its waiting state", async () => {
@@ -103,7 +149,42 @@ describe("ReportEditor revisit action", () => {
 
     expect(await screen.findByText(/Submit after it is published/)).toBeInTheDocument();
     await waitFor(() =>
-      expect(screen.getByRole("button", { name: "Submit report" })).toBeDisabled(),
+      expect(screen.queryByRole("button", { name: "Submit report" })).not.toBeInTheDocument(),
     );
+  });
+
+  it("enables report actions only for the current actionable stop", async () => {
+    routeApi.getAgentRoute.mockResolvedValue(routeForStop());
+    renderEditor();
+
+    expect(await screen.findByRole("button", { name: "Submit report" })).toBeEnabled();
+    expect(screen.getByRole("button", { name: "Save draft" })).toBeEnabled();
+  });
+
+  it("offers retry only after the deferred stop becomes actionable", async () => {
+    routeApi.getAgentRoute.mockResolvedValue(routeForStop({
+      sequence_state: "deferred_retry",
+      actionable: true,
+      can_start: true,
+      can_report: false,
+    }));
+    renderEditor();
+
+    expect(await screen.findByRole("button", { name: "Retry Investigation" })).toBeEnabled();
+    expect(screen.queryByRole("button", { name: "Submit report" })).not.toBeInTheDocument();
+  });
+
+  it("keeps an upcoming investigation view-only", async () => {
+    routeApi.getAgentRoute.mockResolvedValue(routeForStop({
+      sequence_state: "upcoming",
+      actionable: false,
+      can_start: false,
+      can_report: false,
+    }, 99));
+    renderEditor();
+
+    expect(await screen.findByText(/upcoming investigation/i)).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Start Current Investigation" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Submit report" })).not.toBeInTheDocument();
   });
 });

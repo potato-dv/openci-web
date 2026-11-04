@@ -153,6 +153,10 @@ export type AgentShift = AgentShiftInput & {
   last_completed_at?: string | null;
   last_completed_latitude?: number | null;
   last_completed_longitude?: number | null;
+  last_attempted_investigation_id?: number | null;
+  last_attempted_at?: string | null;
+  last_attempted_latitude?: number | null;
+  last_attempted_longitude?: number | null;
 };
 export type AgentWorkProfile = {
   id?: number;
@@ -190,7 +194,7 @@ export type WeeklySchedule = {
 };
 export type AvailabilityDay = {
   work_date: string;
-  status: "manual_override" | "scheduled" | "day_off" | "not_configured";
+  status: "manual_override" | "scheduled" | "shift_ended" | "day_off" | "not_configured";
   source: "manual" | "recurring" | null;
   region_code: string | null;
   is_available: boolean;
@@ -345,8 +349,11 @@ export type PlanningItem = {
   reason: string | null;
   sequence: number | null;
   estimated_arrival_at: string | null;
+  earliest_arrival_estimate_at?: string | null;
+  planned_arrival_at?: string | null;
   estimated_service_start_at?: string | null;
   waiting_seconds?: number | null;
+  planned_waiting_seconds?: number | null;
   travel_seconds: number | null;
   travel_metres: number | null;
 };
@@ -374,6 +381,8 @@ export type PlanningRun = {
     agent_id?: number;
     investigation_id?: number;
     reference_number?: string;
+    deferred_investigation_id?: number;
+    deferred_reference_number?: string;
     reason?: string;
   }[];
   items: PlanningItem[];
@@ -403,15 +412,20 @@ export type PlanningRouteGeometry = {
   total_travel_seconds: number | null;
   total_service_seconds?: number | null;
   total_waiting_seconds?: number | null;
+  total_planned_waiting_seconds?: number | null;
   total_break_seconds?: number | null;
+  planned_departure_at?: string | null;
   start: RoutePoint;
   end: RoutePoint | null;
 };
 export type AgentRoute = {
   work_date: string;
+  route_revision: number | null;
+  current_actionable_investigation_id: number | null;
   reason:
     | "no_shift"
     | "shift_unavailable"
+    | "shift_ended"
     | "no_published_stops"
     | "route_refresh_pending"
     | "route_needs_refresh"
@@ -431,6 +445,17 @@ export type AgentRoute = {
     longitude: number | null;
   }[];
   revisit_requests?: RevisitRequest[];
+  attempt_history?: RouteAttempt[];
+  deferred_attempts?: RouteAttempt[];
+  priority_order_warnings?: {
+    type: string;
+    agent_id?: number;
+    investigation_id: number | null;
+    reference_number: string | null;
+    deferred_investigation_id: number | null;
+    deferred_reference_number: string | null;
+    reason: "schedule_constraint" | "search_limit" | "assignment_time_constraint";
+  }[];
   stops: {
     service_duration_seconds: number;
     investigation_id: number;
@@ -438,15 +463,49 @@ export type AgentRoute = {
     address_display: string;
     sequence: number | null;
     estimated_arrival_at: string | null;
+    earliest_arrival_estimate_at?: string | null;
+    planned_arrival_at?: string | null;
     estimated_service_start_at?: string | null;
     waiting_seconds?: number | null;
+    planned_waiting_seconds?: number | null;
     travel_seconds: number | null;
     travel_metres: number | null;
     latitude: number;
     longitude: number;
     priority: InvestigationPriority;
     status: InvestigationStatus;
+    sequence_state: "current" | "upcoming" | "deferred" | "deferred_retry" | "handled";
+    actionable: boolean;
+    can_start: boolean;
+    can_report: boolean;
+    active_attempt_id: number | null;
+    can_finalize_no_contact: boolean;
+    priority_order_exception_reason: string | null;
+    attempt_history: RouteAttempt[];
   }[];
+};
+export type RouteAttempt = {
+  id: number;
+  investigation_id: number;
+  reference_number?: string | null;
+  address_display?: string | null;
+  priority?: InvestigationPriority | null;
+  agent_id: number;
+  work_date: string;
+  planning_run_id: number | null;
+  parent_event_id: number | null;
+  event_type: "no_contact" | "shift_end_not_visited";
+  state: "deferred" | "retrying" | "retry_failed" | "carried_over" | "resolved";
+  retry_number: number;
+  reason: string;
+  notes: string | null;
+  contact_available_from: string | null;
+  contact_available_until: string | null;
+  attempted_at: string;
+  next_work_date: string | null;
+  finalized_at: string | null;
+  can_finalize_no_contact?: boolean;
+  retry_actionable?: boolean;
 };
 export type RevisitRequest = {
   id: number;
@@ -479,6 +538,13 @@ export type PlanningRouteOverviewAgent = {
     investigation_id: number;
     reference_number: string;
     reason: string;
+  }[];
+  priority_order_warnings?: {
+    investigation_id: number | null;
+    reference_number: string | null;
+    deferred_investigation_id: number | null;
+    deferred_reference_number: string | null;
+    reason: "schedule_constraint" | "search_limit" | "assignment_time_constraint";
   }[];
   refresh_investigation_id: number | null;
   run_id: number | null;

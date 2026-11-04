@@ -100,6 +100,10 @@ class AgentShift(Base):
     last_completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     last_completed_latitude: Mapped[float | None] = mapped_column(Float, nullable=True)
     last_completed_longitude: Mapped[float | None] = mapped_column(Float, nullable=True)
+    last_attempted_investigation_id: Mapped[int | None] = mapped_column(ForeignKey("investigations.id", ondelete="SET NULL"), nullable=True)
+    last_attempted_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    last_attempted_latitude: Mapped[float | None] = mapped_column(Float, nullable=True)
+    last_attempted_longitude: Mapped[float | None] = mapped_column(Float, nullable=True)
     max_visits: Mapped[int] = mapped_column(Integer, nullable=False)
     max_open_cases: Mapped[int] = mapped_column(Integer, nullable=False)
     current_planning_run_id: Mapped[int | None] = mapped_column(ForeignKey("planning_runs.id", ondelete="SET NULL"), nullable=True)
@@ -121,10 +125,14 @@ class PlanningItem(Base):
     outcome: Mapped[str] = mapped_column(String(20), nullable=False)
     reason: Mapped[str | None] = mapped_column(String(100), nullable=True)
     sequence: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    # OSRM estimate assuming departure as soon as the route allows; retained for API compatibility.
     estimated_arrival_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    # VROOM job-step arrival. Null for historical plans whose raw VROOM arrival was not saved.
+    planned_arrival_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     travel_seconds: Mapped[int | None] = mapped_column(Integer, nullable=True)
     travel_metres: Mapped[int | None] = mapped_column(Integer, nullable=True)
     estimated_service_start_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    # New plans store VROOM job-step waiting_time here; historical values are not VROOM waits.
     waiting_seconds: Mapped[int | None] = mapped_column(Integer, nullable=True)
     prior_assignment_id: Mapped[int | None] = mapped_column(ForeignKey("investigation_assignments.id", ondelete="SET NULL"), nullable=True)
     applied_assignment_id: Mapped[int | None] = mapped_column(ForeignKey("investigation_assignments.id", ondelete="SET NULL"), nullable=True)
@@ -150,5 +158,7 @@ class PlanningRoute(Base):
     total_service_seconds: Mapped[int | None] = mapped_column(Integer, nullable=True)
     total_waiting_seconds: Mapped[int | None] = mapped_column(Integer, nullable=True)
     total_break_seconds: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    # VROOM start-step arrival plus waiting_time; null for historical plans.
+    planned_departure_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     start: Mapped[dict] = mapped_column(JSON, nullable=False)
     end: Mapped[dict | None] = mapped_column(JSON, nullable=True)

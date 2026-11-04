@@ -176,6 +176,22 @@ const routeData = {
       },
       route_status: "published",
       refresh_errors: [],
+      priority_order_warnings: [
+        {
+          investigation_id: 11,
+          reference_number: "INV-0011",
+          deferred_investigation_id: 12,
+          deferred_reference_number: "INV-0012",
+          reason: "schedule_constraint",
+        },
+        {
+          investigation_id: null,
+          reference_number: null,
+          deferred_investigation_id: null,
+          deferred_reference_number: null,
+          reason: "search_limit",
+        },
+      ],
       refresh_investigation_id: 11,
       run_id: 21,
       planning_status: "idle",
@@ -196,8 +212,11 @@ const routeData = {
           ],
         },
         geometry_digest: "digest",
-        total_distance_metres: 4500,
-        total_travel_seconds: 900,
+        total_distance_metres: 15196,
+        total_travel_seconds: 1069,
+        total_waiting_seconds: 0,
+        total_planned_waiting_seconds: 0,
+        planned_departure_at: "2026-10-23T02:42:11Z",
         start: { latitude: 14.6, longitude: 121, label: "Office" },
         end: null,
       },
@@ -208,9 +227,14 @@ const routeData = {
           reference_number: "INV-0011",
           address_display: "12 Example Street",
           sequence: 1,
-          estimated_arrival_at: "2026-10-23T01:30:00Z",
-          travel_seconds: 900,
-          travel_metres: 4500,
+          estimated_arrival_at: "2026-10-23T01:22:22Z",
+          earliest_arrival_estimate_at: "2026-10-23T01:22:22Z",
+          planned_arrival_at: "2026-10-23T03:00:00Z",
+          estimated_service_start_at: "2026-10-23T03:00:00Z",
+          waiting_seconds: 0,
+          planned_waiting_seconds: 0,
+          travel_seconds: 1069,
+          travel_metres: 15196,
           latitude: 14.65,
           longitude: 121.05,
           priority: "high",
@@ -407,7 +431,27 @@ describe("RoutePlanningPage", () => {
     expect(
       (await screen.findAllByText("Stop sequence")).length,
     ).toBeGreaterThan(0);
+    expect(screen.getAllByText("Priority sequencing needs review:").length).toBeGreaterThan(0);
+    expect(
+      screen.getAllByText(/visit windows, shift hours, or a break require this order/i).length,
+    ).toBeGreaterThan(0);
+    expect(
+      screen.getAllByText(/bounded priority optimization could not confirm a fully prioritized order/i).length,
+    ).toBeGreaterThan(0);
     expect(screen.getAllByText("Route published").length).toBeGreaterThan(0);
+    expect(screen.getAllByText("Earliest arrival estimate · depart as soon as possible").length).toBeGreaterThan(0);
+    expect(screen.getAllByText("9:22 AM").length).toBeGreaterThan(0);
+    expect(screen.getAllByText("Planned departure").length).toBeGreaterThan(0);
+    expect(screen.getAllByText("10:42 AM").length).toBeGreaterThan(0);
+    expect(screen.getAllByText("Planned arrival").length).toBeGreaterThan(0);
+    expect(screen.getAllByText("Wait at stop").length).toBeGreaterThan(0);
+    expect(screen.getAllByText("No scheduled wait").length).toBeGreaterThan(0);
+    expect(screen.getAllByText("Service starts").length).toBeGreaterThan(0);
+    expect(screen.getAllByText("11:00 AM").length).toBeGreaterThan(0);
+    expect(screen.getAllByText("Service ends").length).toBeGreaterThan(0);
+    expect(screen.getAllByText("11:30 AM").length).toBeGreaterThan(0);
+    expect(screen.queryByText("1h 38m")).not.toBeInTheDocument();
+    expect(screen.getAllByText("18 min · 15.2 km").length).toBeGreaterThan(0);
     fireEvent.click(screen.getByRole("tab", { name: /Investigations/ }));
     expect(
       screen.getByLabelText("Service region (optional)"),

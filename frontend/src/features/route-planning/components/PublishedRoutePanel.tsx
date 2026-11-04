@@ -3,7 +3,7 @@ import { X } from "lucide-react";
 import type { PlanningRouteOverviewAgent } from "@/types/api";
 import type { MapInvestigation, MapSelection } from "@/components/map/mapTypes";
 import { Button, EmptyState, InlineAlert } from "@/components/ui/Primitives";
-import { distance, duration, time } from "@/utils/format";
+import { distance, duration, plannedWait, time, timeAfter } from "@/utils/format";
 import { routeRefreshErrorCopy } from "@/utils/routeRefresh";
 import {
   planningReasonCopy,
@@ -102,6 +102,7 @@ export function PublishedRoutePanel({
     0,
   );
   const planningWarnings = agent?.planning_warnings ?? [];
+  const priorityOrderWarnings = agent?.priority_order_warnings ?? [];
 
   return (
     <div className="planning-route-detail published-route-detail">
@@ -216,13 +217,13 @@ export function PublishedRoutePanel({
                 </dd>
               </div>
             )}
-            {selectedCase.estimated_arrival_at && (
+            {selectedStop?.estimated_service_start_at && (
               <div className={investigationFactClasses.row}>
                 <dt className={investigationFactClasses.label}>
-                  Estimated service start
+                  Service starts
                 </dt>
                 <dd className={investigationFactClasses.value}>
-                  {time(selectedStop?.estimated_service_start_at ?? selectedCase.estimated_arrival_at)}
+                  {time(selectedStop.estimated_service_start_at)}
                 </dd>
               </div>
             )}
@@ -364,6 +365,14 @@ export function PublishedRoutePanel({
                   <dt>Assigned stops</dt>
                   <dd>{agent.stops.length}</dd>
                 </div>
+              <div>
+                <dt>Planned departure</dt>
+                <dd>
+                  {route.planned_departure_at
+                    ? time(route.planned_departure_at)
+                    : "Not available"}
+                </dd>
+              </div>
                 <div>
                   <dt>Driving time</dt>
                   <dd>{duration(route.total_travel_seconds)}</dd>
@@ -377,8 +386,8 @@ export function PublishedRoutePanel({
                   <dd>{duration(route.total_service_seconds ?? serviceSeconds)}</dd>
                 </div>
                 <div>
-                  <dt>Waiting time</dt>
-                  <dd>{duration(route.total_waiting_seconds)}</dd>
+                <dt>Wait at stops</dt>
+                <dd>{plannedWait(route.total_planned_waiting_seconds)}</dd>
                 </div>
                 <div>
                   <dt>Scheduled break</dt>
@@ -410,6 +419,59 @@ export function PublishedRoutePanel({
                         </Link>
                         {": "}
                         {routePlanningWarningCopy(warning.reason)}
+                      </li>
+                    ))}
+                  </ul>
+                </div>
+              </InlineAlert>
+            </div>
+          )}
+
+          {priorityOrderWarnings.length > 0 && (
+            <div className="route-refresh-issue">
+              <InlineAlert variant="warning">
+                <div>
+                  <p className="mb-2!">Priority sequencing needs review:</p>
+                  <ul className="list-disc space-y-1 pl-5">
+                    {priorityOrderWarnings.map((warning) => (
+                      <li
+                        key={`${warning.investigation_id ?? "route"}-${warning.deferred_investigation_id ?? "priority"}`}
+                      >
+                        {warning.reason === "search_limit" ? (
+                          "The bounded priority optimization could not confirm a fully prioritized order. This feasible route is kept; review its stop order."
+                        ) : warning.reason === "assignment_time_constraint" ? (
+                          <>
+                            {warning.investigation_id != null && warning.reference_number ? (
+                              <Link to={`/investigations/${warning.investigation_id}`}>{warning.reference_number}</Link>
+                            ) : "An earlier assignment"}
+                            {" with the same priority stays first because visit windows, shift hours, or a break prevent the assignment-time order."}
+                          </>
+                        ) : (
+                          <>
+                            {warning.investigation_id != null &&
+                            warning.reference_number ? (
+                              <Link
+                                to={`/investigations/${warning.investigation_id}`}
+                              >
+                                {warning.reference_number}
+                              </Link>
+                            ) : (
+                              "A lower-priority stop"
+                            )}
+                            {" is scheduled before higher priority "}
+                            {warning.deferred_investigation_id != null &&
+                            warning.deferred_reference_number ? (
+                              <Link
+                                to={`/investigations/${warning.deferred_investigation_id}`}
+                              >
+                                {warning.deferred_reference_number}
+                              </Link>
+                            ) : (
+                              "work"
+                            )}
+                            {". Visit windows, shift hours, or a break require this order."}
+                          </>
+                        )}
                       </li>
                     ))}
                   </ul>
@@ -522,13 +584,45 @@ export function PublishedRoutePanel({
                       <small>{stop.address_display}</small>
                       <span className="planning-stop-metrics">
                         <span>
-                            <small>Arrival</small>
-                          <strong>{time(stop.estimated_arrival_at)}</strong>
+                          <small>
+                            Earliest arrival estimate · depart as soon as possible
+                          </small>
+                          <strong>
+                            {time(
+                              stop.earliest_arrival_estimate_at ??
+                                stop.estimated_arrival_at,
+                            )}
+                          </strong>
                         </span>
-                          <span>
-                            <small>Service starts</small>
-                            <strong>{time(stop.estimated_service_start_at ?? stop.estimated_arrival_at)}</strong>
-                          </span>
+                        <span>
+                          <small>Planned arrival</small>
+                          <strong>
+                            {stop.planned_arrival_at
+                              ? time(stop.planned_arrival_at)
+                              : "Not available"}
+                          </strong>
+                        </span>
+                        <span>
+                          <small>Wait at stop</small>
+                          <strong>{plannedWait(stop.planned_waiting_seconds)}</strong>
+                        </span>
+                        <span>
+                          <small>Service starts</small>
+                          <strong>
+                            {stop.estimated_service_start_at
+                              ? time(stop.estimated_service_start_at)
+                              : "Not available"}
+                          </strong>
+                        </span>
+                        <span>
+                          <small>Service ends</small>
+                          <strong>
+                            {timeAfter(
+                              stop.estimated_service_start_at,
+                              stop.service_duration_seconds,
+                            )}
+                          </strong>
+                        </span>
                         <span>
                           <small>From previous stop</small>
                           <strong>

@@ -299,8 +299,15 @@ export function RouteRosterPanel({
                                 item.planning_status ?? "pending",
                               )}
                         </span>
-                        {item.estimated_arrival_at && (
-                          <span>Visit · {time(item.estimated_arrival_at)}</span>
+                        {item.estimated_service_start_at && (
+                          <span>
+                            Service starts · {time(item.estimated_service_start_at)}
+                          </span>
+                        )}
+                        {!item.estimated_service_start_at && item.estimated_arrival_at && (
+                          <span>
+                            Earliest arrival estimate (depart as soon as possible) · {time(item.estimated_arrival_at)}
+                          </span>
                         )}
                         <span>{item.status.replaceAll("_", " ")}</span>
                       </span>

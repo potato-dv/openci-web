@@ -10,9 +10,12 @@ import app.models  # Register every table before create_all.
 from app.models import (
     ActivityLog,
     AgentShift,
+    AgentWeeklySchedule,
+    AgentWorkProfile,
     Investigation,
     InvestigationAssignment,
     InvestigationReport,
+    InvestigationRouteEvent,
     PlanningRun,
     PlanningTrigger,
     User,
@@ -123,7 +126,7 @@ class ShiftEndInvestigationTests(unittest.TestCase):
         db.flush()
         return report
 
-    def test_shift_end_cancels_only_unfinished_work_once_and_stales_route(self):
+    def test_shift_end_records_unvisited_work_without_changing_investigation_status(self):
         work_date = date(2026, 11, 2)
         with Session(self.engine) as db:
             supervisor, agent, _other = self.create_people(db)
@@ -154,11 +157,12 @@ class ShiftEndInvestigationTests(unittest.TestCase):
             first = process_shift_end_investigations(db, now)
             second = process_shift_end_investigations(db, now)
 
-            self.assertEqual(first["cancelled"], 3)
+            self.assertEqual(first["cancelled"], 0)
+            self.assertEqual(first["carried_over"], 2)
             self.assertEqual(second["cancelled"], 0)
-            for case in unfinished:
-                self.assertEqual(case.status, "cancelled")
-                self.assertEqual(case.reopen_on, work_date + timedelta(days=1))
+            self.assertEqual(second["carried_over"], 0)
+            self.assertEqual([case.status for case in unfinished], ["pending", "assigned", "in_progress"])
+            self.assertTrue(all(case.reopen_on is None for case in unfinished))
             self.assertEqual(report.status, "draft")
             self.assertEqual(under_review.status, "under_review")
             self.assertEqual(completed.status, "completed")
@@ -169,25 +173,54 @@ class ShiftEndInvestigationTests(unittest.TestCase):
             self.assertEqual(run.error_code, "shift_ended")
             self.assertEqual(
                 db.query(ActivityLog).filter_by(action="investigation.cancelled_at_shift_end").count(),
-                3,
+                0,
             )
+            self.assertEqual(
+                db.query(ActivityLog).filter_by(action="investigation.carried_over_at_shift_end").count(),
+                2,
+            )
+            events = db.query(InvestigationRouteEvent).order_by(InvestigationRouteEvent.investigation_id).all()
+            self.assertEqual(len(events), 2)
+            self.assertTrue(all(event.event_type == "shift_end_not_visited" for event in events))
+            self.assertTrue(all(event.state == "carried_over" for event in events))
 
-    def test_next_day_reopens_manual_and_releases_automatic_assignments(self):
+    def test_shift_end_keeps_manual_owner_and_returns_automatic_work_to_pool(self):
         work_date = date(2026, 11, 2)
-        next_date = work_date + timedelta(days=1)
+        next_date = date(2026, 11, 5)
         with Session(self.engine) as db:
             supervisor, agent, _other = self.create_people(db)
             old_shift = self.add_shift(db, agent, work_date)
-            manual_case = self.add_case(db, supervisor, agent, "INV-MANUAL", "in_progress", "manual")
+            db.add(AgentWorkProfile(
+                agent_id=agent.id,
+                depot_latitude=14.6,
+                depot_longitude=121.1,
+            ))
+            db.add(AgentWeeklySchedule(
+                agent_id=agent.id,
+                effective_from=work_date,
+                enabled=True,
+                region_code=REGION,
+                max_visits=8,
+                max_open_cases=20,
+                days=[
+                    {
+                        "weekday": weekday,
+                        "is_working": weekday == 3,
+                        "shift_start": "08:00:00" if weekday == 3 else None,
+                        "shift_end": "17:00:00" if weekday == 3 else None,
+                        "break_start": None,
+                        "break_end": None,
+                    }
+                    for weekday in range(7)
+                ],
+            ))
+            manual_case = self.add_case(db, supervisor, agent, "INV-MANUAL", "assigned", "manual")
             automatic_case = self.add_case(db, supervisor, agent, "INV-AUTO", "assigned", "automatic")
-            process_shift_end_investigations(db, local_instant(work_date, 17, 1))
+            result = process_shift_end_investigations(db, local_instant(work_date, 17, 1))
 
-            # There is no next-day shift: both cases reopen without a route or
-            # a planning trigger, and the automatic assignment returns to VROOM.
-            result = process_shift_end_investigations(db, local_instant(next_date, 7))
-
-            self.assertEqual(result["reopened"], 2)
-            self.assertEqual(manual_case.status, "pending")
+            self.assertEqual(result["carried_over"], 2)
+            self.assertEqual(result["reopened"], 0)
+            self.assertEqual(manual_case.status, "assigned")
             self.assertEqual(manual_case.reopen_on, None)
             self.assertEqual(manual_case.assigned_agent_id, agent.id)
             self.assertEqual(automatic_case.status, "pending")
@@ -198,11 +231,55 @@ class ShiftEndInvestigationTests(unittest.TestCase):
             ).one()
             self.assertFalse(auto_assignment.is_active)
             self.assertIsNotNone(auto_assignment.unassigned_at)
-            self.assertEqual(result["planning_triggers"], 0)
-            self.assertEqual(db.query(PlanningTrigger).count(), 0)
+            self.assertEqual(result["planning_triggers"], 2)
+            self.assertEqual(db.query(PlanningTrigger).count(), 2)
+            triggers = sorted(trigger.work_date for trigger in db.query(PlanningTrigger).all())
+            self.assertEqual(triggers, [work_date + timedelta(days=1), next_date])
+            carry_events = {
+                event.investigation_id: event
+                for event in db.query(InvestigationRouteEvent).all()
+            }
+            self.assertEqual(carry_events[manual_case.id].next_work_date, next_date)
+            self.assertEqual(carry_events[automatic_case.id].next_work_date, work_date + timedelta(days=1))
             self.assertEqual(old_shift.work_date, work_date)
 
-    def test_reopened_cases_queue_once_when_a_next_day_shift_is_available(self):
+    def test_shift_end_finalizes_existing_no_contact_event_instead_of_creating_another(self):
+        work_date = date(2026, 11, 2)
+        with Session(self.engine) as db:
+            supervisor, agent, _other = self.create_people(db)
+            self.add_shift(db, agent, work_date)
+            case = self.add_case(db, supervisor, agent, "INV-NO-CONTACT-CARRY", "assigned")
+            attempt = InvestigationRouteEvent(
+                investigation_id=case.id,
+                agent_id=agent.id,
+                work_date=work_date,
+                event_type="no_contact",
+                state="deferred",
+                retry_number=0,
+                reason="requested_later_visit",
+                notes=None,
+                attempted_at=local_instant(work_date, 10).astimezone(timezone.utc),
+                latitude=case.latitude,
+                longitude=case.longitude,
+            )
+            db.add(attempt)
+            db.flush()
+            original_id = attempt.id
+
+            result = process_shift_end_investigations(db, local_instant(work_date, 17, 1))
+
+            self.assertEqual(result["carried_over"], 1)
+            self.assertEqual(db.query(InvestigationRouteEvent).count(), 1)
+            self.assertEqual(attempt.id, original_id)
+            self.assertEqual(attempt.event_type, "no_contact")
+            self.assertEqual(attempt.state, "carried_over")
+            finalized_at = attempt.finalized_at
+            if finalized_at.tzinfo is None:
+                finalized_at = finalized_at.replace(tzinfo=timezone.utc)
+            self.assertEqual(finalized_at, local_instant(work_date, 17, 1).astimezone(timezone.utc))
+            self.assertEqual(case.status, "assigned")
+
+    def test_automatic_carryover_queues_once_for_the_next_planning_day(self):
         work_date = date(2026, 11, 2)
         next_date = work_date + timedelta(days=1)
         with Session(self.engine) as db:
@@ -213,8 +290,9 @@ class ShiftEndInvestigationTests(unittest.TestCase):
 
             result = process_shift_end_investigations(db, local_instant(next_date, 9))
 
-            self.assertEqual(result["cancelled"], 1)
-            self.assertEqual(result["reopened"], 1)
+            self.assertEqual(result["cancelled"], 0)
+            self.assertEqual(result["carried_over"], 1)
+            self.assertEqual(result["reopened"], 0)
             self.assertEqual(result["planning_triggers"], 1)
             self.assertEqual(case.status, "pending")
             self.assertIsNone(case.assigned_agent_id)
@@ -247,6 +325,7 @@ class ShiftEndInvestigationTests(unittest.TestCase):
             self.assertEqual(case.status, "assigned")
             self.assertIsNone(case.reopen_on)
             self.assertFalse(old_shift.is_available)
+            self.assertEqual(db.query(InvestigationRouteEvent).count(), 0)
 
     def test_delayed_expiry_uses_each_assignment_shift_reopen_date(self):
         first_date = date(2026, 11, 2)
@@ -274,22 +353,12 @@ class ShiftEndInvestigationTests(unittest.TestCase):
 
             result = process_shift_end_investigations(db, local_instant(second_date, 17, 5))
 
-            self.assertEqual(result["cancelled"], 2)
-            # The first shift's next-day reopen date is already due when the
-            # worker catches up, so it cancels and reopens in the same tick.
-            self.assertEqual(first_case.status, "pending")
+            self.assertEqual(result["cancelled"], 0)
+            self.assertEqual(result["carried_over"], 2)
+            self.assertEqual(first_case.status, "assigned")
             self.assertIsNone(first_case.reopen_on)
-            first_events = db.query(ActivityLog).filter_by(
-                object_type="investigation",
-                object_id=first_case.id,
-            ).all()
-            reopened_event = next(
-                event for event in first_events
-                if event.action == "investigation.reopened_after_shift"
-            )
-            self.assertEqual(reopened_event.details["previous_reopen_on"], second_date.isoformat())
-            self.assertEqual(second_case.status, "cancelled")
-            self.assertEqual(second_case.reopen_on, second_date + timedelta(days=1))
+            self.assertEqual(second_case.status, "in_progress")
+            self.assertIsNone(second_case.reopen_on)
 
     def test_late_in_shift_report_supersedes_cancellation_before_reopen(self):
         work_date = date(2026, 11, 2)
@@ -314,7 +383,41 @@ class ShiftEndInvestigationTests(unittest.TestCase):
             self.assertEqual(shift.last_completed_investigation_id, case.id)
             self.assertEqual(shift.last_completed_report_id, report.id)
 
-    def test_late_report_outside_shift_or_after_reopen_is_rejected(self):
+    def test_pending_manual_assignment_can_submit_only_a_past_visit_on_the_same_manila_day(self):
+        work_date = date(2026, 11, 4)
+        now = local_instant(work_date, 11, 4)
+        with Session(self.engine) as db:
+            supervisor, agent, _other = self.create_people(db)
+            self.add_shift(db, agent, work_date)
+            case = self.add_case(db, supervisor, agent, "INV-PENDING-MANUAL-REPORT", "pending")
+            report = self.add_draft(
+                db,
+                case,
+                agent,
+                local_instant(work_date, 11, 30).astimezone(timezone.utc),
+            )
+
+            with self.assertRaisesRegex(ValueError, "cannot be in the future"):
+                submit_report(db, case, actor=agent, now=now)
+            self.assertEqual(report.status, "draft")
+            self.assertEqual(case.status, "pending")
+
+            report.visited_at = local_instant(work_date, 10, 30).astimezone(timezone.utc)
+            submitted = submit_report(db, case, actor=agent, now=now)
+            self.assertEqual(submitted.status, "submitted")
+            self.assertEqual(case.status, "under_review")
+
+            other_case = self.add_case(db, supervisor, agent, "INV-OLD-DAY-REPORT", "pending")
+            self.add_draft(
+                db,
+                other_case,
+                agent,
+                local_instant(work_date - timedelta(days=1), 10, 30).astimezone(timezone.utc),
+            )
+            with self.assertRaisesRegex(ValueError, "Manila workday when the visit occurred"):
+                submit_report(db, other_case, actor=agent, now=now)
+
+    def test_active_visit_survives_shift_end_and_report_must_record_in_shift_visit_time(self):
         work_date = date(2026, 11, 2)
         next_date = work_date + timedelta(days=1)
         with Session(self.engine) as db:
@@ -328,16 +431,22 @@ class ShiftEndInvestigationTests(unittest.TestCase):
                 local_instant(work_date, 17, 30).astimezone(timezone.utc),
             )
             process_shift_end_investigations(db, local_instant(work_date, 18))
-            with self.assertRaisesRegex(ValueError, "within the expired shift"):
+            self.assertEqual(case.status, "in_progress")
+            self.assertEqual(db.query(InvestigationRouteEvent).count(), 0)
+            with self.assertRaisesRegex(ValueError, "within the agent shift"):
                 submit_report(db, case, actor=agent, now=local_instant(work_date, 19))
             db.rollback()
 
-            # Delayed midnight processing still reopens from the saved date.
+            # An active visit can still be submitted after shift end when its
+            # recorded field visit happened during the shift.
+            report.visited_at = local_instant(work_date, 16, 45).astimezone(timezone.utc)
+            submitted = submit_report(db, case, actor=agent, now=local_instant(work_date, 19))
+            self.assertEqual(submitted.status, "submitted")
+            self.assertEqual(case.status, "under_review")
+
             process_shift_end_investigations(db, local_instant(next_date, 7))
-            self.assertEqual(case.status, "pending")
-            with self.assertRaises(ValueError):
-                submit_report(db, case, actor=agent, now=local_instant(next_date, 8))
-            self.assertEqual(report.status, "draft")
+            self.assertEqual(case.status, "under_review")
+            self.assertEqual(report.status, "submitted")
 
     def test_report_winning_the_expiry_race_is_left_under_review(self):
         work_date = date(2026, 11, 2)
@@ -372,19 +481,17 @@ class ShiftEndInvestigationTests(unittest.TestCase):
             agent_route = published_agent_route(db, agent, work_date)
             map_data = planning_map_data(db, work_date)
 
-            self.assertEqual(page["facets"]["status"]["cancelled"], 1)
-            self.assertEqual(page["items"][0].status, "cancelled")
-            self.assertEqual(page["items"][0].reopen_on, work_date + timedelta(days=1))
-            self.assertEqual(agent_route["cancelled_investigations"][0]["id"], case.id)
-            self.assertEqual(
-                agent_route["cancelled_investigations"][0]["reopen_on"],
-                work_date + timedelta(days=1),
-            )
+            self.assertEqual(page["facets"]["status"]["cancelled"], 0)
+            self.assertEqual(page["items"][0].status, "assigned")
+            self.assertIsNone(page["items"][0].reopen_on)
+            self.assertEqual(agent_route["cancelled_investigations"], [])
+            self.assertEqual(agent_route["deferred_attempts"][0]["investigation_id"], case.id)
+            self.assertEqual(agent_route["deferred_attempts"][0]["event_type"], "shift_end_not_visited")
             AgentRouteResponse.model_validate(agent_route)
             map_response = PlanningMapDataResponse.model_validate(map_data)
             self.assertEqual(
                 map_response.unlocated_investigations[0].reopen_on,
-                work_date + timedelta(days=1),
+                None,
             )
 
 

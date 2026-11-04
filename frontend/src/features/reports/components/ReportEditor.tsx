@@ -1,24 +1,31 @@
 import { useEffect, useState } from "react";
+import { FilePenLine } from "lucide-react";
 
 import {
+  finalizeNoContactReport,
   getReport,
   getReportVersions,
   getRevisitRequest,
   requestRevisit,
+  startInvestigation,
   saveReport,
   submitReport,
+  unableToProceed,
 } from "@/features/reports/api";
+import { getAgentRoute } from "@/features/route-planning/api";
 import type {
   Investigation,
   InvestigationOutcome,
   OccupancyStatus,
   Report,
   ReportInput,
+  AgentRoute,
   RevisitRequest,
   VisitOutcome,
 } from "@/types/api";
 import { formatUserName } from "@/utils/userName";
 import { PLANNING_ENABLED } from "@/config";
+import { manilaToday } from "@/utils/format";
 
 type ReportEditorProps = {
   token: string;
@@ -68,15 +75,37 @@ function toPayload(report: ReportInput): ReportInput {
 }
 
 export function ReportEditor({ token, investigation, onChanged }: ReportEditorProps) {
+  const workDate = manilaToday();
   const [report, setReport] = useState<Report | null>(null);
   const [versions, setVersions] = useState<Report[]>([]);
+  const [agentRoute, setAgentRoute] = useState<AgentRoute | null>(null);
   const [revisitRequest, setRevisitRequest] = useState<RevisitRequest | null>(null);
   const [form, setForm] = useState<ReportInput>(emptyReport);
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState("");
   const [message, setMessage] = useState("");
+  const [attemptReason, setAttemptReason] = useState<"no_contact_person" | "nobody_at_location" | "requested_later_visit" | "other">("no_contact_person");
+  const [attemptNotes, setAttemptNotes] = useState("");
+  const [contactFrom, setContactFrom] = useState("");
+  const [contactUntil, setContactUntil] = useState("");
   const revisitRequestStatus = revisitRequest?.status;
+  const routeStop = agentRoute?.stops.find((stop) => stop.investigation_id === investigation.id);
+  const routeRevision = agentRoute?.route_revision ?? null;
+  const routeAction = routeRevision == null
+    ? null
+    : { work_date: agentRoute?.work_date ?? workDate, route_revision: routeRevision };
+  const isCurrentStop = Boolean(
+    routeStop?.actionable && agentRoute?.current_actionable_investigation_id === investigation.id,
+  );
+  const canStart = Boolean(isCurrentStop && routeStop?.can_start && !routeStop.can_report);
+  const canEdit = Boolean(isCurrentStop && routeStop?.can_report && routeAction);
+
+  async function refreshRoute() {
+    const latest = await getAgentRoute(token, workDate);
+    setAgentRoute(latest);
+    return latest;
+  }
 
   useEffect(() => {
     let cancelled = false;
@@ -86,17 +115,21 @@ export function ReportEditor({ token, investigation, onChanged }: ReportEditorPr
       setError("");
       setMessage("");
       try {
-        const [reportData, reportVersions, revisitData] = await Promise.all([
+        const [reportData, reportVersions, revisitData, routeData] = await Promise.all([
           getReport(token, investigation.id),
           getReportVersions(token, investigation.id),
           PLANNING_ENABLED
             ? getRevisitRequest(token, investigation.id)
+            : Promise.resolve(null),
+          PLANNING_ENABLED
+            ? getAgentRoute(token, workDate).catch(() => null)
             : Promise.resolve(null),
         ]);
         if (cancelled) return;
         setReport(reportData);
         setVersions(reportVersions);
         setRevisitRequest(revisitData);
+        setAgentRoute(routeData);
         setForm(reportData ? {
           content: reportData.content,
           visit_outcome: reportData.visit_outcome,
@@ -123,7 +156,25 @@ export function ReportEditor({ token, investigation, onChanged }: ReportEditorPr
 
     void loadReport();
     return () => { cancelled = true; };
-  }, [investigation.id, token]);
+  }, [investigation.id, investigation.status, token, workDate]);
+
+  useEffect(() => {
+    if (!PLANNING_ENABLED) return;
+    let cancelled = false;
+    const refresh = async () => {
+      try {
+        const latest = await getAgentRoute(token, workDate);
+        if (!cancelled) setAgentRoute(latest);
+      } catch {
+        // Keep the last route snapshot; mutations are checked by the backend.
+      }
+    };
+    const timer = window.setInterval(() => void refresh(), 10_000);
+    return () => {
+      cancelled = true;
+      window.clearInterval(timer);
+    };
+  }, [token, workDate]);
 
   useEffect(() => {
     if (
@@ -158,7 +209,8 @@ export function ReportEditor({ token, investigation, onChanged }: ReportEditorPr
     setError("");
     setMessage("");
     try {
-      const saved = await saveReport(token, investigation.id, toPayload(form));
+      if (!routeAction) throw new Error("Refresh your route before saving this report.");
+      const saved = await saveReport(token, investigation.id, toPayload(form), routeAction);
       setReport(saved);
       setVersions((current) => [
         ...current.filter((item) => item.id !== saved.id),
@@ -200,9 +252,10 @@ export function ReportEditor({ token, investigation, onChanged }: ReportEditorPr
     setSaving(true);
     setMessage("");
     try {
-      const saved = await saveReport(token, investigation.id, toPayload(form));
+      if (!routeAction) throw new Error("Refresh your route before submitting this report.");
+      const saved = await saveReport(token, investigation.id, toPayload(form), routeAction);
       setReport(saved);
-      const submitted = await submitReport(token, investigation.id);
+      const submitted = await submitReport(token, investigation.id, routeAction);
       setReport(submitted);
       setVersions((current) => [
         ...current.filter((item) => item.id !== submitted.id),
@@ -217,6 +270,76 @@ export function ReportEditor({ token, investigation, onChanged }: ReportEditorPr
       onChanged();
     } catch (err) {
       setError(err instanceof Error ? err.message : "Could not submit report.");
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  async function handleStart() {
+    if (!routeAction) return;
+    setSaving(true);
+    setError("");
+    setMessage("");
+    try {
+      await startInvestigation(token, investigation.id, routeAction);
+      await refreshRoute();
+      setMessage(routeStop?.sequence_state === "deferred_retry"
+        ? "Retry started. Complete this visit before continuing the route."
+        : "Investigation started. Complete this stop before continuing the route.");
+      onChanged();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Could not start this investigation.");
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  function localToIso(value: string) {
+    return value ? new Date(`${value}:00+08:00`).toISOString() : null;
+  }
+
+  async function handleUnableToProceed() {
+    if (!routeAction) return;
+    setSaving(true);
+    setError("");
+    setMessage("");
+    try {
+      await unableToProceed(token, investigation.id, {
+        ...routeAction,
+        reason: attemptReason,
+        notes: attemptNotes.trim() || null,
+        contact_available_from: localToIso(contactFrom),
+        contact_available_until: localToIso(contactUntil),
+      });
+      setAttemptNotes("");
+      setContactFrom("");
+      setContactUntil("");
+      await refreshRoute();
+      setMessage("The no-contact attempt is recorded. The next route stop is now available.");
+      onChanged();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Could not record the no-contact attempt.");
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  async function handleFinalizeNoContact() {
+    if (!routeAction || !routeStop?.active_attempt_id) return;
+    setSaving(true);
+    setError("");
+    setMessage("");
+    try {
+      const finalized = await finalizeNoContactReport(
+        token, investigation.id, routeStop.active_attempt_id, routeAction,
+      );
+      await refreshRoute();
+      setMessage(finalized.next_work_date
+        ? `No Contact Report saved. This investigation continues on ${finalized.next_work_date}.`
+        : "No Contact Report saved. The attempt remains open for the next available shift.");
+      onChanged();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Could not finalize this no-contact attempt.");
     } finally {
       setSaving(false);
     }
@@ -243,6 +366,7 @@ export function ReportEditor({ token, investigation, onChanged }: ReportEditorPr
   }
 
   const locked = report?.status === "submitted" || report?.status === "approved";
+  const reportFieldsDisabled = loading || saving || locked || !canEdit;
   const isReturned = report?.status === "returned_for_correction" || investigation.status === "returned_for_correction";
   const latestReturnedReport = [...versions]
     .filter((item) => item.status === "returned_for_correction")
@@ -267,13 +391,25 @@ export function ReportEditor({ token, investigation, onChanged }: ReportEditorPr
   );
 
   return (
-    <section className="workflow-panel">
+    <section className="workflow-panel investigation-report-panel">
       <div className="section-heading">
         <div>
-          <h3>Investigation report</h3>
-          <p>Record field visit details and findings for supervisor review.</p>
+          <div className="workflow-title">
+            <span className="workflow-title-icon" aria-hidden="true">
+              <FilePenLine size={17} strokeWidth={2} />
+            </span>
+            <div>
+              <h3>Investigation report</h3>
+              <p>Record field visit details and findings for supervisor review.</p>
+            </div>
+          </div>
         </div>
-        {report && <span className="count-badge">Version {report.version} · {report.status.replaceAll("_", " ")}</span>}
+        {report && (
+          <span className="count-badge report-status-badge">
+            Report · version {report.version} ·{" "}
+            {report.status.replaceAll("_", " ")}
+          </span>
+        )}
       </div>
 
       {isReturned && <p className="workflow-meta">This version was returned. Saving your corrections creates a new version and keeps this one in the history.</p>}
@@ -282,9 +418,32 @@ export function ReportEditor({ token, investigation, onChanged }: ReportEditorPr
       )}
       {report?.author_name && <p className="workflow-meta">Report author: <strong>{formatUserName(report.author_name)}</strong></p>}
 
+      {PLANNING_ENABLED && !routeRevision && (
+        <p className="workflow-meta" role="status">
+          The current route is not published yet. Refresh the route before starting or saving work.
+        </p>
+      )}
+      {routeStop?.sequence_state === "upcoming" && (
+        <p className="workflow-meta" role="status">
+          This is an upcoming investigation. The current route stop must be completed or deferred first.
+        </p>
+      )}
+      {routeStop?.priority_order_exception_reason && (
+        <p className="workflow-meta" role="status">
+          This stop has a published schedule exception because of its visit window, shift hours, or break.
+        </p>
+      )}
+      {canStart && (
+        <div className="workflow-actions">
+          <button type="button" className="primary-button compact-button" onClick={() => void handleStart()} disabled={loading || saving}>
+            {saving ? "Starting…" : routeStop?.sequence_state === "deferred_retry" ? "Retry Investigation" : "Start Current Investigation"}
+          </button>
+        </div>
+      )}
+
       <div className="report-fields">
         <label>Visit outcome
-          <select value={form.visit_outcome ?? ""} onChange={(event) => update("visit_outcome", (event.target.value || null) as VisitOutcome | null)} disabled={loading || saving || locked}>
+          <select value={form.visit_outcome ?? ""} onChange={(event) => update("visit_outcome", (event.target.value || null) as VisitOutcome | null)} disabled={reportFieldsDisabled}>
             <option value="">Select visit outcome</option>
             <option value="visited">Visited</option>
             <option value="no_access">No access</option>
@@ -292,7 +451,7 @@ export function ReportEditor({ token, investigation, onChanged }: ReportEditorPr
           </select>
         </label>
         <label>Investigation outcome
-          <select value={form.outcome ?? ""} onChange={(event) => update("outcome", (event.target.value || null) as InvestigationOutcome | null)} disabled={loading || saving || locked}>
+          <select value={form.outcome ?? ""} onChange={(event) => update("outcome", (event.target.value || null) as InvestigationOutcome | null)} disabled={reportFieldsDisabled}>
             <option value="">Select investigation outcome</option>
             <option value="verified">Verified</option>
             <option value="not_verified">Not verified</option>
@@ -301,10 +460,10 @@ export function ReportEditor({ token, investigation, onChanged }: ReportEditorPr
           </select>
         </label>
         <label>Verified address <span className="optional-label">Required when outcome is Verified</span>
-          <input value={form.verified_address ?? ""} onChange={(event) => update("verified_address", event.target.value || null)} maxLength={500} disabled={loading || saving || locked} />
+          <input value={form.verified_address ?? ""} onChange={(event) => update("verified_address", event.target.value || null)} maxLength={500} disabled={reportFieldsDisabled} />
         </label>
         <label>Occupancy status <span className="optional-label">Optional</span>
-          <select value={form.occupancy_status ?? ""} onChange={(event) => update("occupancy_status", (event.target.value || null) as OccupancyStatus | null)} disabled={loading || saving || locked}>
+          <select value={form.occupancy_status ?? ""} onChange={(event) => update("occupancy_status", (event.target.value || null) as OccupancyStatus | null)} disabled={reportFieldsDisabled}>
             <option value="">Select occupancy status</option>
             <option value="occupied">Occupied</option>
             <option value="vacant">Vacant</option>
@@ -313,30 +472,76 @@ export function ReportEditor({ token, investigation, onChanged }: ReportEditorPr
           </select>
         </label>
         <label>Visit date and time · Philippine time <span className="optional-label">Required for Visited or No access</span>
-          <input type="datetime-local" value={form.visited_at ?? ""} onChange={(event) => update("visited_at", event.target.value || null)} disabled={loading || saving || locked} />
+          <input type="datetime-local" value={form.visited_at ?? ""} onChange={(event) => update("visited_at", event.target.value || null)} disabled={reportFieldsDisabled} />
         </label>
       </div>
 
       <label htmlFor="property-condition">Property condition <span className="optional-label">Optional</span></label>
-      <textarea id="property-condition" value={form.property_condition ?? ""} onChange={(event) => update("property_condition", event.target.value || null)} placeholder="Describe relevant property observations" disabled={loading || saving || locked} />
+      <textarea id="property-condition" value={form.property_condition ?? ""} onChange={(event) => update("property_condition", event.target.value || null)} placeholder="Describe relevant property observations" disabled={reportFieldsDisabled} />
 
       <label htmlFor="interaction-notes">Interaction notes <span className="optional-label">Optional</span></label>
-      <textarea id="interaction-notes" value={form.interaction_notes ?? ""} onChange={(event) => update("interaction_notes", event.target.value || null)} placeholder="Record factual notes about the interaction" disabled={loading || saving || locked} />
+      <textarea id="interaction-notes" value={form.interaction_notes ?? ""} onChange={(event) => update("interaction_notes", event.target.value || null)} placeholder="Record factual notes about the interaction" disabled={reportFieldsDisabled} />
 
-      <label htmlFor="report-content">Detailed findings</label>
+      <label className="report-findings-field-label" htmlFor="report-content">
+        Detailed findings
+        <span>Required · describe what you observed at the location</span>
+      </label>
       <textarea
         id="report-content"
-        className="report-editor"
+        className="report-editor report-findings-input"
         value={form.content}
         onChange={(event) => update("content", event.target.value)}
         placeholder="Describe the investigation findings..."
         maxLength={20_000}
-        disabled={loading || saving || locked}
+        disabled={reportFieldsDisabled}
       />
+
+      {canEdit && !locked && (
+        <div className="report-fields">
+          <label>Unable to proceed
+            <select value={attemptReason} onChange={(event) => setAttemptReason(event.target.value as typeof attemptReason)} disabled={saving}>
+              <option value="no_contact_person">No contact person available</option>
+              <option value="nobody_at_location">Nobody at the location</option>
+              <option value="requested_later_visit">Contact requested a later visit</option>
+              <option value="other">Other</option>
+            </select>
+          </label>
+          <label>Notes{attemptReason === "other" ? " · required" : " · optional"}
+            <input value={attemptNotes} onChange={(event) => setAttemptNotes(event.target.value)} maxLength={4000} disabled={saving} />
+          </label>
+          <label>Contact available from · Philippine time
+            <input type="datetime-local" value={contactFrom} onChange={(event) => setContactFrom(event.target.value)} disabled={saving} />
+          </label>
+          <label>Contact available until · Philippine time
+            <input type="datetime-local" value={contactUntil} onChange={(event) => setContactUntil(event.target.value)} disabled={saving} />
+          </label>
+        </div>
+      )}
 
       {loading && <p className="muted">Loading report…</p>}
       {error && <p className="error" role="alert">{error}</p>}
       {message && <p className="success-message" role="status">{message}</p>}
+
+      {canEdit && !locked && (
+        <div className="workflow-actions">
+          <button
+            type="button"
+            className="secondary-button"
+            onClick={() => void handleUnableToProceed()}
+            disabled={saving || (attemptReason === "other" && !attemptNotes.trim())}
+          >
+            {saving ? "Recording attempt…" : "Unable to Proceed"}
+          </button>
+        </div>
+      )}
+
+      {routeStop?.sequence_state === "deferred" && routeStop.can_finalize_no_contact && routeStop.active_attempt_id != null && (
+        <div className="workflow-actions">
+          <button type="button" className="secondary-button" onClick={() => void handleFinalizeNoContact()} disabled={saving}>
+            {saving ? "Saving…" : "Submit No Contact Report"}
+          </button>
+        </div>
+      )}
 
       {requestMatchesReturnedReport && hasActiveRevisitRequest && revisitRequest && (
         <p className="workflow-meta" role="status">
@@ -363,7 +568,7 @@ export function ReportEditor({ token, investigation, onChanged }: ReportEditorPr
         </div>
       )}
 
-      {!locked && (
+      {!locked && canEdit && (
         <div className="workflow-actions">
           <button type="button" className="secondary-button" onClick={() => void handleSave()} disabled={loading || saving || !form.content.trim()}>
             {saving ? "Saving…" : "Save draft"}

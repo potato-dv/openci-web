@@ -211,8 +211,8 @@ class PlanningInputTests(unittest.TestCase):
                     "routes": [{
                         "vehicle": 7,
                         "steps": [
-                            {"type": "start", "arrival": start, "duration": 0},
-                            {"type": "job", "id": case.id, "arrival": start + 600, "duration": 600},
+                            {"type": "start", "arrival": start, "waiting_time": 0, "duration": 0},
+                            {"type": "job", "id": case.id, "arrival": start + 600, "waiting_time": 0, "duration": 600},
                             {"type": "end", "arrival": start + 1500, "duration": 1200},
                         ],
                     }],
@@ -236,6 +236,394 @@ class PlanningInputTests(unittest.TestCase):
 
         self.assertEqual(outcomes[0]["outcome"], "assigned")
         self.assertEqual(outcomes[0]["estimated_arrival_at"], planned_at.astimezone(timezone.utc) + timedelta(minutes=10))
+
+    def test_priority_resequencing_puts_farther_urgent_and_high_stops_first(self):
+        from app.services.planning import PRIORITY_SEARCH_LIMIT_SECONDS
+
+        now = datetime(2026, 11, 4, 8, tzinfo=timezone.utc)
+        origin = (14.6, 121.1)
+        cases = [
+            SimpleNamespace(id=410, latitude=14.5, longitude=121.0, service_duration_seconds=300,
+                            priority="normal", region_code="1300000000", visit_not_before_at=None,
+                            visit_due_at=None, assigned_agent_id=7, reference_number="INV-NORMAL"),
+            SimpleNamespace(id=411, latitude=14.55, longitude=121.15, service_duration_seconds=300,
+                            priority="high", region_code="1300000000", visit_not_before_at=None,
+                            visit_due_at=None, assigned_agent_id=7, reference_number="INV-HIGH"),
+            SimpleNamespace(id=412, latitude=14.65, longitude=121.25, service_duration_seconds=300,
+                            priority="urgent", region_code="1300000000", visit_not_before_at=None,
+                            visit_due_at=None, assigned_agent_id=7, reference_number="INV-URGENT"),
+        ]
+        points = [origin, *((case.latitude, case.longitude) for case in cases)]
+        point_indexes = {
+            (round(latitude, 6), round(longitude, 6)): index
+            for index, (latitude, longitude) in enumerate(points)
+        }
+        durations = [[0 if i == j else 300 for j in range(4)] for i in range(4)]
+        durations[0][1], durations[0][2], durations[0][3] = 300, 600, 1800
+        distances = [[value * 10 for value in row] for row in durations]
+        shift = SimpleNamespace(
+            agent_id=7, work_date=now.date(), region_code="1300000000",
+            start_latitude=origin[0], start_longitude=origin[1], start_location_label="Depot",
+            end_latitude=None, end_longitude=None, last_completed_at=None,
+            last_completed_latitude=None, last_completed_longitude=None,
+            break_starts_at=None, break_ends_at=None, max_open_cases=10, max_visits=8,
+            shift_starts_at=now, shift_ends_at=now + timedelta(hours=10),
+        )
+
+        def route_for(order):
+            epoch = int(now.timestamp())
+            steps = [{"type": "start", "arrival": epoch, "waiting_time": 0, "duration": 0}]
+            current_index = 0
+            departure = epoch
+            travel_total = 0
+            case_by_id = {case.id: case for case in cases}
+            for case_id in order:
+                case = case_by_id[case_id]
+                next_index = point_indexes[(round(case.latitude, 6), round(case.longitude, 6))]
+                travel = int(durations[current_index][next_index])
+                travel_total += travel
+                arrival = departure + travel
+                steps.append({"type": "job", "id": case_id, "arrival": arrival,
+                              "waiting_time": 0, "duration": travel_total})
+                departure = arrival + case.service_duration_seconds
+                current_index = next_index
+            steps.append({"type": "end", "arrival": departure, "duration": travel_total})
+            return {"vehicle": 7, "steps": steps, "duration": travel_total}
+
+        class Solver:
+            def __init__(self):
+                self.payloads = []
+
+            def solve(self, payload):
+                self.payloads.append(payload)
+                if payload.get("options"):
+                    self.assert_search_limit(payload)
+                    order = [step["id"] for step in payload["vehicles"][0]["steps"]]
+                else:
+                    order = [410, 411, 412]
+                return {"routes": [route_for(order)], "unassigned": []}
+
+            @staticmethod
+            def assert_search_limit(payload):
+                if payload["options"]["l"] != PRIORITY_SEARCH_LIMIT_SECONDS:
+                    raise AssertionError("Priority route search must be bounded")
+
+        solver = Solver()
+        outcomes = _run_component(
+            [0, 1, 2, 3], point_indexes, points, durations, distances, cases, [shift],
+            {case.id: 7 for case in cases}, {7: 0}, solver, now=now,
+        )
+
+        self.assertEqual([item["investigation_id"] for item in outcomes], [412, 411, 410])
+        self.assertEqual([item["sequence"] for item in outcomes], [1, 2, 3])
+        self.assertEqual(outcomes[0]["planned_arrival_at"], now + timedelta(minutes=30))
+        self.assertEqual(solver.payloads[1]["vehicles"][0]["steps"], [
+            {"type": "job", "id": 412},
+            {"type": "job", "id": 411},
+            {"type": "job", "id": 410},
+        ])
+
+    def test_same_priority_uses_earliest_assignment_then_stable_id(self):
+        from app.services.planning import _original_assignment_order
+
+        assigned_at = datetime(2026, 11, 5, 8, tzinfo=timezone.utc)
+        cases = [
+            SimpleNamespace(
+                id=503,
+                created_at=assigned_at - timedelta(hours=1),
+                assignments=[],
+            ),
+            SimpleNamespace(
+                id=502,
+                created_at=assigned_at,
+                assignments=[SimpleNamespace(assigned_at=assigned_at)],
+            ),
+            SimpleNamespace(
+                id=501,
+                created_at=assigned_at,
+                assignments=[
+                    SimpleNamespace(assigned_at=assigned_at + timedelta(hours=1)),
+                    SimpleNamespace(assigned_at=assigned_at),
+                ],
+            ),
+            SimpleNamespace(
+                id=500,
+                created_at=assigned_at + timedelta(minutes=1),
+                assignments=[SimpleNamespace(assigned_at=assigned_at + timedelta(minutes=1))],
+            ),
+        ]
+
+        self.assertEqual(
+            [case.id for case in sorted(cases, key=_original_assignment_order)],
+            [503, 501, 502, 500],
+        )
+
+    def test_hard_window_exception_keeps_urgent_visit_after_earlier_normal_deadline(self):
+        now = datetime(2026, 11, 4, 8, tzinfo=timezone.utc)
+        origin = (14.6, 121.1)
+        normal_due = datetime(2026, 11, 4, 11, tzinfo=timezone.utc)
+        urgent_not_before = datetime(2026, 11, 4, 15, tzinfo=timezone.utc)
+        cases = [
+            SimpleNamespace(id=420, latitude=14.5, longitude=121.0, service_duration_seconds=1800,
+                            priority="normal", region_code="1300000000", visit_not_before_at=None,
+                            visit_due_at=normal_due, assigned_agent_id=7, reference_number="INV-DUE-11"),
+            SimpleNamespace(id=421, latitude=14.65, longitude=121.25, service_duration_seconds=1800,
+                            priority="urgent", region_code="1300000000", visit_not_before_at=urgent_not_before,
+                            visit_due_at=None, assigned_agent_id=7, reference_number="INV-URGENT-15"),
+        ]
+        points = [origin, *((case.latitude, case.longitude) for case in cases)]
+        point_indexes = {
+            (round(latitude, 6), round(longitude, 6)): index
+            for index, (latitude, longitude) in enumerate(points)
+        }
+        durations = [[0 if i == j else 600 for j in range(3)] for i in range(3)]
+        durations[0][1], durations[0][2], durations[1][2] = 300, 1800, 1800
+        distances = [[value * 10 for value in row] for row in durations]
+        shift = SimpleNamespace(
+            agent_id=7, work_date=now.date(), region_code="1300000000",
+            start_latitude=origin[0], start_longitude=origin[1], start_location_label="Depot",
+            end_latitude=None, end_longitude=None, last_completed_at=None,
+            last_completed_latitude=None, last_completed_longitude=None,
+            break_starts_at=None, break_ends_at=None, max_open_cases=10, max_visits=8,
+            shift_starts_at=now, shift_ends_at=now + timedelta(hours=10),
+        )
+
+        def route_for(order):
+            epoch = int(now.timestamp())
+            steps = [{"type": "start", "arrival": epoch, "waiting_time": 0, "duration": 0}]
+            case_by_id = {case.id: case for case in cases}
+            current_index = 0
+            departure = epoch
+            travel_total = 0
+            for case_id in order:
+                case = case_by_id[case_id]
+                next_index = point_indexes[(round(case.latitude, 6), round(case.longitude, 6))]
+                travel = int(durations[current_index][next_index])
+                travel_total += travel
+                arrival = departure + travel
+                not_before = int(case.visit_not_before_at.timestamp()) if case.visit_not_before_at else None
+                waiting = max(0, not_before - arrival) if not_before is not None else 0
+                service_start = arrival + waiting
+                if case.visit_due_at and service_start + case.service_duration_seconds > case.visit_due_at.timestamp():
+                    raise RoutingUnavailable("vroom_solver_failed")
+                steps.append({"type": "job", "id": case_id, "arrival": arrival,
+                              "waiting_time": waiting, "duration": travel_total})
+                departure = service_start + case.service_duration_seconds
+                current_index = next_index
+            steps.append({"type": "end", "arrival": departure, "duration": travel_total})
+            return {"vehicle": 7, "steps": steps, "duration": travel_total}
+
+        class Solver:
+            def solve(self, payload):
+                vehicle = payload["vehicles"][0]
+                order = [step["id"] for step in vehicle["steps"]] if vehicle.get("steps") else [420, 421]
+                return {"routes": [route_for(order)], "unassigned": []}
+
+        solver = Solver()
+        outcomes = _run_component(
+            [0, 1, 2], point_indexes, points, durations, distances, cases, [shift],
+            {case.id: 7 for case in cases}, {7: 0}, solver, now=now,
+        )
+
+        self.assertEqual([item["investigation_id"] for item in outcomes], [420, 421])
+        self.assertLess(outcomes[0]["estimated_service_start_at"], normal_due)
+        self.assertEqual(outcomes[1]["estimated_service_start_at"], urgent_not_before)
+        self.assertEqual(outcomes[0]["_priority_order_warnings"][0]["reason"], "schedule_constraint")
+        self.assertEqual(outcomes[0]["_priority_order_warnings"][0]["investigation_id"], 420)
+        self.assertEqual(outcomes[0]["_priority_order_warnings"][0]["deferred_investigation_id"], 421)
+
+    def test_priority_search_limit_keeps_feasible_route_and_adds_warning(self):
+        now = datetime(2026, 11, 4, 8, tzinfo=timezone.utc)
+        origin = (14.6, 121.1)
+        cases = [
+            SimpleNamespace(id=430, latitude=14.5, longitude=121.0, service_duration_seconds=300,
+                            priority="normal", region_code="1300000000", visit_not_before_at=None,
+                            visit_due_at=None, assigned_agent_id=7, reference_number="INV-NORMAL"),
+            SimpleNamespace(id=431, latitude=14.65, longitude=121.25, service_duration_seconds=300,
+                            priority="urgent", region_code="1300000000", visit_not_before_at=None,
+                            visit_due_at=None, assigned_agent_id=7, reference_number="INV-URGENT"),
+        ]
+        points = [origin, *((case.latitude, case.longitude) for case in cases)]
+        point_indexes = {
+            (round(latitude, 6), round(longitude, 6)): index
+            for index, (latitude, longitude) in enumerate(points)
+        }
+        durations = [[0 if i == j else 600 for j in range(3)] for i in range(3)]
+        distances = [[value * 10 for value in row] for row in durations]
+        shift = SimpleNamespace(
+            agent_id=7, work_date=now.date(), region_code="1300000000",
+            start_latitude=origin[0], start_longitude=origin[1], start_location_label="Depot",
+            end_latitude=None, end_longitude=None, last_completed_at=None,
+            last_completed_latitude=None, last_completed_longitude=None,
+            break_starts_at=None, break_ends_at=None, max_open_cases=10, max_visits=8,
+            shift_starts_at=now, shift_ends_at=now + timedelta(hours=10),
+        )
+
+        def route_for(order):
+            epoch = int(now.timestamp())
+            steps = [{"type": "start", "arrival": epoch, "waiting_time": 0, "duration": 0}]
+            current_index = 0
+            departure = epoch
+            travel_total = 0
+            for case_id in order:
+                case = next(item for item in cases if item.id == case_id)
+                next_index = point_indexes[(round(case.latitude, 6), round(case.longitude, 6))]
+                travel = int(durations[current_index][next_index])
+                travel_total += travel
+                arrival = departure + travel
+                steps.append({"type": "job", "id": case_id, "arrival": arrival,
+                              "waiting_time": 0, "duration": travel_total})
+                departure = arrival + case.service_duration_seconds
+                current_index = next_index
+            steps.append({"type": "end", "arrival": departure, "duration": travel_total})
+            return {"vehicle": 7, "steps": steps, "duration": travel_total}
+
+        class Solver:
+            def solve(self, _payload):
+                return {"routes": [route_for([430, 431])], "unassigned": []}
+
+        with patch("app.services.planning.monotonic", side_effect=[0, 2, 3, 5]):
+            outcomes = _run_component(
+                [0, 1, 2], point_indexes, points, durations, distances, cases, [shift],
+                {case.id: 7 for case in cases}, {7: 0}, Solver(), now=now,
+            )
+
+        self.assertEqual([item["investigation_id"] for item in outcomes], [430, 431])
+        self.assertEqual(outcomes[0]["_priority_order_warnings"][0]["reason"], "search_limit")
+
+        class SortedSolver:
+            def solve(self, payload):
+                order = [430, 431] if not payload.get("options") else [431, 430]
+                return {"routes": [route_for(order)], "unassigned": []}
+
+        with patch("app.services.planning.monotonic", side_effect=[0, 2]):
+            prioritized_outcomes = _run_component(
+                [0, 1, 2], point_indexes, points, durations, distances, cases, [shift],
+                {case.id: 7 for case in cases}, {7: 0}, SortedSolver(), now=now,
+            )
+
+        self.assertEqual([item["investigation_id"] for item in prioritized_outcomes], [431, 430])
+        route_warning = prioritized_outcomes[0]["_priority_order_warnings"][0]
+        self.assertEqual(route_warning["reason"], "search_limit")
+        self.assertIsNone(route_warning["investigation_id"])
+        self.assertIsNone(route_warning["deferred_investigation_id"])
+
+    def test_stop_arrivals_use_departure_anchor_and_account_for_breaks_and_windows(self):
+        work_date = date(2026, 11, 4)
+        manila = ZoneInfo("Asia/Manila")
+        planning_now = datetime(2026, 11, 4, 9, 4, 33, tzinfo=manila)
+        completed_at = datetime(2026, 11, 4, 9, 4, 0, tzinfo=manila)
+        break_start = datetime(2026, 11, 4, 12, 0, tzinfo=manila)
+        break_end = datetime(2026, 11, 4, 13, 0, tzinfo=manila)
+        first_arrival = datetime(2026, 11, 4, 11, 0, tzinfo=manila)
+        planned_departure = first_arrival - timedelta(seconds=1069)
+        second_arrival = datetime(2026, 11, 4, 13, 10, tzinfo=manila)
+        second_service_start = datetime(2026, 11, 4, 14, 0, tzinfo=manila)
+        origin = (14.669513, 121.078835)
+        first_point = (14.6, 121.1)
+        second_point = (14.5, 121.2)
+        travel_to_first = 1069
+        travel_to_second = 600
+        cases = [
+            SimpleNamespace(
+                id=402,
+                latitude=first_point[0],
+                longitude=first_point[1],
+                service_duration_seconds=3600,
+                priority="high",
+                region_code="1300000000",
+                visit_not_before_at=None,
+                visit_due_at=None,
+                assigned_agent_id=7,
+            ),
+            SimpleNamespace(
+                id=403,
+                latitude=second_point[0],
+                longitude=second_point[1],
+                service_duration_seconds=600,
+                priority="normal",
+                region_code="1300000000",
+                visit_not_before_at=second_service_start,
+                visit_due_at=second_service_start + timedelta(minutes=30),
+                assigned_agent_id=7,
+            ),
+        ]
+        shift = SimpleNamespace(
+            agent_id=7,
+            work_date=work_date,
+            region_code="1300000000",
+            start_latitude=14.6,
+            start_longitude=121.1,
+            start_location_label="Depot",
+            end_latitude=None,
+            end_longitude=None,
+            last_completed_at=completed_at,
+            last_completed_latitude=origin[0],
+            last_completed_longitude=origin[1],
+            break_starts_at=break_start,
+            break_ends_at=break_end,
+            max_open_cases=20,
+            max_visits=8,
+            shift_starts_at=datetime(2026, 11, 4, 8, 0, tzinfo=manila),
+            shift_ends_at=datetime(2026, 11, 4, 17, 0, tzinfo=manila),
+        )
+
+        class Solver:
+            def solve(self, _payload):
+                return {
+                    "routes": [{
+                        "vehicle": 7,
+                        "steps": [
+                            {"type": "start", "arrival": int(planning_now.timestamp()), "waiting_time": int((planned_departure - planning_now).total_seconds()), "duration": 0},
+                            {"type": "job", "id": 402, "arrival": int(first_arrival.timestamp()), "waiting_time": 0, "duration": travel_to_first},
+                            {"type": "break", "arrival": int(break_start.timestamp()), "waiting_time": 0, "service": 3600, "duration": travel_to_first},
+                            {"type": "job", "id": 403, "arrival": int(second_arrival.timestamp()), "waiting_time": 3000, "duration": travel_to_first + travel_to_second},
+                            {"type": "end", "arrival": int((second_service_start + timedelta(minutes=10)).timestamp()), "duration": travel_to_first + travel_to_second},
+                        ],
+                    }],
+                    "unassigned": [],
+                }
+
+        points = [origin, first_point, second_point]
+        point_indexes = {
+            (round(latitude, 6), round(longitude, 6)): index
+            for index, (latitude, longitude) in enumerate(points)
+        }
+        outcomes = _run_component(
+            [0, 1, 2],
+            point_indexes,
+            points,
+            [[0, travel_to_first, 1800], [1200, 0, travel_to_second], [1800, 700, 0]],
+            [[0, 15196, 22000], [16000, 0, 7500], [22000, 8000, 0]],
+            cases,
+            [shift],
+            {402: 7, 403: 7},
+            {7: 0},
+            Solver(),
+            now=planning_now,
+        )
+
+        expected_first_arrival = planning_now.astimezone(timezone.utc) + timedelta(seconds=travel_to_first)
+        self.assertEqual(outcomes[0]["estimated_arrival_at"], expected_first_arrival)
+        self.assertEqual(outcomes[0]["planned_arrival_at"], first_arrival.astimezone(timezone.utc))
+        self.assertEqual(outcomes[0]["planned_departure_at"], planned_departure.astimezone(timezone.utc))
+        self.assertEqual(outcomes[0]["estimated_service_start_at"], first_arrival.astimezone(timezone.utc))
+        self.assertEqual(outcomes[0]["waiting_seconds"], 0)
+        self.assertEqual(
+            outcomes[0]["planned_arrival_at"] + timedelta(seconds=outcomes[0]["waiting_seconds"]),
+            outcomes[0]["estimated_service_start_at"],
+        )
+        self.assertEqual(outcomes[0]["travel_seconds"], travel_to_first)
+        self.assertEqual(outcomes[0]["route_break_seconds"], 3600)
+        self.assertEqual(outcomes[1]["estimated_arrival_at"], second_arrival.astimezone(timezone.utc))
+        self.assertEqual(outcomes[1]["planned_arrival_at"], second_arrival.astimezone(timezone.utc))
+        self.assertEqual(outcomes[1]["estimated_service_start_at"], second_service_start.astimezone(timezone.utc))
+        self.assertEqual(outcomes[1]["waiting_seconds"], 3000)
+        self.assertEqual(
+            outcomes[1]["planned_arrival_at"] + timedelta(seconds=outcomes[1]["waiting_seconds"]),
+            outcomes[1]["estimated_service_start_at"],
+        )
+        self.assertEqual(outcomes[1]["travel_seconds"], travel_to_second)
 
     def test_vroom_break_before_first_job_does_not_double_count_travel(self):
         work_date = datetime.now(ZoneInfo("Asia/Manila")).date()
@@ -285,7 +673,7 @@ class PlanningInputTests(unittest.TestCase):
                     "routes": [{
                         "vehicle": 7,
                         "steps": [
-                            {"type": "start", "arrival": start_arrival, "duration": 0},
+                            {"type": "start", "arrival": start_arrival, "waiting_time": 0, "duration": 0},
                             {"type": "break", "arrival": break_start_epoch, "duration": outbound_seconds, "waiting_time": 0, "service": break_end_epoch - break_start_epoch},
                             {"type": "job", "id": case.id, "arrival": break_end_epoch, "duration": outbound_seconds, "waiting_time": 0},
                             {"type": "end", "arrival": break_end_epoch + service_seconds + return_seconds, "duration": outbound_seconds + return_seconds},
@@ -309,6 +697,9 @@ class PlanningInputTests(unittest.TestCase):
         )
 
         self.assertEqual(outcomes[0]["outcome"], "assigned")
+        self.assertEqual(outcomes[0]["estimated_arrival_at"], break_end.astimezone(timezone.utc))
+        self.assertEqual(outcomes[0]["estimated_service_start_at"], break_end.astimezone(timezone.utc))
+        self.assertEqual(outcomes[0]["waiting_seconds"], 0)
         self.assertEqual(outcomes[0]["route_break_seconds"], break_end_epoch - break_start_epoch)
 
     def test_latest_completed_visit_is_current_shift_origin_and_next_shift_resets_to_depot(self):
@@ -353,11 +744,11 @@ class PlanningInputTests(unittest.TestCase):
         )
 
     def test_all_region_vehicle_uses_region_skills_and_validates_waiting_and_fixed_break(self):
-        work_date = date(2026, 11, 4)
-        shift_start = datetime(2026, 11, 4, 8, 0, tzinfo=timezone.utc)
-        visit_start = datetime(2026, 11, 4, 8, 15, tzinfo=timezone.utc)
-        break_start = datetime(2026, 11, 4, 12, 0, tzinfo=timezone.utc)
-        break_end = datetime(2026, 11, 4, 13, 0, tzinfo=timezone.utc)
+        work_date = date(2026, 11, 5)
+        shift_start = datetime(2026, 11, 5, 8, 0, tzinfo=timezone.utc)
+        visit_start = datetime(2026, 11, 5, 8, 15, tzinfo=timezone.utc)
+        break_start = datetime(2026, 11, 5, 12, 0, tzinfo=timezone.utc)
+        break_end = datetime(2026, 11, 5, 13, 0, tzinfo=timezone.utc)
         case = SimpleNamespace(
             id=301,
             latitude=14.5,
@@ -386,7 +777,7 @@ class PlanningInputTests(unittest.TestCase):
             max_open_cases=10,
             max_visits=8,
             shift_starts_at=shift_start,
-            shift_ends_at=datetime(2026, 11, 4, 17, 0, tzinfo=timezone.utc),
+            shift_ends_at=datetime(2026, 11, 5, 17, 0, tzinfo=timezone.utc),
         )
 
         class Solver:
@@ -398,10 +789,10 @@ class PlanningInputTests(unittest.TestCase):
                     "routes": [{
                         "vehicle": 7,
                         "steps": [
-                            {"type": "start", "arrival": int(shift_start.timestamp())},
-                            {"type": "job", "id": case.id, "arrival": int(datetime(2026, 11, 4, 8, 10, tzinfo=timezone.utc).timestamp()), "waiting_time": 300},
-                            {"type": "break", "arrival": int(datetime(2026, 11, 4, 11, 55, tzinfo=timezone.utc).timestamp()), "waiting_time": 300, "service": 3600},
-                            {"type": "end", "arrival": int(datetime(2026, 11, 4, 13, 10, tzinfo=timezone.utc).timestamp())},
+                            {"type": "start", "arrival": int(shift_start.timestamp()), "waiting_time": 0},
+                            {"type": "job", "id": case.id, "arrival": int(datetime(2026, 11, 5, 8, 10, tzinfo=timezone.utc).timestamp()), "waiting_time": 300},
+                            {"type": "break", "arrival": int(datetime(2026, 11, 5, 11, 55, tzinfo=timezone.utc).timestamp()), "waiting_time": 300, "service": 3600},
+                            {"type": "end", "arrival": int(datetime(2026, 11, 5, 13, 10, tzinfo=timezone.utc).timestamp())},
                         ],
                     }],
                     "unassigned": [],
@@ -561,13 +952,13 @@ class PlanningInputTests(unittest.TestCase):
             service_duration_seconds=2700,
             priority="urgent",
             region_code="1300000000",
-            visit_not_before_at=datetime(2026, 11, 4, 9, 0, tzinfo=timezone.utc),
-            visit_due_at=datetime(2026, 11, 4, 10, 0, tzinfo=timezone.utc),
+            visit_not_before_at=datetime(2026, 11, 5, 9, 0, tzinfo=timezone.utc),
+            visit_due_at=datetime(2026, 11, 5, 10, 0, tzinfo=timezone.utc),
             assigned_agent_id=None,
         )
         shift = SimpleNamespace(
             agent_id=7,
-            work_date=date(2026, 11, 4),
+            work_date=date(2026, 11, 5),
             region_code="1300000000",
             start_latitude=14.6,
             start_longitude=121.1,
@@ -581,8 +972,8 @@ class PlanningInputTests(unittest.TestCase):
             break_ends_at=None,
             max_open_cases=10,
             max_visits=5,
-            shift_starts_at=datetime(2026, 11, 4, 8, 0, tzinfo=timezone.utc),
-            shift_ends_at=datetime(2026, 11, 4, 17, 0, tzinfo=timezone.utc),
+            shift_starts_at=datetime(2026, 11, 5, 8, 0, tzinfo=timezone.utc),
+            shift_ends_at=datetime(2026, 11, 5, 17, 0, tzinfo=timezone.utc),
         )
 
         class Solver:
@@ -608,12 +999,12 @@ class PlanningInputTests(unittest.TestCase):
         job = solver.payload["jobs"][0]
         vehicle = solver.payload["vehicles"][0]
         self.assertEqual(job["time_windows"], [[
-            int(datetime(2026, 11, 4, 9, 0, tzinfo=timezone.utc).timestamp()),
-            int(datetime(2026, 11, 4, 9, 15, tzinfo=timezone.utc).timestamp()),
+            int(datetime(2026, 11, 5, 9, 0, tzinfo=timezone.utc).timestamp()),
+            int(datetime(2026, 11, 5, 9, 15, tzinfo=timezone.utc).timestamp()),
         ]])
         self.assertEqual(vehicle["time_window"], [
-            int(datetime(2026, 11, 4, 8, 0, tzinfo=timezone.utc).timestamp()),
-            int(datetime(2026, 11, 4, 17, 0, tzinfo=timezone.utc).timestamp()),
+            int(datetime(2026, 11, 5, 8, 0, tzinfo=timezone.utc).timestamp()),
+            int(datetime(2026, 11, 5, 17, 0, tzinfo=timezone.utc).timestamp()),
         ])
 
     def test_vroom_vehicle_never_exceeds_configured_daily_visit_limit(self):
@@ -710,7 +1101,7 @@ class AutomaticPublicationTests(unittest.TestCase):
 
         engine = create_engine("sqlite:///:memory:")
         Base.metadata.create_all(engine)
-        work_date = datetime(2026, 11, 4, tzinfo=timezone.utc).date()
+        work_date = datetime(2026, 11, 5, tzinfo=timezone.utc).date()
 
         class Router:
             def __init__(self):
@@ -749,9 +1140,9 @@ class AutomaticPublicationTests(unittest.TestCase):
                     "routes": [{
                         "vehicle": agent_b_id,
                         "steps": [
-                            {"type": "start", "arrival": int(datetime(2026, 11, 4, 8, tzinfo=timezone.utc).timestamp())},
-                            {"type": "job", "id": case_id, "arrival": int(datetime(2026, 11, 4, 11, tzinfo=timezone.utc).timestamp())},
-                            {"type": "end", "arrival": int(datetime(2026, 11, 4, 12, 10, tzinfo=timezone.utc).timestamp())},
+                            {"type": "start", "arrival": int(datetime(2026, 11, 5, 8, tzinfo=timezone.utc).timestamp()), "waiting_time": 0},
+                            {"type": "job", "id": case_id, "arrival": int(datetime(2026, 11, 5, 11, tzinfo=timezone.utc).timestamp()), "waiting_time": 0},
+                            {"type": "end", "arrival": int(datetime(2026, 11, 5, 12, 10, tzinfo=timezone.utc).timestamp())},
                         ],
                     }],
                     "unassigned": [],
@@ -781,8 +1172,8 @@ class AutomaticPublicationTests(unittest.TestCase):
                 **cells_for_point(14.5, 121.0),
                 status="pending",
                 priority="urgent",
-                visit_not_before_at=datetime(2026, 11, 4, 11, tzinfo=timezone.utc),
-                visit_due_at=datetime(2026, 11, 4, 12, 30, tzinfo=timezone.utc),
+                visit_not_before_at=datetime(2026, 11, 5, 11, tzinfo=timezone.utc),
+                visit_due_at=datetime(2026, 11, 5, 12, 30, tzinfo=timezone.utc),
             )
             db.add(case)
             db.flush()
@@ -793,8 +1184,8 @@ class AutomaticPublicationTests(unittest.TestCase):
                     work_date=work_date,
                     region_code="1300000000",
                     is_available=True,
-                    shift_starts_at=datetime(2026, 11, 4, 8, tzinfo=timezone.utc),
-                    shift_ends_at=datetime(2026, 11, 4, 10, tzinfo=timezone.utc),
+                    shift_starts_at=datetime(2026, 11, 5, 8, tzinfo=timezone.utc),
+                    shift_ends_at=datetime(2026, 11, 5, 10, tzinfo=timezone.utc),
                     start_latitude=14.6,
                     start_longitude=121.1,
                     max_visits=8,
@@ -805,8 +1196,8 @@ class AutomaticPublicationTests(unittest.TestCase):
                     work_date=work_date,
                     region_code="1300000000",
                     is_available=True,
-                    shift_starts_at=datetime(2026, 11, 4, 8, tzinfo=timezone.utc),
-                    shift_ends_at=datetime(2026, 11, 4, 14, tzinfo=timezone.utc),
+                    shift_starts_at=datetime(2026, 11, 5, 8, tzinfo=timezone.utc),
+                    shift_ends_at=datetime(2026, 11, 5, 14, tzinfo=timezone.utc),
                     start_latitude=14.7,
                     start_longitude=121.2,
                     max_visits=5,
@@ -817,8 +1208,8 @@ class AutomaticPublicationTests(unittest.TestCase):
                     work_date=work_date,
                     region_code="1300000000",
                     is_available=False,
-                    shift_starts_at=datetime(2026, 11, 4, 8, tzinfo=timezone.utc),
-                    shift_ends_at=datetime(2026, 11, 4, 17, tzinfo=timezone.utc),
+                    shift_starts_at=datetime(2026, 11, 5, 8, tzinfo=timezone.utc),
+                    shift_ends_at=datetime(2026, 11, 5, 17, tzinfo=timezone.utc),
                     start_latitude=14.8,
                     start_longitude=121.3,
                     max_visits=5,
@@ -845,8 +1236,8 @@ class AutomaticPublicationTests(unittest.TestCase):
             self.assertEqual(vehicle_ids, {agent_a.id, agent_b_id})
             self.assertEqual(job["priority"], 100)
             self.assertEqual(job["time_windows"], [[
-                int(datetime(2026, 11, 4, 11, tzinfo=timezone.utc).timestamp()),
-                int(datetime(2026, 11, 4, 11, 45, tzinfo=timezone.utc).timestamp()),
+                int(datetime(2026, 11, 5, 11, tzinfo=timezone.utc).timestamp()),
+                int(datetime(2026, 11, 5, 11, 45, tzinfo=timezone.utc).timestamp()),
             ]])
             self.assertEqual(item.outcome, "assigned")
             self.assertEqual(item.agent_id, agent_b_id)
@@ -1122,7 +1513,7 @@ class AutomaticPublicationTests(unittest.TestCase):
 
         engine = create_engine("sqlite:///:memory:")
         Base.metadata.create_all(engine)
-        work_date = datetime(2026, 11, 4, tzinfo=timezone.utc).date()
+        work_date = datetime(2026, 11, 5, tzinfo=timezone.utc).date()
 
         class Router:
             def __init__(self):
@@ -1158,9 +1549,9 @@ class AutomaticPublicationTests(unittest.TestCase):
                     "routes": [{
                         "vehicle": 2,
                         "steps": [
-                            {"type": "start", "arrival": int(datetime(2026, 11, 4, 0, tzinfo=timezone.utc).timestamp())},
-                            {"type": "job", "id": case.id, "arrival": int(datetime(2026, 11, 4, 0, 10, tzinfo=timezone.utc).timestamp())},
-                            {"type": "end", "arrival": int(datetime(2026, 11, 4, 1, 5, tzinfo=timezone.utc).timestamp())},
+                            {"type": "start", "arrival": int(datetime(2026, 11, 5, 0, tzinfo=timezone.utc).timestamp()), "waiting_time": 0},
+                            {"type": "job", "id": case.id, "arrival": int(datetime(2026, 11, 5, 0, 10, tzinfo=timezone.utc).timestamp()), "waiting_time": 0},
+                            {"type": "end", "arrival": int(datetime(2026, 11, 5, 1, 5, tzinfo=timezone.utc).timestamp())},
                         ],
                     }],
                     "unassigned": [],
@@ -1197,8 +1588,8 @@ class AutomaticPublicationTests(unittest.TestCase):
                 work_date=work_date,
                 region_code="1300000000",
                 is_available=True,
-                shift_starts_at=datetime(2026, 11, 4, 0, tzinfo=timezone.utc),
-                shift_ends_at=datetime(2026, 11, 4, 9, tzinfo=timezone.utc),
+                shift_starts_at=datetime(2026, 11, 5, 0, tzinfo=timezone.utc),
+                shift_ends_at=datetime(2026, 11, 5, 9, tzinfo=timezone.utc),
                 start_latitude=14.6,
                 start_longitude=121.1,
                 max_visits=4,
@@ -1327,8 +1718,8 @@ class AutomaticPublicationTests(unittest.TestCase):
                     work_date=work_date,
                     region_code=current_shift.region_code,
                     is_available=False,
-                    shift_starts_at=datetime(2026, 11, 4, 0, tzinfo=timezone.utc),
-                    shift_ends_at=datetime(2026, 11, 4, 9, tzinfo=timezone.utc),
+                    shift_starts_at=datetime(2026, 11, 5, 0, tzinfo=timezone.utc),
+                    shift_ends_at=datetime(2026, 11, 5, 9, tzinfo=timezone.utc),
                     start_latitude=current_shift.start_latitude,
                     start_longitude=current_shift.start_longitude,
                     end_latitude=current_shift.end_latitude,

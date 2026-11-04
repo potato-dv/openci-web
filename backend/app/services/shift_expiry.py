@@ -1,245 +1,456 @@
-"""Durable shift-end cancellation and next-Manila-day reopening."""
+"""End shifts, retry missed visits, and preserve work already in progress."""
 
 from datetime import date, datetime, timedelta, timezone
+import logging
 
+from sqlalchemy import text
 from sqlalchemy.orm import Session
 
 from app.models.activity import ActivityLog
 from app.models.assignment import InvestigationAssignment
 from app.models.investigation import Investigation
-from app.models.planning import AgentShift, PlanningRun
-from app.models.user import User
-from app.services.agent_schedules import ALL_REGIONS, MANILA, enqueue_planning_trigger
+from app.models.planning import AgentShift, PlanningItem, PlanningRoute, PlanningRun
+from app.models.report import InvestigationReport
+from app.models.route_event import InvestigationRouteEvent
+from app.services.agent_schedules import (
+    ALL_REGIONS,
+    MANILA,
+    enqueue_planning_trigger,
+    reconcile_prematurely_ended_recurring_shifts,
+)
+from app.services.route_workflow import next_valid_work_date
 
 
-UNFINISHED_STATUSES = ("pending", "assigned", "in_progress")
 ACTIVE_RUN_STATUSES = ("queued", "running", "ready")
+RETRYABLE_STATUSES = ("pending", "assigned")
+CLOCK_SKEW_TOLERANCE_SECONDS = 120
+logger = logging.getLogger("app.shift_expiry")
 
 
 def _utc(value: datetime) -> datetime:
+    if isinstance(value, str):
+        value = datetime.fromisoformat(value)
     if value.tzinfo is None:
         value = value.replace(tzinfo=timezone.utc)
     return value.astimezone(timezone.utc)
+
+
+def _queue_case_retry(
+    db: Session,
+    case: Investigation,
+    work_date: date,
+    reason: str,
+    queued_scopes: set[tuple[date, str]],
+) -> None:
+    scope = case.region_code or ALL_REGIONS
+    enqueue_planning_trigger(db, work_date, case.region_code, reason)
+    queued_scopes.add((work_date, scope))
+
+
+def _restore_published_route(
+    db: Session,
+    shift: AgentShift,
+    case: Investigation,
+) -> int | None:
+    """Reconnect an applied route cleared by a future-dated shift expiry."""
+    if shift.current_planning_run_id is not None:
+        return shift.current_planning_run_id
+    run = (
+        db.query(PlanningRun)
+        .join(PlanningItem, PlanningItem.planning_run_id == PlanningRun.id)
+        .join(
+            PlanningRoute,
+            (PlanningRoute.planning_run_id == PlanningRun.id)
+            & (PlanningRoute.agent_id == shift.agent_id),
+        )
+        .filter(
+            PlanningRun.work_date == shift.work_date,
+            PlanningRun.status == "applied",
+            PlanningRun.auto_publish.is_(True),
+            PlanningItem.investigation_id == case.id,
+            PlanningItem.agent_id == shift.agent_id,
+            PlanningItem.outcome == "assigned",
+            PlanningRoute.geometry_status == "ready",
+        )
+        .order_by(PlanningRun.id.desc())
+        .first()
+    )
+    if run is None:
+        return None
+    shift.current_planning_run_id = run.id
+    return run.id
 
 
 def process_shift_end_investigations(
     db: Session,
     now: datetime | None = None,
 ) -> dict[str, int]:
-    """Cancel expired-shift work and reopen due cases, safely on every retry.
+    """End shifts and record unvisited work without changing investigation lifecycle.
 
-    Cases are locked in ID order before shifts and planning runs, matching the
-    publication path's entity-first lock order. The persisted ``reopen_on``
-    date is the source of truth if a worker is stopped across midnight.
+    Manual assignments remain with their agent and queue for that agent's next
+    valid working shift. Automatic assignments return to the planning pool.
+    Work already started, a submitted report, and supervisor review are kept.
     """
     now_utc = _utc(now or datetime.now(timezone.utc))
+    if now is None:
+        database_now = db.execute(text("SELECT CURRENT_TIMESTAMP")).scalar_one()
+        database_now_utc = _utc(database_now)
+        skew_seconds = abs((now_utc - database_now_utc).total_seconds())
+        if skew_seconds > CLOCK_SKEW_TOLERANCE_SECONDS:
+            logger.warning(
+                "shift_end_clock_skew_detected app_now=%s database_now=%s skew_seconds=%.1f",
+                now_utc.isoformat(),
+                database_now_utc.isoformat(),
+                skew_seconds,
+            )
+            db.rollback()
+            return {
+                "ended_shifts": 0,
+                "reconciled_shifts": 0,
+                "cancelled": 0,
+                "carried_over": 0,
+                "reopened": 0,
+                "restored_future_cancellations": 0,
+                "stale_runs": 0,
+                "planning_triggers": 0,
+            }
     today = now_utc.astimezone(MANILA).date()
 
-    due_shifts = (
-        db.query(AgentShift)
-        .filter(AgentShift.is_available.is_(True), AgentShift.work_date <= today)
-        .order_by(AgentShift.agent_id, AgentShift.id)
+    future_events = (
+        db.query(ActivityLog)
+        .filter(
+            ActivityLog.action == "investigation.cancelled_at_shift_end",
+            ActivityLog.object_type == "investigation",
+            ActivityLog.created_at
+            > now_utc + timedelta(seconds=CLOCK_SKEW_TOLERANCE_SECONDS),
+        )
+        .order_by(ActivityLog.created_at, ActivityLog.id)
         .all()
     )
-    due_shifts = [shift for shift in due_shifts if _utc(shift.shift_ends_at) <= now_utc]
-    expired_shift_ids = {shift.id for shift in due_shifts}
-    expired_agent_ids = {shift.agent_id for shift in due_shifts}
+    future_events = [
+        event for event in future_events
+        if (event.details or {}).get("work_date") == today.isoformat()
+    ]
+    event_case_ids = {event.object_id for event in future_events if event.object_id is not None}
 
-    candidate_case_ids: set[int] = set()
-    if expired_agent_ids:
-        candidate_case_ids.update(
-            investigation_id
-            for (investigation_id,) in db.query(Investigation.id)
-            .filter(
-                Investigation.assigned_agent_id.in_(expired_agent_ids),
+    due_shift_snapshots = db.query(AgentShift.id, AgentShift.agent_id).filter(
+        AgentShift.is_available.is_(True),
+        AgentShift.work_date <= today,
+        AgentShift.shift_ends_at <= now_utc,
+    ).all()
+    due_shift_ids = {shift_id for shift_id, _agent_id in due_shift_snapshots}
+    due_agent_ids = {agent_id for _shift_id, agent_id in due_shift_snapshots}
+    missed_visit_case_ids = set()
+    if due_agent_ids:
+        missed_visit_case_ids = {
+            case_id for (case_id,) in db.query(Investigation.id).filter(
+                Investigation.assigned_agent_id.in_(due_agent_ids),
                 Investigation.deleted_at.is_(None),
-                Investigation.status.in_(UNFINISHED_STATUSES),
-            )
-            .all()
-        )
-    candidate_case_ids.update(
-        investigation_id
-        for (investigation_id,) in db.query(Investigation.id)
-        .filter(
+                Investigation.status.in_(RETRYABLE_STATUSES),
+            ).all()
+        }
+    due_reopen_case_ids = {
+        case_id for (case_id,) in db.query(Investigation.id).filter(
             Investigation.deleted_at.is_(None),
             Investigation.status == "cancelled",
             Investigation.reopen_on <= today,
-        )
-        .all()
-    )
+        ).all()
+    }
 
+    candidate_case_ids = sorted(
+        event_case_ids | missed_visit_case_ids | due_reopen_case_ids
+    )
     cases = (
         db.query(Investigation)
-        .filter(Investigation.id.in_(sorted(candidate_case_ids)))
+        .filter(Investigation.id.in_(candidate_case_ids))
         .order_by(Investigation.id)
         .with_for_update()
         .populate_existing()
         .all()
     ) if candidate_case_ids else []
-
-    # Re-read and lock shifts only after cases to keep lock order consistent
-    # with apply_run. Old due snapshots are consumed together so a missed
-    # midnight task cannot leave a prior day's availability active forever.
-    shifts_by_id = {
-        shift.id: shift
-        for shift in (
-            db.query(AgentShift)
-            .filter(AgentShift.id.in_(sorted(expired_shift_ids)))
-            .order_by(AgentShift.agent_id, AgentShift.id)
-            .with_for_update()
-            .populate_existing()
-            .all()
-        )
-    } if expired_shift_ids else {}
     cases_by_id = {case.id: case for case in cases}
-    active_assignments_by_case = {
-        assignment.investigation_id: assignment
-        for assignment in db.query(InvestigationAssignment).filter(
-            InvestigationAssignment.investigation_id.in_(sorted(candidate_case_ids)),
+
+    active_assignments = (
+        db.query(InvestigationAssignment)
+        .filter(
+            InvestigationAssignment.investigation_id.in_(candidate_case_ids),
             InvestigationAssignment.is_active.is_(True),
-        ).all()
-    } if candidate_case_ids else {}
+        )
+        .order_by(InvestigationAssignment.id)
+        .with_for_update()
+        .all()
+    ) if candidate_case_ids else []
+    assignment_by_case = {
+        assignment.investigation_id: assignment for assignment in active_assignments
+    }
 
-    still_due_shifts = [
-        shift for shift in shifts_by_id.values()
-        if shift.is_available and _utc(shift.shift_ends_at) <= now_utc
-    ]
-    expired_shifts_by_agent: dict[int, list[AgentShift]] = {}
-    for shift in still_due_shifts:
-        expired_shifts_by_agent.setdefault(shift.agent_id, []).append(shift)
-    for shifts in expired_shifts_by_agent.values():
-        shifts.sort(key=lambda shift: (shift.work_date, shift.id))
+    # Lock investigation rows before shifts. This matches route publication's
+    # entity-first lock order and avoids a shift/case deadlock on retries.
+    reconciled = reconcile_prematurely_ended_recurring_shifts(db, now_utc)
 
-    # Consume every ended snapshot. Each case is associated with the shift it
-    # was assigned for, so a delayed worker still uses that shift's next-day
-    # reopen date. An assignment created after an older shift belongs to a
-    # newer shift and is left alone.
-    ended_agent_date_pairs: set[tuple[int, date]] = set()
-    for shift in still_due_shifts:
-        shift.is_available = False
-        shift.current_planning_run_id = None
-        ended_agent_date_pairs.add((shift.agent_id, shift.work_date))
+    referenced_shift_ids = {
+        int((event.details or {}).get("shift_id"))
+        for event in future_events
+        if (event.details or {}).get("shift_id") is not None
+    }
+    locked_shift_ids = sorted(due_shift_ids | referenced_shift_ids)
+    locked_shifts = (
+        db.query(AgentShift)
+        .filter(AgentShift.id.in_(locked_shift_ids))
+        .order_by(AgentShift.agent_id, AgentShift.id)
+        .with_for_update()
+        .all()
+    ) if locked_shift_ids else []
+    shifts_by_id = {shift.id: shift for shift in locked_shifts}
 
-    case_shift_by_id: dict[int, AgentShift] = {}
-    for case in cases:
+    visited_case_ids = set()
+    if candidate_case_ids:
+        visited_case_ids = {
+            case_id for (case_id,) in db.query(InvestigationReport.investigation_id)
+            .filter(
+                InvestigationReport.investigation_id.in_(candidate_case_ids),
+                InvestigationReport.visit_outcome.is_not(None),
+            )
+            .distinct()
+            .all()
+        }
+
+    queued_scopes: set[tuple[date, str]] = set()
+    restored_future_cancellations = 0
+    for event in future_events:
+        case = cases_by_id.get(event.object_id)
+        details = event.details or {}
+        try:
+            shift_id = int(details.get("shift_id"))
+        except (TypeError, ValueError):
+            continue
+        shift = shifts_by_id.get(shift_id)
+        previous_status = details.get("previous_status")
         if (
-            case.assigned_agent_id is None
-            or case.status not in UNFINISHED_STATUSES
-            or case.deleted_at is not None
+            case is None
+            or shift is None
+            or previous_status not in RETRYABLE_STATUSES
+            or case.status != "cancelled"
+            or case.reopen_on != shift.work_date + timedelta(days=1)
+            or case.assigned_agent_id != shift.agent_id
+            or case.id in visited_case_ids
+            or shift.work_date != today
+            or shift.source != "recurring"
+            or not shift.is_available
+            or _utc(shift.shift_starts_at) > now_utc
+            or _utc(shift.shift_ends_at) <= now_utc
+            or _utc(event.created_at)
+            <= now_utc + timedelta(seconds=CLOCK_SKEW_TOLERANCE_SECONDS)
         ):
             continue
-        agent_shifts = expired_shifts_by_agent.get(case.assigned_agent_id, [])
-        if not agent_shifts:
-            continue
 
-        assignment = active_assignments_by_case.get(case.id)
-        if assignment is None:
-            # Legacy assigned cases without an assignment row are associated
-            # with the latest known shift, matching the previous fallback.
-            case_shift_by_id[case.id] = agent_shifts[-1]
-            continue
-
-        assigned_work_date = (
-            assignment.auto_route_work_date
-            or _utc(assignment.assigned_at).astimezone(MANILA).date()
-        )
-        if assigned_work_date > agent_shifts[-1].work_date:
-            # A newer assignment cannot be cancelled by an older expired
-            # shift for the same agent.
-            continue
-
-        matching_shift = next(
-            (shift for shift in agent_shifts if shift.work_date == assigned_work_date),
-            None,
-        )
-        if matching_shift is None:
-            # If several missed shifts are processed together, associate a
-            # preassigned item with the first expired shift on or after its
-            # assignment date. This preserves its actual next-day reopen date.
-            matching_shift = next(
-                (shift for shift in agent_shifts if shift.work_date > assigned_work_date),
-                agent_shifts[-1],
-            )
-        case_shift_by_id[case.id] = matching_shift
-
-    cancelled = 0
-    stale_runs = 0
-    cancelled_case_ids: set[int] = set()
-    for case_id, shift in sorted(
-        case_shift_by_id.items(),
-        key=lambda row: (row[1].work_date, row[0]),
-    ):
-        case = cases_by_id[case_id]
-        # The row may have changed after the initial candidate query; the
-        # investigation lock makes this check authoritative.
-        if case.status not in UNFINISHED_STATUSES or case.assigned_agent_id != shift.agent_id:
-            continue
-        previous_status = case.status
-        reopen_on = shift.work_date + timedelta(days=1)
-        case.status = "cancelled"
-        case.reopen_on = reopen_on
-        cancelled += 1
-        cancelled_case_ids.add(case.id)
+        case.status = previous_status
+        case.reopen_on = None
+        restored_run_id = _restore_published_route(db, shift, case)
+        restored_future_cancellations += 1
         db.add(ActivityLog(
             actor_id=None,
-            action="investigation.cancelled_at_shift_end",
+            action="investigation.restored_after_future_shift_end",
             object_type="investigation",
             object_id=case.id,
             details={
                 "shift_id": shift.id,
+                "work_date": today.isoformat(),
+                "restored_status": previous_status,
+                "cancellation_event_id": event.id,
+                "cancellation_recorded_at": _utc(event.created_at).isoformat(),
+                "observed_at": now_utc.isoformat(),
+                "restored_planning_run_id": restored_run_id,
+            },
+        ))
+        if restored_run_id is None:
+            _queue_case_retry(
+                db,
+                case,
+                today,
+                "future_shift_end_cancellation_reconciled",
+                queued_scopes,
+            )
+
+    ended_agent_date_pairs: set[tuple[int, date]] = set()
+    cancelled = 0
+    carried_over = 0
+    due_shifts = (
+        db.query(AgentShift)
+        .filter(
+            AgentShift.is_available.is_(True),
+            AgentShift.work_date <= today,
+            AgentShift.shift_ends_at <= now_utc,
+        )
+        .order_by(AgentShift.agent_id, AgentShift.id)
+        .with_for_update()
+        .all()
+    )
+    for shift in due_shifts:
+        if not shift.is_available or _utc(shift.shift_ends_at) > now_utc:
+            continue
+        shift.is_available = False
+        ended_agent_date_pairs.add((shift.agent_id, shift.work_date))
+        db.add(ActivityLog(
+            actor_id=None,
+            action="agent_shift.ended",
+            object_type="agent_shift",
+            object_id=shift.id,
+            details={
                 "work_date": shift.work_date.isoformat(),
-                "previous_status": previous_status,
-                "reopen_on": reopen_on.isoformat(),
+                "shift_ends_at": _utc(shift.shift_ends_at).isoformat(),
+                "observed_at": now_utc.isoformat(),
             },
         ))
 
-    active_runs = db.query(PlanningRun).filter(
-        PlanningRun.work_date.in_({work_date for _agent_id, work_date in ended_agent_date_pairs}),
-        PlanningRun.status.in_(ACTIVE_RUN_STATUSES),
-    ).order_by(PlanningRun.id).with_for_update().all() if ended_agent_date_pairs else []
+        for case in cases:
+            if (
+                case.deleted_at is not None
+                or case.assigned_agent_id != shift.agent_id
+                or case.status not in RETRYABLE_STATUSES
+                or case.id in visited_case_ids
+            ):
+                continue
+            assignment = assignment_by_case.get(case.id)
+            assignment_at = assignment.assigned_at if assignment is not None else case.created_at
+            if assignment_at is not None and _utc(assignment_at) > _utc(shift.shift_ends_at):
+                # A delayed expiry tick must not carry an assignment that was
+                # made after this older shift had already ended.
+                continue
+            prior_events = db.query(InvestigationRouteEvent).filter(
+                InvestigationRouteEvent.investigation_id == case.id,
+                InvestigationRouteEvent.agent_id == shift.agent_id,
+                InvestigationRouteEvent.work_date == shift.work_date,
+            ).order_by(InvestigationRouteEvent.attempted_at.desc(), InvestigationRouteEvent.id.desc()).all()
+            if any(event.event_type == "shift_end_not_visited" for event in prior_events):
+                continue
+            assignment_source = assignment.assignment_source if assignment else None
+            if assignment_source == "manual":
+                next_work_date = next_valid_work_date(db, shift.agent_id, shift.work_date)
+            else:
+                next_work_date = max(today, shift.work_date + timedelta(days=1))
+            no_contact_events = [event for event in prior_events if event.event_type == "no_contact"]
+            no_contact_event = no_contact_events[0] if no_contact_events else None
+            if no_contact_event is None:
+                db.add(InvestigationRouteEvent(
+                    investigation_id=case.id,
+                    agent_id=shift.agent_id,
+                    work_date=shift.work_date,
+                    planning_run_id=shift.current_planning_run_id,
+                    event_type="shift_end_not_visited",
+                    state="carried_over",
+                    retry_number=0,
+                    reason="shift_end_not_visited",
+                    notes=None,
+                    attempted_at=now_utc,
+                    next_work_date=next_work_date,
+                    latitude=case.latitude,
+                    longitude=case.longitude,
+                    finalized_at=now_utc,
+                ))
+                carried_over += 1
+            else:
+                # The no-contact attempt is the carry-over record. Finalize
+                # it in place and keep retries attached to the same work item.
+                for attempt in no_contact_events:
+                    if attempt.state in {"deferred", "retrying", "retry_failed"}:
+                        attempt.state = "carried_over"
+                        attempt.finalized_at = now_utc
+                    attempt.next_work_date = next_work_date
+                carried_over += 1
+
+            if assignment is not None and assignment.assignment_source == "automatic":
+                assignment.is_active = False
+                assignment.unassigned_at = now_utc
+                assignment.auto_route_status = None
+                assignment.auto_route_work_date = None
+                assignment.auto_route_run_ids = None
+                assignment.auto_route_agent_ids = None
+                assignment.auto_route_errors = None
+                case.assigned_agent_id = None
+                case.status = "pending"
+                case.reopen_on = None
+
+            db.add(ActivityLog(
+                actor_id=None,
+                action="investigation.carried_over_at_shift_end",
+                object_type="investigation",
+                object_id=case.id,
+                details={
+                    "shift_id": shift.id,
+                    "work_date": shift.work_date.isoformat(),
+                    "assignment_source": assignment_source,
+                    "previous_agent_id": shift.agent_id,
+                    "assigned_agent_id": case.assigned_agent_id,
+                    "next_work_date": next_work_date.isoformat() if next_work_date else None,
+                    "observed_at": now_utc.isoformat(),
+                    "reason": "shift_end_not_visited" if no_contact_event is None else "no_contact_attempt_carried_over",
+                },
+            ))
+            if next_work_date is not None:
+                _queue_case_retry(
+                    db,
+                    case,
+                    next_work_date,
+                    "investigation_carried_over_at_shift_end",
+                    queued_scopes,
+                )
+
+    active_runs = (
+        db.query(PlanningRun)
+        .filter(
+            PlanningRun.work_date.in_({work_date for _agent_id, work_date in ended_agent_date_pairs}),
+            PlanningRun.status.in_(ACTIVE_RUN_STATUSES),
+        )
+        .order_by(PlanningRun.id)
+        .with_for_update()
+        .all()
+    ) if ended_agent_date_pairs else []
+
+    stale_runs = 0
     for run in active_runs:
-        stale_for_shift = any(
+        if any(
             work_date == run.work_date and agent_id in (run.agent_ids or [])
             for agent_id, work_date in ended_agent_date_pairs
-        )
-        stale_for_cancelled_case = bool(cancelled_case_ids.intersection(run.investigation_ids or []))
-        if stale_for_shift or stale_for_cancelled_case:
+        ):
             run.status = "stale"
             run.error_code = "shift_ended"
             run.finished_at = now_utc
             stale_runs += 1
+            for shift in due_shifts:
+                if shift.work_date == run.work_date and shift.agent_id in (run.agent_ids or []) and shift.current_planning_run_id == run.id:
+                    shift.current_planning_run_id = None
 
     reopened = 0
-    triggers_queued = 0
     for case in cases:
-        if case.status != "cancelled" or case.reopen_on is None or case.reopen_on > today:
+        if (
+            case.status != "cancelled"
+            or case.reopen_on is None
+            or case.reopen_on > today
+            or case.deleted_at is not None
+        ):
             continue
         previous_reopen_on = case.reopen_on
         previous_agent_id = case.assigned_agent_id
-        active_assignment = None
-        if previous_agent_id is not None:
-            active_assignment = (
-                db.query(InvestigationAssignment)
-                .filter(
-                    InvestigationAssignment.investigation_id == case.id,
-                    InvestigationAssignment.agent_id == previous_agent_id,
-                    InvestigationAssignment.is_active.is_(True),
-                )
-                .with_for_update()
-                .first()
-            )
-
-        if active_assignment and active_assignment.assignment_source == "automatic":
-            active_assignment.is_active = False
-            active_assignment.unassigned_at = now_utc
-            active_assignment.auto_route_status = None
-            active_assignment.auto_route_run_ids = None
-            active_assignment.auto_route_agent_ids = None
+        assignment = assignment_by_case.get(case.id)
+        assignment_source = assignment.assignment_source if assignment else None
+        if assignment and assignment.assignment_source == "automatic":
+            assignment.is_active = False
+            assignment.unassigned_at = now_utc
+            assignment.auto_route_status = None
+            assignment.auto_route_work_date = None
+            assignment.auto_route_run_ids = None
+            assignment.auto_route_agent_ids = None
+            assignment.auto_route_errors = None
             case.assigned_agent_id = None
-        elif active_assignment:
-            active_assignment.auto_route_status = None
-            active_assignment.auto_route_run_ids = None
-            active_assignment.auto_route_agent_ids = None
+        elif assignment:
+            # Manual work keeps its owner; only its previous-day route attempt
+            # is cleared so today's planner can publish a fresh route.
+            assignment.auto_route_status = None
+            assignment.auto_route_work_date = None
+            assignment.auto_route_run_ids = None
+            assignment.auto_route_agent_ids = None
+            assignment.auto_route_errors = None
 
         case.status = "pending"
         case.reopen_on = None
@@ -251,37 +462,28 @@ def process_shift_end_investigations(
             object_id=case.id,
             details={
                 "previous_reopen_on": previous_reopen_on.isoformat(),
-                "assignment_source": active_assignment.assignment_source if active_assignment else None,
+                "assignment_source": assignment_source,
+                "previous_assigned_agent_id": previous_agent_id,
                 "assigned_agent_id": case.assigned_agent_id,
+                "work_date": today.isoformat(),
             },
         ))
-
-        manual_owner_id = (
-            previous_agent_id
-            if previous_agent_id is not None
-            and (active_assignment is None or active_assignment.assignment_source == "manual")
-            else None
+        _queue_case_retry(
+            db,
+            case,
+            today,
+            "investigation_reopened_after_shift",
+            queued_scopes,
         )
-        available_shift_query = db.query(AgentShift.id).join(
-            User, User.id == AgentShift.agent_id,
-        ).filter(
-            AgentShift.work_date == today,
-            AgentShift.is_available.is_(True),
-            User.role == "agent",
-            User.is_active.is_(True),
-            AgentShift.region_code.in_((case.region_code, ALL_REGIONS)) if case.region_code else AgentShift.region_code == ALL_REGIONS,
-        )
-        if manual_owner_id is not None:
-            available_shift_query = available_shift_query.filter(AgentShift.agent_id == manual_owner_id)
-        available_shift = available_shift_query.first()
-        if case.region_code and available_shift:
-            enqueue_planning_trigger(db, today, case.region_code, "investigation_reopened_after_shift")
-            triggers_queued += 1
 
     db.commit()
     return {
+        "ended_shifts": len(ended_agent_date_pairs),
+        "reconciled_shifts": reconciled,
         "cancelled": cancelled,
+        "carried_over": carried_over,
         "reopened": reopened,
+        "restored_future_cancellations": restored_future_cancellations,
         "stale_runs": stale_runs,
-        "planning_triggers": triggers_queued,
+        "planning_triggers": len(queued_scopes),
     }

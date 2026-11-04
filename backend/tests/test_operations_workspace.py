@@ -172,6 +172,23 @@ class WorkspaceAPITests(unittest.TestCase):
             locked_assignments=[{"investigation_id": self.case.id, "agent_id": self.agent.id}],
             status="applied",
             auto_publish=True,
+            warnings=[{
+                "type": "priority_order",
+                "agent_id": self.agent.id,
+                "investigation_id": self.case.id,
+                "reference_number": "INV-001",
+                "deferred_investigation_id": 22,
+                "deferred_reference_number": "INV-002",
+                "reason": "schedule_constraint",
+            }, {
+                "type": "priority_order",
+                "agent_id": self.agent.id,
+                "investigation_id": None,
+                "reference_number": None,
+                "deferred_investigation_id": None,
+                "deferred_reference_number": None,
+                "reason": "search_limit",
+            }],
         )
         self.db.add_all([assignment, run])
         self.db.flush()
@@ -184,6 +201,9 @@ class WorkspaceAPITests(unittest.TestCase):
                 outcome="assigned",
                 sequence=1,
                 estimated_arrival_at=datetime(2026, 11, 4, 1, 30, tzinfo=timezone.utc),
+                planned_arrival_at=datetime(2026, 11, 4, 2, 0, tzinfo=timezone.utc),
+                estimated_service_start_at=datetime(2026, 11, 4, 2, 5, tzinfo=timezone.utc),
+                waiting_seconds=300,
                 travel_seconds=300,
                 travel_metres=1200,
             ),
@@ -195,6 +215,7 @@ class WorkspaceAPITests(unittest.TestCase):
                 geometry_digest=planning._digest({"type": "LineString", "coordinates": [[121.1, 14.6], [121.0, 14.5]]}),
                 total_distance_metres=1200,
                 total_travel_seconds=300,
+                planned_departure_at=datetime(2026, 11, 4, 1, 45, tzinfo=timezone.utc),
                 start={"latitude": 14.6, "longitude": 121.1, "label": "District Office"},
             ),
         ])
@@ -206,6 +227,19 @@ class WorkspaceAPITests(unittest.TestCase):
         ).model_dump(mode="json")
         route_agent = next(item for item in data["agents"] if item["id"] == self.agent.id)
         self.assertEqual(route_agent["route_status"], "published")
+        self.assertEqual(route_agent["priority_order_warnings"], [{
+            "investigation_id": self.case.id,
+            "reference_number": "INV-001",
+            "deferred_investigation_id": 22,
+            "deferred_reference_number": "INV-002",
+            "reason": "schedule_constraint",
+        }, {
+            "investigation_id": None,
+            "reference_number": None,
+            "deferred_investigation_id": None,
+            "deferred_reference_number": None,
+            "reason": "search_limit",
+        }])
         self.assertEqual(route_agent["stops"][0]["investigation_id"], self.case.id)
         self.assertEqual(route_agent["route"]["agent_name"], self.agent.name)
         self.assertEqual(
@@ -213,6 +247,42 @@ class WorkspaceAPITests(unittest.TestCase):
             [[121.1, 14.6], [121.0, 14.5]],
         )
         self.assertEqual(route_agent["shift"]["start_location_label"], "District Office")
+        stop = route_agent["stops"][0]
+        self.assertEqual(stop["earliest_arrival_estimate_at"], "2026-11-04T01:30:00")
+        self.assertEqual(stop["planned_arrival_at"], "2026-11-04T02:00:00")
+        self.assertEqual(stop["planned_waiting_seconds"], 300)
+        self.assertEqual(stop["estimated_service_start_at"], "2026-11-04T02:05:00")
+        self.assertEqual(route_agent["route"]["planned_departure_at"], "2026-11-04T01:45:00")
+        self.assertEqual(route_agent["route"]["total_waiting_seconds"], 300)
+        self.assertEqual(route_agent["route"]["total_planned_waiting_seconds"], 300)
+
+        historical_item = self.db.query(PlanningItem).filter_by(
+            planning_run_id=run.id,
+            investigation_id=self.case.id,
+        ).one()
+        historical_route = self.db.query(PlanningRoute).filter_by(
+            planning_run_id=run.id,
+            agent_id=self.agent.id,
+        ).one()
+        historical_item.planned_arrival_at = None
+        historical_item.waiting_seconds = 5400
+        historical_route.planned_departure_at = None
+        self.db.commit()
+        historical_data = planning.planning_route_overview(
+            self.db, work_date, "1300000000",
+        )
+        historical_agent = next(
+            item for item in historical_data["agents"] if item["id"] == self.agent.id
+        )
+        self.assertIsNone(historical_agent["stops"][0]["planned_arrival_at"])
+        self.assertIsNone(historical_agent["stops"][0]["planned_waiting_seconds"])
+        self.assertIsNone(historical_agent["route"]["planned_departure_at"])
+        self.assertIsNone(historical_agent["route"]["total_waiting_seconds"])
+        self.assertIsNone(historical_agent["route"]["total_planned_waiting_seconds"])
+        self.assertEqual(
+            historical_agent["route"]["geometry"]["coordinates"],
+            [[121.1, 14.6], [121.0, 14.5]],
+        )
 
         run.region_code = "0400000000"
         self.db.commit()

@@ -35,6 +35,19 @@ export function duration(value: number | null | undefined) {
     ? `${Math.floor(minutes / 60)}h ${minutes % 60}m`
     : `${minutes} min`;
 }
+export function plannedWait(value: number | null | undefined) {
+  if (value == null) return "Not available";
+  return value <= 0 ? "No scheduled wait" : duration(value);
+}
+export function timeAfter(
+  value: string | null | undefined,
+  seconds: number | null | undefined,
+) {
+  if (value == null || seconds == null) return "Not available";
+  const timestamp = Date.parse(value);
+  if (!Number.isFinite(timestamp)) return "Not available";
+  return time(new Date(timestamp + seconds * 1000).toISOString());
+}
 export function friendlyError(value: string) {
   const messages: Record<string, string> = {
     route_geometry_incomplete:

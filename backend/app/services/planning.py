@@ -5,7 +5,8 @@ import json
 import logging
 from collections import Counter
 from math import cos, isfinite, radians, sqrt
-from datetime import date, datetime, timezone
+from datetime import date, datetime, timedelta, timezone
+from time import monotonic
 from zoneinfo import ZoneInfo
 
 import h3
@@ -20,6 +21,7 @@ from app.models.investigation import Investigation
 from app.models.planning import AgentShift, PlanningItem, PlanningRun, PlanningRoute
 from app.models.agent_schedule import AgentWeeklySchedule
 from app.models.agent_revisit import AgentRevisitRequest
+from app.models.route_event import InvestigationRouteEvent
 from app.models.user import User
 from app.schemas.planning import LockedAssignment, PlanningRunCreate
 from app.services.geospatial import cells_for_point
@@ -32,7 +34,8 @@ OPEN_STATUSES = ("assigned", "in_progress", "under_review", "returned_for_correc
 PRIORITY_VALUES = {"normal": 10, "high": 50, "urgent": 100}
 ROUTE_RECOVERY_MAX_ATTEMPTS = 3
 ROUTE_RECOVERY_BASE_DELAY_SECONDS = 300
-PLANNER_LOGIC_VERSION = 4
+PLANNER_LOGIC_VERSION = 6
+PRIORITY_SEARCH_LIMIT_SECONDS = 2
 ROUTE_RECOVERY_RETRYABLE_ERRORS = {
     # Unknown optimizer exceptions may be transient (for example, a response
     # shape or dependency race). Keep recovery bounded, but do not strand
@@ -68,9 +71,15 @@ def _log_planning_event(event: str, **fields) -> None:
 
 
 def _as_utc(value: datetime) -> datetime:
+    if isinstance(value, str):
+        value = datetime.fromisoformat(value)
     if value.tzinfo is None:
         value = value.replace(tzinfo=timezone.utc)
     return value.astimezone(timezone.utc)
+
+
+def _database_now(db: Session) -> datetime:
+    return _as_utc(db.execute(text("SELECT CURRENT_TIMESTAMP")).scalar_one())
 
 
 def _epoch(value: datetime) -> int:
@@ -173,6 +182,7 @@ def readiness(db: Session, work_date: date, region_code: str, resolution: int) -
     if region_code != ALL_REGIONS and region_code not in catalog()["region_codes"]:
         raise PlanningConflict("invalid_region")
 
+    readiness_now = _database_now(db)
     cases = (
         db.query(Investigation)
         .options(joinedload(Investigation.assigned_agent))
@@ -191,6 +201,7 @@ def readiness(db: Session, work_date: date, region_code: str, resolution: int) -
             AgentShift.work_date == work_date,
             or_(AgentShift.region_code == region_code, AgentShift.region_code == ALL_REGIONS) if region_code != ALL_REGIONS else AgentShift.region_code.in_([ALL_REGIONS, *catalog()["region_codes"]]),
             AgentShift.is_available.is_(True),
+            AgentShift.shift_ends_at > readiness_now,
             User.role == "agent",
             User.is_active.is_(True),
         )
@@ -379,15 +390,26 @@ def _route_origin(shift: AgentShift, now: datetime | None = None) -> tuple[float
     today = now.astimezone(ZoneInfo("Asia/Manila")).date()
     shift_start = _as_utc(shift.shift_starts_at)
     shift_end = _as_utc(shift.shift_ends_at)
-    last_stop_at = _as_utc(shift.last_completed_at) if shift.last_completed_at else None
+    last_completed_at = getattr(shift, "last_completed_at", None)
+    last_stop_at = _as_utc(last_completed_at) if last_completed_at else None
+    last_attempted_at = getattr(shift, "last_attempted_at", None)
+    last_attempt_at = _as_utc(last_attempted_at) if last_attempted_at else None
+    reliable_locations = []
     if (
-        shift.work_date == today
-        and last_stop_at is not None
+        last_stop_at is not None
         and shift.last_completed_latitude is not None
         and shift.last_completed_longitude is not None
-        and shift_start <= last_stop_at <= now < shift_end
     ):
-        return shift.last_completed_latitude, shift.last_completed_longitude, "Latest completed visit (estimated)"
+        reliable_locations.append((last_stop_at, shift.last_completed_latitude, shift.last_completed_longitude, "Latest completed visit (estimated)"))
+    if (
+        last_attempt_at is not None
+        and shift.last_attempted_latitude is not None
+        and shift.last_attempted_longitude is not None
+    ):
+        reliable_locations.append((last_attempt_at, shift.last_attempted_latitude, shift.last_attempted_longitude, "Latest recorded attempt (estimated)"))
+    if shift.work_date == today and reliable_locations and shift_start <= max(item[0] for item in reliable_locations) <= now < shift_end:
+        _at, latitude, longitude, label = max(reliable_locations, key=lambda item: item[0])
+        return latitude, longitude, label
     start_label = shift.start_location_label
     if shift.work_date == today and shift_start <= now < shift_end:
         start_label = f"{start_label or 'Configured starting location'} (assumed; no live location available)"
@@ -569,6 +591,7 @@ def _build_route_geometries(osrm, case_rows, shifts, outcomes, now: datetime | N
                 "label": f"Final investigation stop · {last_case.reference_number}",
             }
         route = {"agent_id": shift.agent_id, "start": {"latitude": origin_lat, "longitude": origin_lon, "label": origin_label}, "end": end_point, "geometry_status": "failed", "geometry_error_code": None, "geometry": None, "geometry_digest": None, "total_distance_metres": None, "total_travel_seconds": None,
+                 "planned_departure_at": stops[0].get("planned_departure_at"),
                  "total_service_seconds": sum(int(item.get("service_seconds", 0)) for item in stops),
                  "total_waiting_seconds": sum(int(item.get("waiting_seconds", 0)) for item in stops),
                  "total_break_seconds": sum(int(item.get("route_break_seconds", 0)) for item in stops)}
@@ -582,7 +605,7 @@ def _build_route_geometries(osrm, case_rows, shifts, outcomes, now: datetime | N
 
 
 def route_response(route: PlanningRoute, agent: User, shift: AgentShift | None = None) -> dict:
-    response = {key: getattr(route, key) for key in ("agent_id", "geometry_status", "geometry_error_code", "geometry", "geometry_digest", "total_distance_metres", "total_travel_seconds", "total_service_seconds", "total_waiting_seconds", "total_break_seconds", "start", "end")} | {"agent_name": agent.name, "shift": shift}
+    response = {key: getattr(route, key) for key in ("agent_id", "geometry_status", "geometry_error_code", "geometry", "geometry_digest", "total_distance_metres", "total_travel_seconds", "total_service_seconds", "total_waiting_seconds", "total_break_seconds", "planned_departure_at", "start", "end")} | {"agent_name": agent.name, "shift": shift, "total_planned_waiting_seconds": None}
     if not _route_geometry_ready(route):
         response.update(geometry_status="failed", geometry_error_code=route.geometry_error_code or "route_geometry_invalid", geometry=None, geometry_digest=None, total_distance_metres=None, total_travel_seconds=None)
     return response
@@ -596,6 +619,19 @@ def route_response_through_last_stop(
 ) -> dict:
     """Present legacy depot-return geometry as an open route through its last stop."""
     response = route_response(route, agent, shift)
+    if ordered_rows:
+        # planned_arrival_at marks rows written with VROOM timing; older waiting_seconds
+        # values were independently derived gaps and cannot be reported as stop waits.
+        timings_known = all(
+            item.planned_arrival_at is not None and item.waiting_seconds is not None
+            for item, _case in ordered_rows
+        )
+        planned_waiting = (
+            sum(int(item.waiting_seconds) for item, _case in ordered_rows)
+            if timings_known else None
+        )
+        response["total_waiting_seconds"] = planned_waiting
+        response["total_planned_waiting_seconds"] = planned_waiting
     if shift is None or _route_destination(shift) is not None or not ordered_rows:
         return response
 
@@ -651,6 +687,7 @@ def planning_route_overview(db: Session, work_date: date, region_code: str | Non
     """Return current assignment-driven routes, never a route for a stale stop set."""
     if region_code and region_code not in catalog()["region_codes"]:
         raise PlanningConflict("invalid_region")
+    overview_now = _database_now(db)
 
     query = db.query(User, AgentShift).outerjoin(
         AgentShift,
@@ -686,13 +723,6 @@ def planning_route_overview(db: Session, work_date: date, region_code: str | Non
         Investigation.deleted_at.is_(None),
         Investigation.status.in_(("pending", "assigned", "in_progress")),
     ).order_by(Investigation.id).all() if agent_ids else []
-    current_assignment_sources = {
-        assignment.investigation_id: assignment.assignment_source
-        for assignment in db.query(InvestigationAssignment).filter(
-            InvestigationAssignment.is_active.is_(True),
-            InvestigationAssignment.investigation_id.in_([case.id for case in cases]),
-        ).all()
-    } if cases else {}
     current_ids_by_agent: dict[int, set[int]] = {agent_id: set() for agent_id in agent_ids}
     route_warnings_by_agent: dict[int, list[dict]] = {agent_id: [] for agent_id in agent_ids}
     for case in cases:
@@ -701,11 +731,9 @@ def planning_route_overview(db: Session, work_date: date, region_code: str | Non
             route_warnings_by_agent[case.assigned_agent_id].append({
                 "investigation_id": case.id,
                 "reference_number": case.reference_number,
-                "reason": (
-                    "waiting_for_reassignment"
-                    if current_assignment_sources.get(case.id) == "automatic"
-                    else "agent_shift_unavailable_today"
-                ),
+                "reason": "agent_shift_ended"
+                if shift and _as_utc(shift.shift_ends_at) <= overview_now
+                else "agent_shift_unavailable_today",
             })
             continue
         blocker = _route_assignment_blocker(case, shift.region_code)
@@ -780,6 +808,19 @@ def planning_route_overview(db: Session, work_date: date, region_code: str | Non
             and route_case_ids == stored_case_ids
             and expected_case_ids == route_case_ids
         )
+        priority_order_warnings = [
+            {
+                "investigation_id": warning["investigation_id"],
+                "reference_number": warning["reference_number"],
+                "deferred_investigation_id": warning["deferred_investigation_id"],
+                "deferred_reference_number": warning["deferred_reference_number"],
+                "reason": warning["reason"],
+            }
+            for warning in (run.warnings or [])
+            if exact_current_route
+            and warning.get("type") == "priority_order"
+            and warning.get("agent_id") == agent.id
+        ] if run else []
 
         route = None
         stops = []
@@ -802,8 +843,11 @@ def planning_route_overview(db: Session, work_date: date, region_code: str | Non
                     "address_display": case.address_display,
                     "sequence": item.sequence,
                     "estimated_arrival_at": item.estimated_arrival_at,
+                    "earliest_arrival_estimate_at": item.estimated_arrival_at,
+                    "planned_arrival_at": item.planned_arrival_at,
                     "estimated_service_start_at": item.estimated_service_start_at,
-                    "waiting_seconds": item.waiting_seconds,
+                    "waiting_seconds": item.waiting_seconds if item.planned_arrival_at is not None else None,
+                    "planned_waiting_seconds": item.waiting_seconds if item.planned_arrival_at is not None else None,
                     "travel_seconds": item.travel_seconds,
                     "travel_metres": item.travel_metres,
                     "latitude": case.latitude,
@@ -844,6 +888,7 @@ def planning_route_overview(db: Session, work_date: date, region_code: str | Non
             "route_status": route_status,
             "refresh_errors": list(dict.fromkeys(refresh_errors)),
             "planning_warnings": planning_warnings,
+            "priority_order_warnings": priority_order_warnings,
             "refresh_investigation_id": refresh.investigation_id if refresh else None,
             "run_id": run.id if run else None,
             "planning_status": (
@@ -1114,6 +1159,36 @@ def _link_auto_route_run(db: Session, run: PlanningRun) -> None:
             assignment.auto_route_status = "running" if run.status in {"running", "ready"} else "queued"
 
 
+def _automatic_assignments_outside_roster(
+    db: Session,
+    region_code: str,
+    available_agent_ids: set[int],
+) -> list[tuple[InvestigationAssignment, Investigation]]:
+    """Return active automatic work whose owner cannot serve this route scope."""
+    assignments = (
+        db.query(InvestigationAssignment, Investigation)
+        .join(Investigation, Investigation.id == InvestigationAssignment.investigation_id)
+        .filter(
+            InvestigationAssignment.is_active.is_(True),
+            InvestigationAssignment.assignment_source == "automatic",
+            Investigation.assigned_agent_id == InvestigationAssignment.agent_id,
+            Investigation.deleted_at.is_(None),
+            Investigation.status.in_(("pending", "assigned")),
+            Investigation.location_confirmed_at.is_not(None),
+            Investigation.latitude.is_not(None),
+            Investigation.longitude.is_not(None),
+            Investigation.region_code.in_(catalog()["region_codes"]) if region_code == ALL_REGIONS else Investigation.region_code == region_code,
+        )
+        .order_by(InvestigationAssignment.assigned_at, Investigation.id)
+        .all()
+    )
+    return [
+        (assignment, case)
+        for assignment, case in assignments
+        if case.assigned_agent_id not in available_agent_ids
+    ]
+
+
 def queue_automatic_planning(
     db: Session,
     region_code: str,
@@ -1127,16 +1202,18 @@ def queue_automatic_planning(
 ) -> PlanningRun | None:
     """Coalesce a regional planning trigger and enqueue one VROOM run.
 
-    Routeable assignments in this scope are carried into the run as locked jobs.
-    Other assigned cases remain untouched and are recorded as blockers. Only
-    confirmed, unassigned pending cases are offered for new assignment. H3 is
-    used to order the bounded batch geographically; OSRM/VROOM remain responsible
-    for routes and agent selection.
+    Assignments owned by agents on the current roster are carried as locked
+    jobs. During missing-route recovery, automatic assignments whose owners
+    lack an eligible shift are offered as movable jobs; manual assignments stay
+    with their owners. Other assigned cases remain untouched and are recorded
+    as blockers. Confirmed, unassigned pending cases are also offered for new
+    assignment. H3 orders the bounded batch; OSRM/VROOM choose routes and agents.
     """
-    work_date = work_date or datetime.now(ZoneInfo("Asia/Manila")).date()
+    planning_now = _database_now(db)
+    work_date = work_date or planning_now.astimezone(ZoneInfo("Asia/Manila")).date()
     if region_code != ALL_REGIONS and region_code not in catalog()["region_codes"]:
         raise PlanningConflict("invalid_region")
-    if work_date == datetime.now(ZoneInfo("Asia/Manila")).date():
+    if work_date == planning_now.astimezone(ZoneInfo("Asia/Manila")).date():
         materialize_work_date(db, work_date)
     all_regions_available = db.query(AgentShift.id).join(
         User, User.id == AgentShift.agent_id,
@@ -1144,6 +1221,7 @@ def queue_automatic_planning(
         AgentShift.work_date == work_date,
         AgentShift.region_code == ALL_REGIONS,
         AgentShift.is_available.is_(True),
+        AgentShift.shift_ends_at > planning_now,
         User.role == "agent",
         User.is_active.is_(True),
     ).first() is not None
@@ -1176,6 +1254,7 @@ def queue_automatic_planning(
             AgentShift.work_date == work_date,
             or_(AgentShift.region_code == region_code, AgentShift.region_code == ALL_REGIONS) if region_code != ALL_REGIONS else AgentShift.region_code.in_([ALL_REGIONS, *catalog()["region_codes"]]),
             AgentShift.is_available.is_(True),
+            AgentShift.shift_ends_at > planning_now,
             User.role == "agent",
             User.is_active.is_(True),
         )
@@ -1186,6 +1265,17 @@ def queue_automatic_planning(
     shifts_by_agent = {shift.agent_id: shift for shift, _agent in shift_rows}
     agents_by_id = {agent.id: agent for _shift, agent in shift_rows}
     requested_agent_ids = sorted(shifts_by_agent)
+    movable_auto_assignments = (
+        _automatic_assignments_outside_roster(db, region_code, set(requested_agent_ids))
+        if require_missing_route
+        else []
+    )
+    movable_auto_cases = [case for _assignment, case in movable_auto_assignments]
+    movable_ids = {case.id for case in movable_auto_cases}
+    tracking_assignment_ids = list(dict.fromkeys([
+        *tracking_assignment_ids,
+        *(assignment.id for assignment, _case in movable_auto_assignments),
+    ]))
 
     all_open_assigned = db.query(Investigation).filter(
         Investigation.assigned_agent_id.in_(requested_agent_ids),
@@ -1236,49 +1326,17 @@ def queue_automatic_planning(
     excluded_ids = exclude_investigation_ids or set()
     candidates = [case for case in candidates if case.id not in excluded_ids]
 
-    # Automatic assignments from agents who are off, inactive, unavailable, or
-    # outside the active scope are movable candidates. Manual assignments never
-    # enter this set. Publication changes ownership only after a feasible route
-    # is committed by apply_run.
-    movable_assignment_rows = db.query(InvestigationAssignment, Investigation).join(
-        Investigation, Investigation.id == InvestigationAssignment.investigation_id,
-    ).filter(
-        InvestigationAssignment.is_active.is_(True),
-        InvestigationAssignment.assignment_source == "automatic",
-        Investigation.assigned_agent_id == InvestigationAssignment.agent_id,
-        Investigation.deleted_at.is_(None),
-        Investigation.status.in_(("pending", "assigned")),
-        Investigation.location_confirmed_at.is_not(None),
-        Investigation.latitude.is_not(None),
-        Investigation.longitude.is_not(None),
-    ).order_by(Investigation.id).all()
-    movable_rows = []
-    for assignment, case in movable_assignment_rows:
-        in_scope = (
-            case.region_code in catalog()["region_codes"]
-            if region_code == ALL_REGIONS
-            else case.region_code == region_code
-        )
-        if not in_scope:
-            continue
-        owner_shift = shifts_by_agent.get(assignment.agent_id)
-        owner_can_keep_case = bool(
-            owner_shift
-            and owner_shift.is_available
-            and owner_shift.region_code in {case.region_code, ALL_REGIONS}
-        )
-        if not owner_can_keep_case:
-            movable_rows.append((assignment, case))
-    movable_cases = [case for _assignment, case in movable_rows if case.id not in excluded_ids]
-    movable_ids = {case.id for case in movable_cases}
+    # Manual work stays with its assigned agent. Automatic assignments without
+    # an eligible shift re-enter the planning pool and may be assigned to a
+    # working agent when route recovery runs.
     if require_missing_route:
         missing_route_ids = _missing_route_assigned_case_ids(db, work_date, region_code)
-        if not missing_route_ids and not movable_ids:
+        if not missing_route_ids:
             db.commit()
             return None
         # A queued or running run already owns this scope. Leave its captured
         # inputs intact; the worker will publish it or mark it stale, and the
-        # next reconciliation pass can recover changed inputs or movable work.
+            # next reconciliation pass can recover changed inputs.
         active_recovery_run = (
             db.query(PlanningRun)
             .filter(
@@ -1305,7 +1363,7 @@ def queue_automatic_planning(
     ]
 
     # H3 provides a stable geographic batching order; it never chooses a vehicle.
-    selected_cases = list(locked_cases) + [case for case in movable_cases if case.id not in {item.id for item in locked_cases}]
+    selected_cases = list(locked_cases) + movable_auto_cases
     selected_ids = {case.id for case in selected_cases}
     coordinates = {
         (round(_route_origin(shift)[0], 6), round(_route_origin(shift)[1], 6))
@@ -1499,6 +1557,7 @@ def queue_automatic_planning(
 
 
 def _missing_route_assigned_case_ids(db: Session, work_date: date, region_code: str) -> set[int]:
+    now = _database_now(db)
     agent_ids = [
         agent_id
         for (agent_id,) in db.query(AgentShift.agent_id)
@@ -1507,6 +1566,7 @@ def _missing_route_assigned_case_ids(db: Session, work_date: date, region_code: 
             AgentShift.work_date == work_date,
             or_(AgentShift.region_code == region_code, AgentShift.region_code == ALL_REGIONS) if region_code != ALL_REGIONS else AgentShift.region_code.in_([ALL_REGIONS, *catalog()["region_codes"]]),
             AgentShift.is_available.is_(True),
+            AgentShift.shift_ends_at > now,
             User.role == "agent",
             User.is_active.is_(True),
         )
@@ -1524,6 +1584,14 @@ def _missing_route_assigned_case_ids(db: Session, work_date: date, region_code: 
         Investigation.latitude.is_not(None),
         Investigation.longitude.is_not(None),
     ).order_by(Investigation.id).all()
+    movable_auto_assignments = _automatic_assignments_outside_roster(
+        db, region_code, set(agent_ids),
+    )
+    movable_auto_cases = [case for _assignment, case in movable_auto_assignments]
+    movable_auto_ids = {case.id for case in movable_auto_cases}
+    eligible_cases_by_id = {case.id: case for case in eligible_cases}
+    eligible_cases_by_id.update({case.id: case for case in movable_auto_cases})
+    eligible_cases = list(eligible_cases_by_id.values())
     if not eligible_cases:
         return set()
 
@@ -1531,6 +1599,9 @@ def _missing_route_assigned_case_ids(db: Session, work_date: date, region_code: 
     overview_by_agent = {item["id"]: item for item in overview["agents"]}
     missing_case_ids: set[int] = set()
     for case in eligible_cases:
+        if case.id in movable_auto_ids:
+            missing_case_ids.add(case.id)
+            continue
         item = overview_by_agent.get(case.assigned_agent_id)
         route = item.get("route") if item else None
         routed_ids = {
@@ -1555,9 +1626,11 @@ def _recovery_inputs_changed(
         for item in (run.locked_assignments or [])
         if isinstance(item, dict)
     }
-    if current_assigned_case_ids != locked_case_ids:
+    captured_assigned_case_ids = locked_case_ids | set(run.movable_investigation_ids or [])
+    if current_assigned_case_ids != captured_assigned_case_ids:
         return True
 
+    now = _database_now(db)
     current_agent_ids = {
         agent_id
         for (agent_id,) in db.query(AgentShift.agent_id)
@@ -1566,6 +1639,7 @@ def _recovery_inputs_changed(
             AgentShift.work_date == run.work_date,
             or_(AgentShift.region_code == run.region_code, AgentShift.region_code == ALL_REGIONS) if run.region_code != ALL_REGIONS else AgentShift.region_code.in_([ALL_REGIONS, *catalog()["region_codes"]]),
             AgentShift.is_available.is_(True),
+            AgentShift.shift_ends_at > now,
             User.role == "agent",
             User.is_active.is_(True),
         )
@@ -1596,8 +1670,10 @@ def reconcile_missing_route_scopes(db: Session, work_date: date | None = None) -
     available shifts, relies on the route overview's exact-stop validation,
     and delegates all planning and publication to the existing queue/worker.
     """
-    work_date = work_date or datetime.now(ZoneInfo("Asia/Manila")).date()
-    if work_date == datetime.now(ZoneInfo("Asia/Manila")).date():
+    planning_now = _database_now(db)
+    today = planning_now.astimezone(ZoneInfo("Asia/Manila")).date()
+    work_date = work_date or today
+    if work_date == today:
         materialize_work_date(db, work_date)
     shift_rows = (
         db.query(AgentShift.region_code, AgentShift.agent_id)
@@ -1605,6 +1681,7 @@ def reconcile_missing_route_scopes(db: Session, work_date: date | None = None) -
         .filter(
             AgentShift.work_date == work_date,
             AgentShift.is_available.is_(True),
+            AgentShift.shift_ends_at > planning_now,
             User.role == "agent",
             User.is_active.is_(True),
         )
@@ -1618,43 +1695,6 @@ def reconcile_missing_route_scopes(db: Session, work_date: date | None = None) -
         for region_code, agent_id in shift_rows:
             agent_ids_by_region.setdefault(region_code, []).append(agent_id)
 
-    # Include unfinished automatic assignments whose owner has no matching
-    # available shift today. A replacement route can then move them only when
-    # VROOM finds a feasible new vehicle and apply_run publishes it.
-    active_shift_by_agent = {
-        agent_id: region_code for region_code, agent_id in shift_rows
-    }
-    movable_cases_by_scope: dict[str, dict[int, Investigation]] = {}
-    automatic_assignments = db.query(InvestigationAssignment, Investigation).join(
-        Investigation, Investigation.id == InvestigationAssignment.investigation_id,
-    ).filter(
-        InvestigationAssignment.is_active.is_(True),
-        InvestigationAssignment.assignment_source == "automatic",
-        Investigation.assigned_agent_id == InvestigationAssignment.agent_id,
-        Investigation.deleted_at.is_(None),
-        Investigation.status.in_(("pending", "assigned")),
-        Investigation.location_confirmed_at.is_not(None),
-        Investigation.latitude.is_not(None),
-        Investigation.longitude.is_not(None),
-    ).order_by(Investigation.id).all()
-    for _assignment, case in automatic_assignments:
-        owner_region = active_shift_by_agent.get(case.assigned_agent_id)
-        if owner_region in {case.region_code, ALL_REGIONS}:
-            continue
-        if ALL_REGIONS in agent_ids_by_region:
-            scope = ALL_REGIONS
-        else:
-            replacement_ids = sorted(
-                agent_id
-                for region, agent_id in shift_rows
-                if region in {case.region_code, ALL_REGIONS}
-            )
-            if not replacement_ids:
-                continue
-            scope = case.region_code
-            agent_ids_by_region.setdefault(scope, replacement_ids)
-        movable_cases_by_scope.setdefault(scope, {})[case.id] = case
-
     attempted = 0
     skipped_no_eligible_work = 0
     skipped_retry_limit = 0
@@ -1663,7 +1703,6 @@ def reconcile_missing_route_scopes(db: Session, work_date: date | None = None) -
     now = datetime.now(timezone.utc)
 
     for region_code, agent_ids in agent_ids_by_region.items():
-        movable_cases = movable_cases_by_scope.get(region_code, {})
         eligible_cases = (
             db.query(Investigation)
             .filter(
@@ -1678,11 +1717,17 @@ def reconcile_missing_route_scopes(db: Session, work_date: date | None = None) -
             .order_by(Investigation.id)
             .all()
         )
-        if not eligible_cases and not movable_cases:
+        movable_auto_assignments = _automatic_assignments_outside_roster(
+            db, region_code, set(agent_ids),
+        )
+        eligible_cases_by_id = {case.id: case for case in eligible_cases}
+        eligible_cases_by_id.update({case.id: case for _assignment, case in movable_auto_assignments})
+        eligible_cases = list(eligible_cases_by_id.values())
+        if not eligible_cases:
             skipped_no_eligible_work += 1
             continue
 
-        missing_case_ids = _missing_route_assigned_case_ids(db, work_date, region_code) | set(movable_cases)
+        missing_case_ids = _missing_route_assigned_case_ids(db, work_date, region_code)
         if not missing_case_ids:
             skipped_no_eligible_work += 1
             continue
@@ -1768,9 +1813,7 @@ def reconcile_missing_route_scopes(db: Session, work_date: date | None = None) -
             for (assignment_id,) in db.query(InvestigationAssignment.id)
             .filter(
                 InvestigationAssignment.is_active.is_(True),
-                InvestigationAssignment.investigation_id.in_(
-                    {case.id for case in eligible_cases} | set(movable_cases)
-                ),
+                InvestigationAssignment.investigation_id.in_([case.id for case in eligible_cases]),
             )
             .all()
         ]
@@ -2002,6 +2045,15 @@ def _snapshot(db: Session, run: PlanningRun, cases: list[Investigation], shifts:
         )
         .all()
     ) if run.investigation_ids else []
+    assignment_history = db.query(InvestigationAssignment).filter(
+        InvestigationAssignment.investigation_id.in_(run.investigation_ids),
+    ).order_by(InvestigationAssignment.investigation_id, InvestigationAssignment.assigned_at, InvestigationAssignment.id).all() if run.investigation_ids else []
+    route_events = db.query(InvestigationRouteEvent).filter(
+        InvestigationRouteEvent.work_date == run.work_date,
+        InvestigationRouteEvent.agent_id.in_(run.agent_ids),
+        InvestigationRouteEvent.investigation_id.in_(run.investigation_ids),
+        InvestigationRouteEvent.event_type == "no_contact",
+    ).order_by(InvestigationRouteEvent.id).all() if run.agent_ids and run.investigation_ids else []
     return {
         # Bump this when a planner-code correction should make a prior failed
         # input eligible for one fresh automatic recovery attempt.
@@ -2029,8 +2081,16 @@ def _snapshot(db: Session, run: PlanningRun, cases: list[Investigation], shifts:
             for case in sorted(cases, key=lambda item: item.id)
         ],
         "assignments": [
-            {"id": item.id, "investigation": item.investigation_id, "agent": item.agent_id, "source": item.assignment_source, "note": item.note}
+            {"id": item.id, "investigation": item.investigation_id, "agent": item.agent_id, "source": item.assignment_source, "note": item.note, "assigned_at": _iso_utc(item.assigned_at), "unassigned_at": _iso_utc(item.unassigned_at)}
             for item in sorted(active_assignments, key=lambda item: item.investigation_id)
+        ],
+        "assignment_history": [
+            {"id": item.id, "investigation": item.investigation_id, "agent": item.agent_id, "source": item.assignment_source, "assigned_at": _iso_utc(item.assigned_at), "unassigned_at": _iso_utc(item.unassigned_at)}
+            for item in assignment_history
+        ],
+        "route_events": [
+            {"id": item.id, "investigation": item.investigation_id, "agent": item.agent_id, "state": item.state, "retry_number": item.retry_number, "reason": item.reason, "attempted_at": _iso_utc(item.attempted_at), "contact_from": _iso_utc(item.contact_available_from), "contact_until": _iso_utc(item.contact_available_until)}
+            for item in route_events
         ],
         "shifts": [
             {
@@ -2046,6 +2106,7 @@ def _snapshot(db: Session, run: PlanningRun, cases: list[Investigation], shifts:
                 "schedule_version_id": shift.schedule_version_id,
                 "break": [_iso_utc(shift.break_starts_at), _iso_utc(shift.break_ends_at)],
                 "last_completed": [shift.last_completed_investigation_id, shift.last_completed_report_id, _iso_utc(shift.last_completed_at), shift.last_completed_latitude, shift.last_completed_longitude],
+                "last_attempted": [shift.last_attempted_investigation_id, _iso_utc(shift.last_attempted_at), shift.last_attempted_latitude, shift.last_attempted_longitude],
                 "max_visits": shift.max_visits,
                 "max_open_cases": shift.max_open_cases,
                 "current_run": shift.current_planning_run_id,
@@ -2094,6 +2155,240 @@ def _valid_cost_matrix(matrix, size: int) -> bool:
     return True
 
 
+def _priority_rank(priority: str | None) -> int:
+    return {"urgent": 0, "high": 1, "normal": 2}.get(priority or "normal", 2)
+
+
+def _original_assignment_order(case: Investigation) -> tuple[datetime, int]:
+    assignments = getattr(case, "assignments", None) or []
+    created_at = getattr(case, "created_at", None)
+    assigned_at = min(
+        (_as_utc(item.assigned_at) for item in assignments if item.assigned_at is not None),
+        default=(
+            _as_utc(created_at)
+            if created_at is not None
+            else datetime.max.replace(tzinfo=timezone.utc)
+        ),
+    )
+    return assigned_at, case.id
+
+
+def _priority_inversions(job_ids: list[int], case_by_id: dict[int, Investigation]) -> list[tuple[int, int]]:
+    """Return lower-priority stops that appear before higher-priority stops."""
+    inversions = []
+    for earlier_index, earlier_id in enumerate(job_ids):
+        earlier = case_by_id.get(earlier_id)
+        if earlier is None:
+            continue
+        for later_id in job_ids[earlier_index + 1:]:
+            later = case_by_id.get(later_id)
+            if (
+                later is not None
+                and getattr(earlier, "_route_retry_pending", False) == getattr(later, "_route_retry_pending", False)
+                and _priority_rank(earlier.priority) > _priority_rank(later.priority)
+            ):
+                inversions.append((earlier_id, later_id))
+    return inversions
+
+
+def _assignment_time_inversions(job_ids: list[int], case_by_id: dict[int, Investigation]) -> list[tuple[int, int]]:
+    """Return same-priority stops that violate first-assigned-first-served."""
+    inversions = []
+    for earlier_index, earlier_id in enumerate(job_ids):
+        earlier = case_by_id.get(earlier_id)
+        if earlier is None:
+            continue
+        for later_id in job_ids[earlier_index + 1:]:
+            later = case_by_id.get(later_id)
+            if (
+                later is not None
+                and getattr(earlier, "_route_retry_pending", False) == getattr(later, "_route_retry_pending", False)
+                and _priority_rank(earlier.priority) == _priority_rank(later.priority)
+                and _original_assignment_order(earlier) > _original_assignment_order(later)
+            ):
+                inversions.append((earlier_id, later_id))
+    return inversions
+
+
+def _retry_phase_inversions(job_ids: list[int], case_by_id: dict[int, Investigation]) -> list[tuple[int, int]]:
+    inversions = []
+    for earlier_index, earlier_id in enumerate(job_ids):
+        earlier = case_by_id.get(earlier_id)
+        if earlier is None or not getattr(earlier, "_route_retry_pending", False):
+            continue
+        for later_id in job_ids[earlier_index + 1:]:
+            later = case_by_id.get(later_id)
+            if later is not None and not getattr(later, "_route_retry_pending", False):
+                inversions.append((earlier_id, later_id))
+    return inversions
+
+
+def _route_order_inversions(job_ids: list[int], case_by_id: dict[int, Investigation]) -> list[tuple[int, int]]:
+    return (
+        _retry_phase_inversions(job_ids, case_by_id)
+        + _priority_inversions(job_ids, case_by_id)
+        + _assignment_time_inversions(job_ids, case_by_id)
+    )
+
+
+def _priority_route_score(route: dict, case_by_id: dict[int, Investigation]) -> tuple:
+    """Rank feasible route candidates by priority order, early service, then travel."""
+    job_steps = [
+        step for step in route.get("steps", [])
+        if isinstance(step, dict) and step.get("type") == "job"
+    ]
+    job_ids = [step.get("id") for step in job_steps]
+    inversions = _priority_inversions(job_ids, case_by_id)
+    assignment_inversions = _assignment_time_inversions(job_ids, case_by_id)
+    retry_phase_inversions = _retry_phase_inversions(job_ids, case_by_id)
+    urgent_inversions = sum(
+        1 for earlier_id, later_id in inversions
+        if _priority_rank(case_by_id[earlier_id].priority) > 0
+        and _priority_rank(case_by_id[later_id].priority) == 0
+    )
+    high_inversions = sum(
+        1 for earlier_id, later_id in inversions
+        if _priority_rank(case_by_id[earlier_id].priority) == 2
+        and _priority_rank(case_by_id[later_id].priority) == 1
+    )
+    priority_service_starts = {"urgent": [], "high": [], "normal": []}
+    for step in job_steps:
+        case = case_by_id.get(step.get("id"))
+        arrival = step.get("arrival")
+        waiting = step.get("waiting_time", 0)
+        if (
+            case is None
+            or isinstance(arrival, bool)
+            or not isinstance(arrival, (int, float))
+            or isinstance(waiting, bool)
+            or not isinstance(waiting, (int, float))
+        ):
+            continue
+        priority_service_starts[case.priority if case.priority in priority_service_starts else "normal"].append(
+            arrival + waiting,
+        )
+    service_score = tuple(
+        sum(priority_service_starts[priority])
+        for priority in ("urgent", "high", "normal")
+    )
+    duration = route.get("duration")
+    if isinstance(duration, bool) or not isinstance(duration, (int, float)):
+        duration = float("inf")
+    return len(retry_phase_inversions), urgent_inversions, high_inversions, len(assignment_inversions), *service_score, duration
+
+
+def _priority_route_payload(
+    vehicle: dict,
+    route_job_ids: list[int],
+    jobs_by_id: dict[int, dict],
+    case_by_id: dict[int, Investigation],
+    point_indexes: dict[tuple[float, float], int],
+    local_index: dict[int, int],
+    durations: list[list[int]],
+    distances: list[list[int]],
+    origin: tuple[float, float],
+    destination: tuple[float, float] | None,
+) -> dict:
+    """Build a VROOM re-sequencing problem with lexicographic priority penalties."""
+    baseline_position = {case_id: index for index, case_id in enumerate(route_job_ids)}
+    ordered_ids = sorted(
+        route_job_ids,
+        key=lambda case_id: (
+            bool(getattr(case_by_id[case_id], "_route_retry_pending", False)),
+            _priority_rank(case_by_id[case_id].priority),
+            *_original_assignment_order(case_by_id[case_id]),
+            baseline_position[case_id],
+        ),
+    )
+    case_local_indexes = [
+        local_index[point_indexes[(round(case_by_id[case_id].latitude, 6), round(case_by_id[case_id].longitude, 6))]]
+        for case_id in route_job_ids
+    ]
+    origin_local_index = local_index[point_indexes[(round(origin[0], 6), round(origin[1], 6))]]
+    matrix_indexes = [origin_local_index, *case_local_indexes]
+    if destination is not None:
+        matrix_indexes.append(local_index[point_indexes[(round(destination[0], 6), round(destination[1], 6))]])
+
+    expanded_durations = [[durations[source][target] for target in matrix_indexes] for source in matrix_indexes]
+    expanded_distances = [[distances[source][target] for target in matrix_indexes] for source in matrix_indexes]
+    job_count = len(route_job_ids)
+    max_arc = max((value for row in expanded_durations for value in row), default=0)
+    travel_bound = max(1, (job_count + 1) * max_arc)
+    assignment_penalty = travel_bound + 1
+    high_penalty = (job_count + 1) * assignment_penalty + travel_bound + 1
+    urgent_penalty = (job_count + 1) * high_penalty + travel_bound + 1
+    retry_phase_penalty = (job_count + 1) * urgent_penalty + travel_bound + 1
+    costs = [row[:] for row in expanded_durations]
+    for source_position, source_case_id in enumerate(route_job_ids, start=1):
+        source_rank = _priority_rank(case_by_id[source_case_id].priority)
+        for target_position, target_case_id in enumerate(route_job_ids, start=1):
+            if source_position == target_position:
+                continue
+            target_rank = _priority_rank(case_by_id[target_case_id].priority)
+            source_retry = bool(getattr(case_by_id[source_case_id], "_route_retry_pending", False))
+            target_retry = bool(getattr(case_by_id[target_case_id], "_route_retry_pending", False))
+            if source_retry and not target_retry:
+                costs[source_position][target_position] += retry_phase_penalty
+            elif source_retry == target_retry and source_rank > target_rank:
+                costs[source_position][target_position] += urgent_penalty if target_rank == 0 else high_penalty
+            elif (
+                source_retry == target_retry
+                and source_rank == target_rank
+                and _original_assignment_order(case_by_id[source_case_id])
+                > _original_assignment_order(case_by_id[target_case_id])
+            ):
+                costs[source_position][target_position] += assignment_penalty
+
+    priority_vehicle = dict(vehicle)
+    priority_vehicle["start_index"] = 0
+    priority_vehicle["steps"] = [{"type": "job", "id": case_id} for case_id in ordered_ids]
+    if destination is not None:
+        priority_vehicle["end_index"] = job_count + 1
+    else:
+        priority_vehicle.pop("end", None)
+        priority_vehicle.pop("end_index", None)
+
+    priority_jobs = []
+    for position, case_id in enumerate(route_job_ids, start=1):
+        job = dict(jobs_by_id[case_id])
+        job["location_index"] = position
+        priority_jobs.append(job)
+    return {
+        "vehicles": [priority_vehicle],
+        "jobs": priority_jobs,
+        "matrices": {
+            "car": {
+                "durations": expanded_durations,
+                "distances": expanded_distances,
+                "costs": costs,
+            },
+        },
+    }
+
+
+def _priority_route_from_solution(solution: dict, agent_id: int, expected_job_ids: set[int]) -> dict | None:
+    routes = solution.get("routes")
+    if not isinstance(routes, list) or len(routes) != 1 or not isinstance(routes[0], dict):
+        return None
+    route = routes[0]
+    if route.get("vehicle") != agent_id or solution.get("unassigned"):
+        return None
+    steps = route.get("steps")
+    if not isinstance(steps, list):
+        return None
+    found_job_ids = []
+    for step in steps:
+        if not isinstance(step, dict) or step.get("type") != "job":
+            continue
+        case_id = step.get("id")
+        if isinstance(case_id, bool) or not isinstance(case_id, int):
+            return None
+        found_job_ids.append(case_id)
+    if len(found_job_ids) != len(expected_job_ids) or set(found_job_ids) != expected_job_ids:
+        return None
+    return route
+
+
 def _region_skill(region_code: str) -> int:
     codes = sorted(catalog()["region_codes"])
     if region_code not in codes:
@@ -2135,14 +2430,24 @@ def _run_component(
             "location": [case.longitude, case.latitude],
             "location_index": local_index[index],
             "service": case.service_duration_seconds,
-            "priority": PRIORITY_VALUES.get(case.priority, 10),
+            "priority": 1 if getattr(case, "_route_retry_pending", False) else PRIORITY_VALUES.get(case.priority, 10),
             "skills": [_region_skill(case.region_code)],
         }
         windows = []
-        if case.visit_not_before_at or case.visit_due_at:
-            latest_start = _as_utc(case.visit_due_at).timestamp() - case.service_duration_seconds if case.visit_due_at else None
+        contact_from = getattr(case, "_route_contact_available_from", None)
+        contact_until = getattr(case, "_route_contact_available_until", None)
+        if case.visit_not_before_at or case.visit_due_at or contact_from or contact_until:
+            earliest_start_candidates = [
+                value for value in (case.visit_not_before_at, contact_from) if value is not None
+            ]
+            earliest_start = max((_epoch(value) for value in earliest_start_candidates), default=None)
+            latest_end_candidates = [
+                value for value in (case.visit_due_at, contact_until) if value is not None
+            ]
+            latest_end = min((_epoch(value) for value in latest_end_candidates), default=None)
+            latest_start = latest_end - case.service_duration_seconds if latest_end is not None else None
             windows.append([
-                _epoch(case.visit_not_before_at) if case.visit_not_before_at else min(_epoch(_planning_floor(s, planning_now)) for s in shifts),
+                earliest_start if earliest_start is not None else min(_epoch(_planning_floor(s, planning_now)) for s in shifts),
                 int(latest_start) if latest_start is not None else max(_epoch(s.shift_ends_at) for s in shifts),
             ])
             job["time_windows"] = windows
@@ -2152,8 +2457,10 @@ def _run_component(
         jobs.append(job)
 
     vehicles = []
+    vehicle_by_agent: dict[int, dict] = {}
     shift_by_agent = {shift.agent_id: shift for shift in shifts}
     break_required_by_agent: dict[int, bool] = {}
+    earliest_route_departure_epoch_by_agent: dict[int, int] = {}
     for shift in shifts:
         origin_latitude, origin_longitude, _origin_label = _route_origin(shift, planning_now)
         start = (round(origin_latitude, 6), round(origin_longitude, 6))
@@ -2204,8 +2511,10 @@ def _run_component(
                     "time_windows": [[break_start, break_start]],
                     "service": break_end - break_start,
                 }]
+        earliest_route_departure_epoch_by_agent[shift.agent_id] = _epoch(floor)
         break_required_by_agent[shift.agent_id] = needs_break
         vehicles.append(vehicle)
+        vehicle_by_agent[shift.agent_id] = vehicle
 
     if not jobs or not vehicles:
         return []
@@ -2215,6 +2524,171 @@ def _run_component(
         "matrices": {"car": {"durations": component_durations, "distances": component_distances}},
     }
     solution = solver.solve(payload)
+    priority_warning_by_agent: dict[int, list[dict]] = {}
+    jobs_by_id = {job["id"]: job for job in jobs}
+    prioritized_routes = []
+    for baseline_route in solution.get("routes", []):
+        if not isinstance(baseline_route, dict):
+            prioritized_routes.append(baseline_route)
+            continue
+        agent_id = baseline_route.get("vehicle")
+        steps = baseline_route.get("steps")
+        if (
+            isinstance(agent_id, bool)
+            or not isinstance(agent_id, int)
+            or not isinstance(steps, list)
+            or agent_id not in vehicle_by_agent
+        ):
+            prioritized_routes.append(baseline_route)
+            continue
+        route_job_ids = [
+            step["id"]
+            for step in steps
+            if isinstance(step, dict) and step.get("type") == "job" and isinstance(step.get("id"), int)
+        ]
+        if any(case_id not in jobs_by_id or case_id not in case_by_id for case_id in route_job_ids):
+            prioritized_routes.append(baseline_route)
+            continue
+        if not _route_order_inversions(route_job_ids, case_by_id):
+            prioritized_routes.append(baseline_route)
+            continue
+
+        shift = shift_by_agent[agent_id]
+        origin_latitude, origin_longitude, _origin_label = _route_origin(shift, planning_now)
+        destination = _route_destination(shift)
+        destination_point = (destination[0], destination[1]) if destination is not None else None
+        priority_payload = _priority_route_payload(
+            vehicle_by_agent[agent_id],
+            route_job_ids,
+            jobs_by_id,
+            case_by_id,
+            point_indexes,
+            local_index,
+            component_durations,
+            component_distances,
+            (origin_latitude, origin_longitude),
+            destination_point,
+        )
+        expected_route_ids = set(route_job_ids)
+        best_route = baseline_route
+        best_route_score = _priority_route_score(best_route, case_by_id)
+        search_limit_reached = False
+        priority_order_infeasible = False
+        priority_payload["options"] = {"l": PRIORITY_SEARCH_LIMIT_SECONDS}
+        candidate_solution = None
+        priority_search_started = monotonic()
+        try:
+            candidate_solution = solver.solve(priority_payload)
+            candidate_route = _priority_route_from_solution(candidate_solution, agent_id, expected_route_ids)
+        except RoutingUnavailable as error:
+            candidate_route = None
+            priority_order_infeasible = error.args[0] == "vroom_solver_failed"
+        search_limit_reached = (
+            monotonic() - priority_search_started >= PRIORITY_SEARCH_LIMIT_SECONDS * 0.8
+        )
+
+        if candidate_route is not None:
+            candidate_route_score = _priority_route_score(candidate_route, case_by_id)
+            if candidate_route_score < best_route_score:
+                best_route = candidate_route
+                best_route_score = candidate_route_score
+
+        best_job_ids = [
+            step["id"] for step in best_route["steps"]
+            if isinstance(step, dict) and step.get("type") == "job"
+        ]
+
+        if _route_order_inversions(best_job_ids, case_by_id):
+            # If urgent/high/normal cannot be followed, continue from VROOM's
+            # original feasible route so the optimizer searches nearby orders
+            # while preserving hard schedule constraints.
+            unseeded_payload = {
+                **priority_payload,
+                "vehicles": [
+                    {
+                        **priority_payload["vehicles"][0],
+                        "steps": [
+                            {"type": "job", "id": case_id}
+                            for case_id in route_job_ids
+                        ],
+                    }
+                ],
+            }
+            priority_search_started = monotonic()
+            try:
+                candidate_solution = solver.solve(unseeded_payload)
+                candidate_route = _priority_route_from_solution(candidate_solution, agent_id, expected_route_ids)
+            except RoutingUnavailable as error:
+                candidate_route = None
+                if error.args[0] == "vroom_solver_failed":
+                    priority_order_infeasible = True
+            search_limit_reached = search_limit_reached or (
+                monotonic() - priority_search_started >= PRIORITY_SEARCH_LIMIT_SECONDS * 0.8
+            )
+            if candidate_route is not None:
+                candidate_route_score = _priority_route_score(candidate_route, case_by_id)
+                if candidate_route_score < best_route_score:
+                    best_route = candidate_route
+                    best_route_score = candidate_route_score
+
+        chosen_ids = [
+            step["id"] for step in best_route["steps"]
+            if isinstance(step, dict) and step.get("type") == "job"
+        ]
+        remaining_inversions = _priority_inversions(chosen_ids, case_by_id)
+        remaining_retry_phase_inversions = _retry_phase_inversions(chosen_ids, case_by_id)
+        remaining_assignment_inversions = _assignment_time_inversions(chosen_ids, case_by_id)
+        if search_limit_reached or (remaining_inversions and not priority_order_infeasible):
+            priority_warning_by_agent[agent_id] = [{
+                "type": "priority_order",
+                "agent_id": agent_id,
+                "investigation_id": None,
+                "reference_number": None,
+                "deferred_investigation_id": None,
+                "deferred_reference_number": None,
+                "reason": "search_limit",
+            }]
+        elif remaining_inversions:
+            priority_warning_by_agent[agent_id] = [
+                {
+                    "type": "priority_order",
+                    "agent_id": agent_id,
+                    "investigation_id": earlier_id,
+                    "reference_number": getattr(case_by_id[earlier_id], "reference_number", str(earlier_id)),
+                    "deferred_investigation_id": later_id,
+                    "deferred_reference_number": getattr(case_by_id[later_id], "reference_number", str(later_id)),
+                    "reason": "schedule_constraint",
+                }
+                for earlier_id, later_id in remaining_inversions
+            ]
+        elif remaining_retry_phase_inversions:
+            priority_warning_by_agent[agent_id] = [
+                {
+                    "type": "priority_order",
+                    "agent_id": agent_id,
+                    "investigation_id": earlier_id,
+                    "reference_number": getattr(case_by_id[earlier_id], "reference_number", str(earlier_id)),
+                    "deferred_investigation_id": later_id,
+                    "deferred_reference_number": getattr(case_by_id[later_id], "reference_number", str(later_id)),
+                    "reason": "schedule_constraint",
+                }
+                for earlier_id, later_id in remaining_retry_phase_inversions
+            ]
+        elif remaining_assignment_inversions:
+            priority_warning_by_agent[agent_id] = [
+                {
+                    "type": "priority_order",
+                    "agent_id": agent_id,
+                    "investigation_id": earlier_id,
+                    "reference_number": getattr(case_by_id[earlier_id], "reference_number", str(earlier_id)),
+                    "deferred_investigation_id": later_id,
+                    "deferred_reference_number": getattr(case_by_id[later_id], "reference_number", str(later_id)),
+                    "reason": "assignment_time_constraint",
+                }
+                for earlier_id, later_id in remaining_assignment_inversions
+            ]
+        prioritized_routes.append(best_route)
+    solution["routes"] = prioritized_routes
     expected_job_ids = {job["id"] for job in jobs}
     valid_vehicle_ids = {vehicle["id"] for vehicle in vehicles}
     if not isinstance(solution.get("routes"), list) or not isinstance(solution.get("unassigned"), list):
@@ -2262,16 +2736,19 @@ def _run_component(
             _reject_vroom_schedule("start_before_planning_floor", floor_epoch - previous_arrival)
         if previous_arrival > shift_end_epoch:
             _reject_vroom_schedule("start_after_shift_end", previous_arrival - shift_end_epoch)
-        start_waiting = steps[0].get("waiting_time", 0)
+        start_waiting = steps[0].get("waiting_time")
         if isinstance(start_waiting, bool) or not isinstance(start_waiting, (int, float)) or not isfinite(start_waiting) or start_waiting < 0:
             raise RoutingUnavailable("vroom_solution_waiting_invalid")
         previous_departure = previous_arrival + int(start_waiting)
+        planned_departure_at = datetime.fromtimestamp(previous_departure, timezone.utc)
+        estimate_departure_epoch = earliest_route_departure_epoch_by_agent.get(agent_id, floor_epoch)
         cumulative_waiting_seconds = int(start_waiting)
         cumulative_service_seconds = 0
         previous_job_travel_seconds = int(steps[0].get("duration", 0)) if has_cumulative_durations else 0
         sequence = 0
         break_seen = False
         break_duration = 0
+        pending_break: dict[str, int] | None = None
         for step in steps[1:-1]:
             if not isinstance(step, dict) or not isinstance(step.get("type"), str):
                 raise RoutingUnavailable("vroom_solution_shape_invalid")
@@ -2279,7 +2756,7 @@ def _run_component(
                 if break_seen or not shift.break_starts_at or not shift.break_ends_at:
                     raise RoutingUnavailable("vroom_solution_break_invalid")
                 arrival_value = step.get("arrival")
-                waiting_value = step.get("waiting_time", 0)
+                waiting_value = step.get("waiting_time")
                 if any(isinstance(value, bool) or not isinstance(value, (int, float)) or not isfinite(value) for value in (arrival_value, waiting_value)) or waiting_value < 0:
                     raise RoutingUnavailable("vroom_solution_break_invalid")
                 break_arrival = int(arrival_value)
@@ -2299,9 +2776,17 @@ def _run_component(
                         _reject_vroom_schedule("break_travel_duration_decreased", previous_job_travel_seconds - reported_travel)
                     if elapsed < minimum_elapsed:
                         _reject_vroom_schedule("break_arrival_before_cumulative_work", minimum_elapsed - elapsed)
+                    travel_before_break = reported_travel - previous_job_travel_seconds
+                else:
+                    travel_before_break = break_arrival - previous_departure
                 cumulative_waiting_seconds += int(waiting_value)
                 cumulative_service_seconds += int(service)
                 previous_departure = expected_end
+                pending_break = {
+                    "start": expected_start,
+                    "duration": int(service),
+                    "travel_before": max(0, int(travel_before_break)),
+                }
                 break_seen = True
                 break_duration = int(service)
                 continue
@@ -2316,7 +2801,7 @@ def _run_component(
             if isinstance(arrival, bool) or not isinstance(arrival, (int, float)) or not isfinite(arrival):
                 raise RoutingUnavailable("vroom_solution_arrival_invalid")
             arrival = int(arrival)
-            waiting = step.get("waiting_time", 0)
+            waiting = step.get("waiting_time")
             if isinstance(waiting, bool) or not isinstance(waiting, (int, float)) or not isfinite(waiting) or waiting < 0:
                 raise RoutingUnavailable("vroom_solution_waiting_invalid")
             waiting = int(waiting)
@@ -2324,6 +2809,26 @@ def _run_component(
             coordinate = (round(case.latitude, 6), round(case.longitude, 6))
             current_index = point_indexes[coordinate]
             travel_seconds = int(durations[previous_index][current_index])
+            if pending_break is None:
+                earliest_arrival_epoch = estimate_departure_epoch + travel_seconds
+            else:
+                travel_before_break = min(
+                    travel_seconds,
+                    pending_break["travel_before"],
+                )
+                travel_after_break = travel_seconds - travel_before_break
+                earliest_break_arrival_epoch = estimate_departure_epoch + travel_before_break
+                earliest_arrival_epoch = (
+                    max(earliest_break_arrival_epoch, pending_break["start"])
+                    + pending_break["duration"]
+                    + travel_after_break
+                )
+                pending_break = None
+            if service_start < earliest_arrival_epoch:
+                _reject_vroom_schedule(
+                    "job_service_before_physical_arrival",
+                    earliest_arrival_epoch - service_start,
+                )
             if has_cumulative_durations:
                 reported_travel = int(step["duration"])
                 expected_travel = previous_job_travel_seconds + travel_seconds
@@ -2360,7 +2865,9 @@ def _run_component(
                 "outcome": "assigned",
                 "reason": None,
                 "sequence": sequence,
-                "estimated_arrival_at": datetime.fromtimestamp(arrival, timezone.utc),
+                "estimated_arrival_at": datetime.fromtimestamp(earliest_arrival_epoch, timezone.utc),
+                "planned_arrival_at": datetime.fromtimestamp(arrival, timezone.utc),
+                "planned_departure_at": planned_departure_at,
                 "estimated_service_start_at": datetime.fromtimestamp(service_start, timezone.utc),
                 "waiting_seconds": waiting,
                 "service_seconds": case.service_duration_seconds,
@@ -2375,10 +2882,17 @@ def _run_component(
                 previous_job_travel_seconds = int(step["duration"])
             previous_index = current_index
             previous_departure = service_start + case.service_duration_seconds
+            estimate_departure_epoch = service_start + case.service_duration_seconds
         if break_required_by_agent.get(agent_id, False) and not break_seen:
             raise RoutingUnavailable("vroom_solution_break_missing")
         if break_duration and sequence:
             next(item for item in outcomes if item.get("agent_id") == agent_id and item.get("sequence") == 1)["route_break_seconds"] = break_duration
+        if priority_warning_by_agent.get(agent_id) and sequence:
+            first_outcome = next(
+                item for item in outcomes
+                if item.get("agent_id") == agent_id and item.get("sequence") == 1
+            )
+            first_outcome["_priority_order_warnings"] = priority_warning_by_agent[agent_id]
         end_arrival = steps[-1].get("arrival")
         if isinstance(end_arrival, bool) or not isinstance(end_arrival, (int, float)) or not isfinite(end_arrival):
             raise RoutingUnavailable("vroom_solution_arrival_invalid")
@@ -2480,6 +2994,7 @@ def _record_ready_run(
             reason=reason,
             sequence=proposal.get("sequence"),
             estimated_arrival_at=proposal.get("estimated_arrival_at"),
+            planned_arrival_at=proposal.get("planned_arrival_at"),
             estimated_service_start_at=proposal.get("estimated_service_start_at"),
             waiting_seconds=proposal.get("waiting_seconds"),
             travel_seconds=proposal.get("travel_seconds"),
@@ -2501,9 +3016,18 @@ def _record_ready_run(
         "items": [
             [item.investigation_id, item.agent_id, item.outcome, item.reason, item.sequence,
              item.estimated_arrival_at.isoformat() if item.estimated_arrival_at else None,
+             item.planned_arrival_at.isoformat() if item.planned_arrival_at else None,
              item.estimated_service_start_at.isoformat() if item.estimated_service_start_at else None,
              item.waiting_seconds, item.travel_seconds, item.travel_metres]
             for item in items
+        ],
+        "planned_departures": [
+            [
+                route["agent_id"],
+                route["planned_departure_at"].isoformat()
+                if route.get("planned_departure_at") else None,
+            ]
+            for route in route_geometries or []
         ],
     })
     db.commit()
@@ -2576,6 +3100,28 @@ def execute_run(db: Session, run_id: int) -> None:
             .order_by(AgentShift.agent_id)
             .all()
         ) if run.agent_ids else []
+        deferred_events = db.query(InvestigationRouteEvent).filter(
+            InvestigationRouteEvent.work_date == run.work_date,
+            InvestigationRouteEvent.agent_id.in_(run.agent_ids),
+            InvestigationRouteEvent.investigation_id.in_(run.investigation_ids),
+            InvestigationRouteEvent.event_type == "no_contact",
+            InvestigationRouteEvent.parent_event_id.is_(None),
+            InvestigationRouteEvent.retry_number == 0,
+            InvestigationRouteEvent.state == "deferred",
+        ).order_by(InvestigationRouteEvent.attempted_at.desc(), InvestigationRouteEvent.id.desc()).all() if run.agent_ids and run.investigation_ids else []
+        deferred_by_case = {}
+        for event in deferred_events:
+            deferred_by_case.setdefault(event.investigation_id, event)
+        for case in case_rows:
+            event = deferred_by_case.get(case.id)
+            if event is not None and event.agent_id == case.assigned_agent_id:
+                case._route_retry_pending = True
+                case._route_contact_available_from = event.contact_available_from
+                case._route_contact_available_until = event.contact_available_until
+            else:
+                case._route_retry_pending = False
+                case._route_contact_available_from = None
+                case._route_contact_available_until = None
         agents = db.query(User).filter(User.id.in_(run.agent_ids)).order_by(User.id).all() if run.agent_ids else []
         current_input_digest = _digest(_snapshot(db, run, case_rows, shifts, agents))
         if run.input_digest and current_input_digest != run.input_digest:
@@ -2601,7 +3147,7 @@ def execute_run(db: Session, run_id: int) -> None:
         ) if run.investigation_ids else []
         assignment_by_case = {item.investigation_id: item for item in active_assignments}
         movable_ids = set(run.movable_investigation_ids or [])
-        current_now = datetime.now(timezone.utc)
+        current_now = _database_now(db)
         in_progress_agent_ids = set(
             agent_id for (agent_id,) in db.query(Investigation.assigned_agent_id).filter(
                 Investigation.assigned_agent_id.in_(run.agent_ids),
@@ -2866,6 +3412,17 @@ def execute_run(db: Session, run_id: int) -> None:
                 if item.get("agent_id") is not None:
                     preflight[case_id] = ("assigned", None)
 
+        priority_order_warnings = [
+            warning
+            for outcome in outcomes
+            for warning in outcome.pop("_priority_order_warnings", [])
+        ]
+        run.warnings = [
+            warning for warning in (run.warnings or [])
+            if warning.get("type") != "priority_order"
+        ] + priority_order_warnings
+        db.flush()
+
         route_geometries = _build_route_geometries(osrm, case_rows, shifts, outcome_by_case, current_now)
         _record_ready_run(db, run, expected_input_digest, case_rows, shifts, agents, assignment_by_case, preflight, outcome_by_case, route_geometries)
     except Exception as error:
@@ -2972,8 +3529,11 @@ def run_response(db: Session, run: PlanningRun) -> dict:
                 "reason": item.reason,
                 "sequence": item.sequence,
                 "estimated_arrival_at": item.estimated_arrival_at,
+                "earliest_arrival_estimate_at": item.estimated_arrival_at,
+                "planned_arrival_at": item.planned_arrival_at,
                 "estimated_service_start_at": item.estimated_service_start_at,
-                "waiting_seconds": item.waiting_seconds,
+                "waiting_seconds": item.waiting_seconds if item.planned_arrival_at is not None else None,
+                "planned_waiting_seconds": item.waiting_seconds if item.planned_arrival_at is not None else None,
                 "travel_seconds": item.travel_seconds,
                 "travel_metres": item.travel_metres,
             }
@@ -3036,6 +3596,7 @@ def apply_run(
     items = db.query(PlanningItem).filter(PlanningItem.planning_run_id == run.id).order_by(PlanningItem.investigation_id).with_for_update().all()
     if len(items) != len(case_ids) or {item.investigation_id for item in items} != set(case_ids):
         raise PlanningConflict("planning_result_incomplete")
+    apply_now = _database_now(db)
     assigned_agents = {item.agent_id for item in items if item.outcome == "assigned" and item.agent_id is not None}
     if assigned_agents and not _geometry_complete(db, run.id, assigned_agents):
         raise PlanningConflict("route_geometry_incomplete")
@@ -3060,6 +3621,14 @@ def apply_run(
             raise PlanningConflict("planning_result_invalid")
         if item.estimated_arrival_at is None:
             raise PlanningConflict("planning_result_invalid")
+        if item.planned_arrival_at is not None:
+            if item.waiting_seconds is None or item.estimated_service_start_at is None:
+                raise PlanningConflict("planning_result_invalid")
+            expected_service_start = _as_utc(item.planned_arrival_at) + timedelta(
+                seconds=item.waiting_seconds,
+            )
+            if _as_utc(item.estimated_service_start_at) != expected_service_start:
+                raise PlanningConflict("planning_result_invalid")
         if (item.agent_id, item.sequence) in sequence_keys:
             raise PlanningConflict("planning_result_invalid")
         sequence_keys.add((item.agent_id, item.sequence))
@@ -3075,7 +3644,7 @@ def apply_run(
         arrival = _as_utc(item.estimated_arrival_at)
         service_start = _as_utc(item.estimated_service_start_at or item.estimated_arrival_at)
         end = _as_utc(shift.shift_ends_at)
-        floor = _planning_floor(shift)
+        floor = _planning_floor(shift, apply_now)
         if service_start < floor or service_start.timestamp() + case.service_duration_seconds > end.timestamp():
             raise PlanningConflict("agent_schedule_changed")
         if shift.break_starts_at and shift.break_ends_at and service_start < _as_utc(shift.break_ends_at) and service_start.timestamp() + case.service_duration_seconds > _as_utc(shift.break_starts_at).timestamp():
@@ -3136,7 +3705,11 @@ def apply_run(
         agent = agent_by_id[item.agent_id]
         current = assignments.get(case.id)
         if current and current.agent_id != agent.id:
-            if case.id not in set(run.movable_investigation_ids or []) or current.assignment_source != "automatic":
+            if (
+                run.auto_publish
+                or case.id not in set(run.movable_investigation_ids or [])
+                or current.assignment_source != "automatic"
+            ):
                 raise PlanningConflict("assignment_changed")
             current.is_active = False
             current.unassigned_at = datetime.now(timezone.utc)

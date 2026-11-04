@@ -16,6 +16,7 @@ from app.models.planning import PlanningRoute
 from app.models.agent_schedule import AgentWorkProfile, AgentWeeklySchedule, PlanningTrigger
 from app.models.agent_revisit import AgentRevisitRequest
 from app.models.auth_session import AuthSession, AuthRefreshToken
+from app.models.route_event import InvestigationRouteEvent
 
 config = context.config
 config.set_main_option("sqlalchemy.url", DATABASE_URL)

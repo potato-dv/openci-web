@@ -4,6 +4,7 @@ from typing import Literal
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 from app.schemas.user import UserResponse
 from app.schemas.report import RevisitRequestResponse
+from app.schemas.route_event import RouteEventResponse
 
 
 class LocationConfirm(BaseModel):
@@ -110,6 +111,10 @@ class AgentShiftResponse(BaseModel):
     last_completed_at: datetime | None = None
     last_completed_latitude: float | None = None
     last_completed_longitude: float | None = None
+    last_attempted_investigation_id: int | None = None
+    last_attempted_at: datetime | None = None
+    last_attempted_latitude: float | None = None
+    last_attempted_longitude: float | None = None
 
 
 class AgentWorkProfileInput(BaseModel):
@@ -195,7 +200,7 @@ class WeeklyScheduleResponse(WeeklyScheduleInput):
 
 class AvailabilityDayResponse(BaseModel):
     work_date: date
-    status: Literal["manual_override", "scheduled", "day_off", "not_configured"]
+    status: Literal["manual_override", "scheduled", "shift_ended", "day_off", "not_configured"]
     source: Literal["manual", "recurring"] | None = None
     region_code: str | None = None
     is_available: bool = False
@@ -267,8 +272,11 @@ class PlanningItemResponse(BaseModel):
     reason: str | None
     sequence: int | None
     estimated_arrival_at: datetime | None
+    earliest_arrival_estimate_at: datetime | None = None
+    planned_arrival_at: datetime | None = None
     estimated_service_start_at: datetime | None = None
     waiting_seconds: int | None = None
+    planned_waiting_seconds: int | None = None
     travel_seconds: int | None
     travel_metres: int | None
 
@@ -301,7 +309,9 @@ class PlanningRouteResponse(BaseModel):
     total_travel_seconds: int | None
     total_service_seconds: int | None = None
     total_waiting_seconds: int | None = None
+    total_planned_waiting_seconds: int | None = None
     total_break_seconds: int | None = None
+    planned_departure_at: datetime | None = None
     start: RoutePoint
     end: RoutePoint | None
 
@@ -464,14 +474,25 @@ class AgentRouteStop(BaseModel):
     address_display: str
     sequence: int | None
     estimated_arrival_at: datetime | None
+    earliest_arrival_estimate_at: datetime | None = None
+    planned_arrival_at: datetime | None = None
     estimated_service_start_at: datetime | None = None
     waiting_seconds: int | None = None
+    planned_waiting_seconds: int | None = None
     travel_seconds: int | None
     travel_metres: int | None
     latitude: float
     longitude: float
     priority: str
     status: str
+    sequence_state: Literal["current", "upcoming", "deferred", "deferred_retry", "handled"] = "upcoming"
+    actionable: bool = False
+    can_start: bool = False
+    can_report: bool = False
+    active_attempt_id: int | None = None
+    can_finalize_no_contact: bool = False
+    priority_order_exception_reason: str | None = None
+    attempt_history: list[RouteEventResponse] = Field(default_factory=list)
 
 
 class AgentCancelledInvestigation(BaseModel):
@@ -492,6 +513,14 @@ class PlanningRouteWarning(BaseModel):
     reason: str
 
 
+class PlanningPriorityOrderWarning(BaseModel):
+    investigation_id: int | None = None
+    reference_number: str | None = None
+    deferred_investigation_id: int | None = None
+    deferred_reference_number: str | None = None
+    reason: Literal["schedule_constraint", "search_limit", "assignment_time_constraint"]
+
+
 class PlanningRouteOverviewAgentResponse(BaseModel):
     id: int
     name: str
@@ -504,6 +533,7 @@ class PlanningRouteOverviewAgentResponse(BaseModel):
     ] = "none"
     refresh_errors: list[str] = Field(default_factory=list)
     planning_warnings: list[PlanningRouteWarning] = Field(default_factory=list)
+    priority_order_warnings: list[PlanningPriorityOrderWarning] = Field(default_factory=list)
     refresh_investigation_id: int | None = None
     run_id: int | None = None
     planning_status: Literal["idle", "queued", "running", "failed"] = "idle"
@@ -546,9 +576,11 @@ class PlanningDashboardResponse(BaseModel):
 
 class AgentRouteResponse(BaseModel):
     work_date: date
+    route_revision: int | None = None
+    current_actionable_investigation_id: int | None = None
     reason: Literal[
         "no_shift", "shift_unavailable", "no_published_stops",
-        "route_refresh_pending", "route_needs_refresh",
+        "shift_ended", "route_refresh_pending", "route_needs_refresh",
     ] | None = None
     shift: AgentShiftResponse | None = None
     route: PlanningRouteResponse | None = None
@@ -556,6 +588,9 @@ class AgentRouteResponse(BaseModel):
     stops: list[AgentRouteStop] = Field(default_factory=list)
     cancelled_investigations: list[AgentCancelledInvestigation] = Field(default_factory=list)
     revisit_requests: list[RevisitRequestResponse] = Field(default_factory=list)
+    attempt_history: list[RouteEventResponse] = Field(default_factory=list)
+    deferred_attempts: list[RouteEventResponse] = Field(default_factory=list)
+    priority_order_warnings: list[dict] = Field(default_factory=list)
 
 
 class AgentRosterResponse(BaseModel):

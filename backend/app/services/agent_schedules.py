@@ -1,12 +1,14 @@
 from __future__ import annotations
 
 from datetime import date, datetime, time, timedelta, timezone
+from math import isclose
 from zoneinfo import ZoneInfo
 
 from sqlalchemy import or_, text
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
+from app.models.activity import ActivityLog
 from app.models.agent_schedule import AgentWeeklySchedule, AgentWorkProfile, PlanningTrigger
 from app.models.planning import AgentShift
 from app.models.user import User
@@ -119,14 +121,25 @@ def _scheduled_day(db: Session, agent_id: int, work_date: date) -> tuple[AgentWe
 
 
 def resolve_availability_day(db: Session, agent_id: int, work_date: date) -> dict:
+    now_utc = db.execute(text("SELECT CURRENT_TIMESTAMP")).scalar_one()
+    if isinstance(now_utc, str):
+        now_utc = datetime.fromisoformat(now_utc)
+    if now_utc.tzinfo is None:
+        now_utc = now_utc.replace(tzinfo=timezone.utc)
+    else:
+        now_utc = now_utc.astimezone(timezone.utc)
     manual_or_materialized = db.query(AgentShift).filter(
         AgentShift.agent_id == agent_id,
         AgentShift.work_date == work_date,
     ).first()
     if manual_or_materialized is not None and manual_or_materialized.source == "manual":
+        shift_ended = _as_utc(manual_or_materialized.shift_ends_at) <= now_utc
         return {
-            "work_date": work_date, "status": "manual_override", "source": "manual",
-            "region_code": manual_or_materialized.region_code, "is_available": manual_or_materialized.is_available,
+            "work_date": work_date,
+            "status": "shift_ended" if shift_ended else "manual_override",
+            "source": "manual",
+            "region_code": manual_or_materialized.region_code,
+            "is_available": manual_or_materialized.is_available and not shift_ended,
             "shift_starts_at": manual_or_materialized.shift_starts_at, "shift_ends_at": manual_or_materialized.shift_ends_at,
             "break_starts_at": manual_or_materialized.break_starts_at, "break_ends_at": manual_or_materialized.break_ends_at,
             "start_latitude": manual_or_materialized.start_latitude, "start_longitude": manual_or_materialized.start_longitude,
@@ -135,10 +148,36 @@ def resolve_availability_day(db: Session, agent_id: int, work_date: date) -> dic
         }
     if manual_or_materialized is not None and manual_or_materialized.source == "recurring":
         if not manual_or_materialized.is_available:
-            return {"work_date": work_date, "status": "not_configured", "source": "recurring", "region_code": manual_or_materialized.region_code, "is_available": False}
+            schedule, day = _scheduled_day(db, agent_id, work_date)
+            if schedule is None or not schedule.enabled:
+                status = "not_configured"
+            elif not day or not day.get("is_working"):
+                status = "day_off"
+            elif _as_utc(manual_or_materialized.shift_ends_at) <= now_utc:
+                status = "shift_ended"
+            else:
+                status = "scheduled"
+            return {
+                "work_date": work_date, "status": status, "source": "recurring",
+                "region_code": manual_or_materialized.region_code, "is_available": False,
+                "shift_starts_at": manual_or_materialized.shift_starts_at,
+                "shift_ends_at": manual_or_materialized.shift_ends_at,
+                "break_starts_at": manual_or_materialized.break_starts_at,
+                "break_ends_at": manual_or_materialized.break_ends_at,
+                "start_latitude": manual_or_materialized.start_latitude,
+                "start_longitude": manual_or_materialized.start_longitude,
+                "start_location_label": manual_or_materialized.start_location_label,
+                "max_visits": manual_or_materialized.max_visits,
+                "max_open_cases": manual_or_materialized.max_open_cases,
+            }
         return {
-            "work_date": work_date, "status": "scheduled", "source": "recurring",
-            "region_code": manual_or_materialized.region_code, "is_available": True,
+            "work_date": work_date,
+            "status": "shift_ended"
+            if _as_utc(manual_or_materialized.shift_ends_at) <= now_utc
+            else "scheduled",
+            "source": "recurring",
+            "region_code": manual_or_materialized.region_code,
+            "is_available": _as_utc(manual_or_materialized.shift_ends_at) > now_utc,
             "shift_starts_at": manual_or_materialized.shift_starts_at, "shift_ends_at": manual_or_materialized.shift_ends_at,
             "break_starts_at": manual_or_materialized.break_starts_at, "break_ends_at": manual_or_materialized.break_ends_at,
             "start_latitude": manual_or_materialized.start_latitude, "start_longitude": manual_or_materialized.start_longitude,
@@ -151,11 +190,14 @@ def resolve_availability_day(db: Session, agent_id: int, work_date: date) -> dic
     if not day or not day.get("is_working"):
         return {"work_date": work_date, "status": "day_off", "source": "recurring", "region_code": schedule.region_code, "is_available": False}
     profile = get_work_profile(db, agent_id)
+    shift_starts_at = _local_instant(work_date, day.get("shift_start"))
+    shift_ends_at = _local_instant(work_date, day.get("shift_end"))
+    shift_ended = shift_ends_at is not None and shift_ends_at <= now_utc
     return {
-        "work_date": work_date, "status": "scheduled", "source": "recurring", "region_code": schedule.region_code,
-        "is_available": bool(profile and profile.depot_latitude is not None and profile.depot_longitude is not None),
-        "shift_starts_at": _local_instant(work_date, day.get("shift_start")),
-        "shift_ends_at": _local_instant(work_date, day.get("shift_end")),
+        "work_date": work_date, "status": "shift_ended" if shift_ended else "scheduled", "source": "recurring", "region_code": schedule.region_code,
+        "is_available": bool(profile and profile.depot_latitude is not None and profile.depot_longitude is not None) and not shift_ended,
+        "shift_starts_at": shift_starts_at,
+        "shift_ends_at": shift_ends_at,
         "break_starts_at": _local_instant(work_date, day.get("break_start")),
         "break_ends_at": _local_instant(work_date, day.get("break_end")),
         "start_latitude": profile.depot_latitude if profile else None,
@@ -227,6 +269,105 @@ def materialize_work_date(db: Session, work_date: date) -> int:
             continue
     db.flush()
     return created
+
+
+def _as_utc(value: datetime) -> datetime:
+    if isinstance(value, str):
+        value = datetime.fromisoformat(value)
+    if value.tzinfo is None:
+        value = value.replace(tzinfo=timezone.utc)
+    return value.astimezone(timezone.utc)
+
+
+def reconcile_prematurely_ended_recurring_shifts(
+    db: Session,
+    now: datetime | None = None,
+) -> int:
+    """Restore today's recurring shifts only when their configured shift is ongoing.
+
+    This repairs rows that were marked unavailable while the system clock was
+    ahead, then later moved back before the scheduled end. Manual shifts,
+    disabled schedules, non-working days, inactive agents, and already-ended
+    shifts are deliberately excluded.
+    """
+    now_utc = _as_utc(now or datetime.now(timezone.utc))
+    local_now = now_utc.astimezone(MANILA)
+    work_date = local_now.date()
+    candidates = (
+        db.query(AgentShift, User)
+        .join(User, User.id == AgentShift.agent_id)
+        .filter(
+            AgentShift.work_date == work_date,
+            AgentShift.source == "recurring",
+            AgentShift.is_available.is_(False),
+            AgentShift.shift_starts_at <= now_utc,
+            AgentShift.shift_ends_at > now_utc,
+            User.role == "agent",
+            User.is_active.is_(True),
+        )
+        .order_by(AgentShift.agent_id, AgentShift.id)
+        .with_for_update(of=AgentShift)
+        .all()
+    )
+    reconciled = 0
+    for shift, _agent in candidates:
+        schedule, day = _scheduled_day(db, shift.agent_id, work_date)
+        profile = get_work_profile(db, shift.agent_id)
+        if (
+            schedule is None
+            or not schedule.enabled
+            or schedule.region_code != shift.region_code
+            or not day
+            or not day.get("is_working")
+            or profile is None
+            or profile.depot_latitude is None
+            or profile.depot_longitude is None
+        ):
+            continue
+
+        expected_start = _local_instant(work_date, day.get("shift_start"))
+        expected_end = _local_instant(work_date, day.get("shift_end"))
+        expected_break_start = _local_instant(work_date, day.get("break_start"))
+        expected_break_end = _local_instant(work_date, day.get("break_end"))
+        if (
+            expected_start is None
+            or expected_end is None
+            or _as_utc(shift.shift_starts_at) != expected_start
+            or _as_utc(shift.shift_ends_at) != expected_end
+            or (shift.break_starts_at is None) != (expected_break_start is None)
+            or (shift.break_ends_at is None) != (expected_break_end is None)
+            or (
+                shift.break_starts_at is not None
+                and _as_utc(shift.break_starts_at) != expected_break_start
+            )
+            or (
+                shift.break_ends_at is not None
+                and _as_utc(shift.break_ends_at) != expected_break_end
+            )
+            or shift.max_visits != schedule.max_visits
+            or shift.max_open_cases != schedule.max_open_cases
+            or not isclose(shift.start_latitude, profile.depot_latitude, abs_tol=1e-7)
+            or not isclose(shift.start_longitude, profile.depot_longitude, abs_tol=1e-7)
+        ):
+            continue
+
+        shift.is_available = True
+        reconciled += 1
+        db.add(ActivityLog(
+            actor_id=None,
+            action="agent_shift.reconciled_before_scheduled_end",
+            object_type="agent_shift",
+            object_id=shift.id,
+            details={
+                "work_date": work_date.isoformat(),
+                "shift_ends_at": expected_end.isoformat(),
+                "observed_at": now_utc.isoformat(),
+                "reason": "recurring_shift_end_is_in_the_future",
+            },
+        ))
+        enqueue_planning_trigger(db, work_date, shift.region_code, "recurring_shift_reconciled")
+
+    return reconciled
 
 
 def enqueue_planning_trigger(db: Session, work_date: date, region_code: str | None, reason: str) -> PlanningTrigger:

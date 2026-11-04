@@ -56,6 +56,9 @@ export function MyRoutePage() {
               data={resource.data}
               agentId={user.id}
               agentName={user.name}
+              token={token}
+              canAct
+              onRefresh={resource.refresh}
             />
           )
         )}

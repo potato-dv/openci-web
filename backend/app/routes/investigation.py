@@ -3,7 +3,7 @@ from typing import Literal
 from zoneinfo import ZoneInfo
 
 from sqlalchemy import select, func, case
-from fastapi import APIRouter, Depends, HTTPException, status, Query
+from fastapi import APIRouter, Depends, HTTPException, status, Query, Header
 from sqlalchemy.orm import Session, joinedload
 
 from app.controllers.investigation import (
@@ -30,11 +30,25 @@ from app.models.investigation import Investigation
 from app.models.planning import PlanningItem, PlanningRun
 from app.models.review import InvestigationReview
 from app.models.user import User
+from app.models.route_event import InvestigationRouteEvent
 from app.schemas.investigation import InvestigationCreate, InvestigationResponse, InvestigationUpdate, InvestigationPageResponse
 from app.schemas.assignment import AssignmentCreate, AssignmentResponse
 from app.schemas.report import ReportResponse, ReportUpsert, RevisitRequestResponse
 from app.schemas.review import ReviewCreate, ReviewResponse
 from app.schemas.planning import GeocodeCandidate, LocationConfirm, LocationResponse
+from app.schemas.route_event import (
+    NoContactFinalizeInput,
+    RouteActionInput,
+    RouteActionResponse,
+    RouteEventResponse,
+    UnableToProceedInput,
+)
+from app.services.route_workflow import (
+    RouteActionConflict,
+    finalize_no_contact_attempt,
+    record_unable_to_proceed,
+    start_current_investigation,
+)
 from app.services.search import investigation_search, subject_expression
 from app.services.geocoding import suggest_locations
 from app.services.geospatial import cells_for_point
@@ -291,8 +305,14 @@ def save_report_for_investigation(
     data: ReportUpsert,
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
+    work_date: date = Query(...),
+    route_revision: int = Header(..., alias="X-Route-Revision", gt=0),
 ):
-    return save_investigation_report(db, investigation_id, data, current_user)
+    return save_investigation_report(
+        db, investigation_id, data, current_user,
+        route_revision=route_revision,
+        work_date=work_date,
+    )
 
 
 @router.post(
@@ -303,8 +323,97 @@ def submit_report_for_investigation(
     investigation_id: int,
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
+    work_date: date = Query(...),
+    route_revision: int = Header(..., alias="X-Route-Revision", gt=0),
 ):
-    return submit_investigation_report(db, investigation_id, current_user)
+    return submit_investigation_report(
+        db, investigation_id, current_user,
+        route_revision=route_revision,
+        work_date=work_date,
+    )
+
+
+@router.post(
+    "/{investigation_id}/start",
+    response_model=RouteActionResponse,
+    dependencies=[Depends(require_planning_enabled)],
+)
+def start_route_investigation(
+    investigation_id: int,
+    data: RouteActionInput,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(require_roles("agent")),
+):
+    try:
+        return start_current_investigation(
+            db, investigation_id, current_user, data.work_date, data.route_revision,
+        )
+    except RouteActionConflict as error:
+        db.rollback()
+        raise HTTPException(status_code=409, detail=str(error)) from error
+    except IntegrityError as error:
+        db.rollback()
+        raise HTTPException(status_code=409, detail="This route action was recorded concurrently. Refresh your route.") from error
+
+
+@router.post(
+    "/{investigation_id}/unable-to-proceed",
+    response_model=RouteEventResponse,
+    dependencies=[Depends(require_planning_enabled)],
+)
+def unable_to_proceed(
+    investigation_id: int,
+    data: UnableToProceedInput,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(require_roles("agent")),
+):
+    try:
+        event = record_unable_to_proceed(
+            db, investigation_id, current_user, data.work_date, data.route_revision,
+            data.reason, data.notes, data.contact_available_from,
+            data.contact_available_until,
+        )
+        try:
+            from app.workers.tasks import dispatch_planning_triggers_task
+
+            dispatch_planning_triggers_task.delay()
+        except Exception:
+            import logging
+
+            logging.getLogger("app.planning").exception("Could not dispatch route refresh after no-contact attempt")
+        return event
+    except RouteActionConflict as error:
+        db.rollback()
+        raise HTTPException(status_code=409, detail=str(error)) from error
+    except IntegrityError as error:
+        db.rollback()
+        raise HTTPException(status_code=409, detail="This attempt was already recorded. Refresh your route.") from error
+
+
+@router.post(
+    "/{investigation_id}/no-contact-report",
+    response_model=RouteEventResponse,
+    dependencies=[Depends(require_planning_enabled)],
+)
+def submit_no_contact_report(
+    investigation_id: int,
+    data: NoContactFinalizeInput,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(require_roles("agent")),
+):
+    event = db.query(InvestigationRouteEvent).filter(
+        InvestigationRouteEvent.id == data.event_id,
+        InvestigationRouteEvent.investigation_id == investigation_id,
+    ).first()
+    if event is None:
+        raise HTTPException(status_code=404, detail="No-contact attempt not found")
+    try:
+        return finalize_no_contact_attempt(
+            db, event.id, current_user, data.work_date, data.route_revision,
+        )
+    except RouteActionConflict as error:
+        db.rollback()
+        raise HTTPException(status_code=409, detail=str(error)) from error
 
 
 @router.post(

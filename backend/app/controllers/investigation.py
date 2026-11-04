@@ -219,6 +219,8 @@ def save_investigation_report(
     data: ReportUpsert,
 
     current_user: User,
+    route_revision: int | None = None,
+    work_date: date | None = None,
 ):
     investigation = get_one(db, investigation_id, current_user)
 
@@ -229,7 +231,11 @@ def save_investigation_report(
         )
 
     try:
-        report = save_report_draft(db, investigation, current_user, data)
+        report = save_report_draft(
+            db, investigation, current_user, data,
+            route_revision=route_revision,
+            work_date=work_date,
+        )
         from app.services.activity import record_activity
 
         record_activity(db, current_user, "report.saved", "investigation", investigation.id)
@@ -245,6 +251,8 @@ def submit_investigation_report(
     db: Session,
     investigation_id: int,
     current_user: User,
+    route_revision: int | None = None,
+    work_date: date | None = None,
 ):
     investigation = get_one(db, investigation_id, current_user)
 
@@ -255,7 +263,11 @@ def submit_investigation_report(
         )
 
     try:
-        report = submit_report(db, investigation, actor=current_user)
+        report = submit_report(
+            db, investigation, actor=current_user,
+            route_revision=route_revision,
+            work_date=work_date,
+        )
         from app.services.activity import record_activity
 
         record_activity(db, current_user, "report.submitted", "investigation", investigation.id)

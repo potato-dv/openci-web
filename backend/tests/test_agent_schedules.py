@@ -1,5 +1,5 @@
 import unittest
-from datetime import date, datetime, time, timezone
+from datetime import date, datetime, time, timedelta, timezone
 from types import SimpleNamespace
 from unittest.mock import patch
 
@@ -32,7 +32,7 @@ class AgentScheduleTests(unittest.TestCase):
         self.engine.dispose()
 
     def test_materialization_is_idempotent_and_keeps_the_daily_snapshot(self):
-        work_date = date(2026, 11, 2)
+        work_date = datetime.now(MANILA).date() + timedelta(days=1)
         with Session(self.engine) as db:
             supervisor = User(name="Supervisor", email="schedule-supervisor@example.test", password="hash", role="supervisor")
             agent = User(name="Agent", email="schedule-agent@example.test", password="hash", role="agent", is_active=True)
@@ -80,7 +80,7 @@ class AgentScheduleTests(unittest.TestCase):
             shift.last_completed_latitude = 14.7
             shift.last_completed_longitude = 121.2
             db.commit()
-            next_work_date = date(2026, 11, 3)
+            next_work_date = work_date + timedelta(days=1)
             self.assertEqual(materialize_work_date(db, next_work_date), 1)
             next_shift = db.query(AgentShift).filter_by(agent_id=agent.id, work_date=next_work_date).one()
             self.assertEqual((next_shift.start_latitude, next_shift.start_longitude), (14.6, 121.1))
@@ -98,7 +98,7 @@ class AgentScheduleTests(unittest.TestCase):
             )
             db.commit()
 
-            preview = availability_preview(db, agent.id, work_date, date(2026, 12, 2))
+            preview = availability_preview(db, agent.id, work_date, work_date + timedelta(days=30))
             self.assertEqual(preview["days"][0]["status"], "scheduled")
             self.assertEqual(preview["days"][0]["shift_starts_at"].replace(tzinfo=timezone.utc).hour, 0)
 

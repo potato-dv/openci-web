@@ -87,8 +87,8 @@ class PostgreSQLPlanningIntegrationTests(unittest.TestCase):
                     "routes": [{
                         "vehicle": agent_id,
                         "steps": [
-                            {"type": "start", "arrival": int(datetime(2026, 11, 4, 0, tzinfo=timezone.utc).timestamp())},
-                            {"type": "job", "id": investigation_id, "arrival": int(datetime(2026, 11, 4, 0, 10, tzinfo=timezone.utc).timestamp())},
+                            {"type": "start", "arrival": int(datetime(2026, 11, 4, 0, tzinfo=timezone.utc).timestamp()), "waiting_time": 0},
+                            {"type": "job", "id": investigation_id, "arrival": int(datetime(2026, 11, 4, 0, 10, tzinfo=timezone.utc).timestamp()), "waiting_time": 0},
                             {"type": "end", "arrival": int(datetime(2026, 11, 4, 1, 5, tzinfo=timezone.utc).timestamp())},
                         ],
                     }],

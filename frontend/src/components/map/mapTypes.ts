@@ -46,6 +46,8 @@ export type MapInvestigation = {
   planning_reason?: string | null;
   assignment_source?: "automatic" | "manual" | null;
   estimated_arrival_at?: string | null;
+  planned_arrival_at?: string | null;
+  estimated_service_start_at?: string | null;
   visit_not_before_at?: string | null;
   visit_due_at?: string | null;
 };

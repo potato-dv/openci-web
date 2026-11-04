@@ -190,8 +190,8 @@ class AssignmentRouteRefreshTests(unittest.TestCase):
                     "routes": [{
                         "vehicle": agent_id,
                         "steps": [
-                            {"type": "start", "arrival": departure_epoch},
-                            {"type": "job", "id": case_id, "arrival": departure_epoch + 600},
+                            {"type": "start", "arrival": departure_epoch, "waiting_time": 0},
+                            {"type": "job", "id": case_id, "arrival": departure_epoch + 600, "waiting_time": 0},
                             {"type": "break", "arrival": break_arrival, "waiting_time": 300, "service": 3600},
                             {"type": "end", "arrival": end_arrival},
                         ],
@@ -204,6 +204,7 @@ class AssignmentRouteRefreshTests(unittest.TestCase):
                 pass
 
         with Session(self.engine) as db, _planning_clock(work_date, time(10)), \
+                patch("app.services.planning._database_now", return_value=departure), \
                 patch("app.services.planning.OSRMClient", Router), patch("app.services.planning.VROOMClient", Solver):
             execute_run(db, run_id)
             run = db.get(PlanningRun, run_id)
@@ -213,6 +214,23 @@ class AssignmentRouteRefreshTests(unittest.TestCase):
             self.assertEqual(run.status, "ready")
             self.assertEqual(item.outcome, "assigned")
             self.assertEqual(item.agent_id, agent_id)
+            self.assertEqual(
+                item.planned_arrival_at.replace(tzinfo=timezone.utc),
+                datetime.fromtimestamp(departure_epoch + 600, timezone.utc),
+            )
+            self.assertEqual(item.waiting_seconds, 0)
+            self.assertEqual(
+                item.estimated_service_start_at.replace(tzinfo=timezone.utc),
+                item.planned_arrival_at.replace(tzinfo=timezone.utc),
+            )
+            self.assertEqual(
+                route.planned_departure_at.replace(tzinfo=timezone.utc),
+                datetime.fromtimestamp(departure_epoch, timezone.utc),
+            )
+            self.assertEqual(
+                route.geometry,
+                {"type": "LineString", "coordinates": [[121.1, 14.6], [121.0, 14.5]]},
+            )
             vehicle = Solver.payload["vehicles"][0]
             self.assertEqual(vehicle["start"], [depot_longitude, depot_latitude])
             self.assertEqual(vehicle["time_window"][0], departure_epoch)
@@ -880,8 +898,8 @@ class AssignmentRouteRefreshTests(unittest.TestCase):
                         "routes": [{
                             "vehicle": agent.id,
                             "steps": [
-                                {"type": "start", "arrival": start_epoch},
-                                {"type": "job", "id": valid_case.id, "arrival": start_epoch + 600},
+                                {"type": "start", "arrival": start_epoch, "waiting_time": 0},
+                                {"type": "job", "id": valid_case.id, "arrival": start_epoch + 600, "waiting_time": 0},
                                 {"type": "end", "arrival": start_epoch + 3900},
                             ],
                         }],
@@ -894,6 +912,9 @@ class AssignmentRouteRefreshTests(unittest.TestCase):
 
             with _planning_clock(_work_date()), patch("app.services.planning.OSRMClient", Router), patch(
                 "app.services.planning.VROOMClient", Solver
+            ), patch(
+                "app.services.planning._database_now",
+                return_value=datetime.fromtimestamp(start_epoch, timezone.utc),
             ):
                 execute_run(db, run.id)
 
@@ -905,7 +926,10 @@ class AssignmentRouteRefreshTests(unittest.TestCase):
                     (other_region_case.id, "region_mismatch"),
                 },
             )
-            with _planning_clock(_work_date()):
+            with _planning_clock(_work_date()), patch(
+                "app.services.planning._database_now",
+                return_value=datetime.fromtimestamp(start_epoch, timezone.utc),
+            ):
                 apply_run(db, run.id, db.get(PlanningRun, run.id).result_digest, supervisor)
             sync_assignment_route_refresh(db, assignments[0].id)
             overview = planning_route_overview(db, _work_date(), REGION)
@@ -1036,7 +1060,7 @@ class AssignmentRouteRefreshTests(unittest.TestCase):
             self.assertEqual(refreshed.id, run.id)
             self.assertTrue(refreshed.auto_replan_requested)
 
-    def test_case_input_change_during_active_run_requests_replan(self):
+    def test_priority_change_during_active_run_requests_replan(self):
         with Session(self.engine) as db:
             supervisor, agent, _second = self._users(db)
             case = _case("INV-AUTO-INPUT-CHANGED", supervisor.id, agent.id)
@@ -1059,7 +1083,7 @@ class AssignmentRouteRefreshTests(unittest.TestCase):
             run.status = "running"
             run.auto_publish = True
             db.commit()
-            case.service_duration_seconds += 600
+            case.priority = "urgent"
             db.commit()
 
             refreshed = queue_automatic_planning(db, REGION, supervisor, _work_date())
@@ -1222,6 +1246,9 @@ class AssignmentRouteRefreshTests(unittest.TestCase):
             with _planning_clock(_work_date()), \
                     patch("app.workers.tasks.SessionLocal", side_effect=make_session), patch(
                         "app.workers.tasks.execute_run", side_effect=make_ready
+                    ), patch(
+                        "app.services.planning._database_now",
+                        return_value=shift_start,
                     ):
                 result = optimize_planning_run.run(run_id)
             self.assertEqual(result["status"], "applied")

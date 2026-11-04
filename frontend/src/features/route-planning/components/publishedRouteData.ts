@@ -27,6 +27,8 @@ export function routeStatusLabel(
 
 export function routePlanningWarningCopy(reason: string) {
   const copy: Record<string, string> = {
+    agent_shift_ended:
+      "The agent’s shift has ended. Existing investigations stay with that agent; an authorized handoff is required to change owners.",
     agent_shift_unavailable_today:
       "The agent has no available shift for this date.",
     waiting_for_reassignment:
@@ -181,6 +183,8 @@ export function buildPublishedRouteMapData(
       planning_reason: state?.reason ?? null,
       assignment_source: state?.assignment_source ?? null,
       estimated_arrival_at: stop?.estimated_arrival_at ?? null,
+      planned_arrival_at: stop?.planned_arrival_at ?? null,
+      estimated_service_start_at: stop?.estimated_service_start_at ?? null,
       visit_not_before_at: item.visit_not_before_at,
       visit_due_at: item.visit_due_at,
     };

@@ -1,8 +1,8 @@
-from datetime import date, datetime, timedelta
+from datetime import date, datetime, timedelta, timezone
 from zoneinfo import ZoneInfo
 
 from fastapi import APIRouter, Depends, HTTPException
-from sqlalchemy import func
+from sqlalchemy import func, text
 from sqlalchemy.orm import Session
 
 from app.database.session import get_db
@@ -12,6 +12,7 @@ from app.models.investigation import Investigation
 from app.models.planning import AgentShift, PlanningItem, PlanningRun, PlanningRoute
 from app.models.agent_revisit import AgentRevisitRequest
 from app.models.agent_schedule import AgentWeeklySchedule, AgentWorkProfile
+from app.models.route_event import InvestigationRouteEvent
 from app.models.user import User
 from app.schemas.planning import (
     AgentShiftInput,
@@ -51,6 +52,7 @@ from app.services.planning import (
     queue_shift_route_refresh,
 )
 from app.services.planning_status import get_planning_service_status
+from app.services.route_workflow import route_agent_event_history, route_attempt_history, route_workflow_snapshot
 from app.services.agent_schedules import (
     ALL_REGIONS,
     availability_preview,
@@ -407,52 +409,31 @@ def published_agent_route(db: Session, agent: User, work_date: date) -> dict:
     ]
     empty = {
         "work_date": work_date,
+        "route_revision": None,
+        "current_actionable_investigation_id": None,
         "shift": shift,
         "route": None,
         "completed_route_geometry": completed_route_geometry,
         "stops": [],
         "cancelled_investigations": cancelled_investigations,
         "revisit_requests": revisit_requests,
+        "attempt_history": [],
+        "deferred_attempts": [],
+        "priority_order_warnings": [],
     }
     if shift is None:
         return empty | {"reason": "no_shift"}
-    if not shift.is_available:
-        return empty | {"reason": "shift_unavailable"}
-
-    def assigned_stop_placeholders() -> list[dict]:
-        """Keep current assignments visible when there is no current route."""
-        query = db.query(Investigation).filter(
-            Investigation.assigned_agent_id == agent.id,
-            Investigation.deleted_at.is_(None),
-            Investigation.status.in_(("pending", "assigned")),
-            Investigation.location_confirmed_at.is_not(None),
-            Investigation.latitude.is_not(None),
-            Investigation.longitude.is_not(None),
-        )
-        if shift.region_code == ALL_REGIONS:
-            query = query.filter(Investigation.region_code.in_(catalog()["region_codes"]))
-        else:
-            query = query.filter(Investigation.region_code == shift.region_code)
-        cases = query.order_by(Investigation.created_at, Investigation.id).all()
-        return [
-            {
-                "service_duration_seconds": case.service_duration_seconds,
-                "investigation_id": case.id,
-                "reference_number": case.reference_number,
-                "address_display": case.address_display,
-                "sequence": None,
-                "estimated_arrival_at": None,
-                "estimated_service_start_at": None,
-                "waiting_seconds": None,
-                "travel_seconds": None,
-                "travel_metres": None,
-                "latitude": case.latitude,
-                "longitude": case.longitude,
-                "priority": case.priority,
-                "status": case.status,
-            }
-            for case in cases
-        ]
+    now_utc = db.execute(text("SELECT CURRENT_TIMESTAMP")).scalar_one()
+    if isinstance(now_utc, str):
+        now_utc = datetime.fromisoformat(now_utc)
+    if now_utc.tzinfo is None:
+        now_utc = now_utc.replace(tzinfo=timezone.utc)
+    else:
+        now_utc = now_utc.astimezone(timezone.utc)
+    shift_end = shift.shift_ends_at
+    if shift_end.tzinfo is None:
+        shift_end = shift_end.replace(tzinfo=timezone.utc)
+    shift_ended = shift_end.astimezone(timezone.utc) <= now_utc
 
     def route_refresh_reason() -> str:
         auto_runs = db.query(PlanningRun).filter(
@@ -483,14 +464,26 @@ def published_agent_route(db: Session, agent: User, work_date: date) -> dict:
 
     run = db.query(PlanningRun).filter(PlanningRun.id == shift.current_planning_run_id, PlanningRun.status == "applied").first() if shift.current_planning_run_id else None
     if run is None:
+        workflow = route_workflow_snapshot(db, agent.id, work_date, now_utc)
+        agent_history = route_agent_event_history(db, agent.id, work_date)
         return empty | {
-            "reason": route_refresh_reason(),
-            "stops": assigned_stop_placeholders(),
+            "reason": (
+                "shift_ended" if shift_ended
+                else "shift_unavailable" if not shift.is_available
+                else route_refresh_reason()
+            ),
+            "stops": [],
+            "route_revision": workflow["route_revision"],
+            "current_actionable_investigation_id": workflow["current_actionable_investigation_id"],
+            "attempt_history": workflow["attempt_history"] + agent_history,
+            "deferred_attempts": workflow["deferred_attempts"],
+            "priority_order_warnings": workflow["priority_order_warnings"],
         }
     rows = db.query(PlanningItem, Investigation).join(Investigation, Investigation.id == PlanningItem.investigation_id).filter(
         PlanningItem.planning_run_id == run.id, PlanningItem.agent_id == agent.id,
         PlanningItem.outcome == "assigned", Investigation.assigned_agent_id == agent.id,
-        Investigation.deleted_at.is_(None), Investigation.latitude.is_not(None),
+        Investigation.deleted_at.is_(None), Investigation.status != "cancelled",
+        Investigation.latitude.is_not(None),
         Investigation.location_confirmed_at.is_not(None),
     ).order_by(PlanningItem.sequence).all()
     route = db.query(PlanningRoute).filter(PlanningRoute.planning_run_id == run.id, PlanningRoute.agent_id == agent.id).first()
@@ -498,10 +491,14 @@ def published_agent_route(db: Session, agent: User, work_date: date) -> dict:
     # optimization finishes. Never pair those current assignments with stale
     # geometry from the previous applied run.
     planned_case_ids = {
-        case_id for (case_id,) in db.query(PlanningItem.investigation_id).filter(
+        case_id for (case_id,) in db.query(PlanningItem.investigation_id).join(
+            Investigation, Investigation.id == PlanningItem.investigation_id,
+        ).filter(
             PlanningItem.planning_run_id == run.id,
             PlanningItem.agent_id == agent.id,
             PlanningItem.outcome == "assigned",
+            Investigation.deleted_at.is_(None),
+            Investigation.status != "cancelled",
         ).all()
     }
     current_route_case_ids = {case.id for _item, case in rows}
@@ -509,7 +506,9 @@ def published_agent_route(db: Session, agent: User, work_date: date) -> dict:
         case_id for (case_id,) in db.query(Investigation.id).filter(
             Investigation.assigned_agent_id == agent.id,
             Investigation.deleted_at.is_(None),
-            Investigation.status.in_(("pending", "assigned")),
+            Investigation.status.in_(
+                ("pending", "assigned", "in_progress", "returned_for_correction")
+            ),
             Investigation.region_code == shift.region_code,
             Investigation.location_confirmed_at.is_not(None),
             Investigation.latitude.is_not(None),
@@ -521,21 +520,53 @@ def published_agent_route(db: Session, agent: User, work_date: date) -> dict:
         and expected_open_case_ids.issubset(current_route_case_ids)
     )
     if not route_matches_assignments:
+        workflow = route_workflow_snapshot(db, agent.id, work_date, now_utc)
+        agent_history = route_agent_event_history(db, agent.id, work_date)
         return empty | {
-            "reason": route_refresh_reason(),
-            "stops": assigned_stop_placeholders(),
+            "reason": (
+                "shift_ended" if shift_ended
+                else "shift_unavailable" if not shift.is_available
+                else route_refresh_reason()
+            ),
+            "stops": [],
+            "route_revision": workflow["route_revision"],
+            "current_actionable_investigation_id": workflow["current_actionable_investigation_id"],
+            "attempt_history": workflow["attempt_history"] + agent_history,
+            "deferred_attempts": workflow["deferred_attempts"],
+            "priority_order_warnings": workflow["priority_order_warnings"],
         }
-    return {"work_date": work_date, "shift": shift, "reason": None if rows else "no_published_stops",
+    workflow = route_workflow_snapshot(db, agent.id, work_date, now_utc)
+    attempt_history_by_case: dict[int, list[dict]] = {}
+    for attempt in workflow["attempt_history"]:
+        attempt_history_by_case.setdefault(attempt["investigation_id"], []).append(attempt)
+    return {"work_date": work_date, "shift": shift,
+        "route_revision": workflow["route_revision"],
+        "current_actionable_investigation_id": workflow["current_actionable_investigation_id"],
+        "reason": (
+            "shift_ended" if shift_ended
+            else "shift_unavailable" if not shift.is_available
+            else None if rows else "no_published_stops"
+        ),
         "route": route_response_through_last_stop(route, agent, shift, rows) if route and route_matches_assignments else None,
         "completed_route_geometry": completed_route_geometry,
         "revisit_requests": revisit_requests,
         "cancelled_investigations": cancelled_investigations,
+        "attempt_history": workflow["attempt_history"],
+        "deferred_attempts": workflow["deferred_attempts"],
+        "priority_order_warnings": workflow["priority_order_warnings"],
         "stops": [{"service_duration_seconds": case.service_duration_seconds, "investigation_id": case.id, "reference_number": case.reference_number, "address_display": case.address_display,
             "sequence": item.sequence, "estimated_arrival_at": item.estimated_arrival_at,
-            "estimated_service_start_at": item.estimated_service_start_at, "waiting_seconds": item.waiting_seconds,
+            "earliest_arrival_estimate_at": item.estimated_arrival_at,
+            "planned_arrival_at": item.planned_arrival_at,
+            "estimated_service_start_at": item.estimated_service_start_at,
+            "waiting_seconds": item.waiting_seconds if item.planned_arrival_at is not None else None,
+            "planned_waiting_seconds": item.waiting_seconds if item.planned_arrival_at is not None else None,
             "travel_seconds": item.travel_seconds,
             "travel_metres": item.travel_metres, "latitude": case.latitude, "longitude": case.longitude,
-            "priority": case.priority, "status": case.status} for item, case in rows]}
+            "priority": case.priority, "status": case.status,
+            **workflow["stop_states"].get(case.id, {}),
+            "attempt_history": attempt_history_by_case.get(case.id, []),
+        } for item, case in rows]}
 
 
 @router.get("/my-route", response_model=AgentRouteResponse)

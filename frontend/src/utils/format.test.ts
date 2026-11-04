@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { friendlyError } from "./format";
+import { friendlyError, plannedWait, time, timeAfter } from "./format";
 
 describe("planning error copy", () => {
   it.each([
@@ -33,5 +33,18 @@ describe("planning error copy", () => {
     "stale_plan",
   ])("translates %s into actionable copy", (code) => {
     expect(friendlyError(code)).not.toBe(code.replaceAll("_", " "));
+  });
+});
+
+describe("route schedule formatting", () => {
+  it("formats planned schedule timestamps in Manila time", () => {
+    expect(time("2026-11-04T03:00:00Z")).toBe("11:00 AM");
+    expect(timeAfter("2026-11-04T03:00:00Z", 2700)).toBe("11:45 AM");
+  });
+
+  it("distinguishes known, zero, and unavailable stop waiting", () => {
+    expect(plannedWait(0)).toBe("No scheduled wait");
+    expect(plannedWait(300)).toBe("5 min");
+    expect(plannedWait(null)).toBe("Not available");
   });
 });
