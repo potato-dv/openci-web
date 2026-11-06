@@ -18,7 +18,7 @@ from app.services.agent_schedules import (
     enqueue_planning_trigger,
     reconcile_prematurely_ended_recurring_shifts,
 )
-from app.services.route_workflow import next_valid_work_date
+from app.services.route_workflow import cancel_investigation_for_no_contact, next_valid_work_date
 
 
 ACTIVE_RUN_STATUSES = ("queued", "running", "ready")
@@ -349,52 +349,55 @@ def process_shift_end_investigations(
                     finalized_at=now_utc,
                 ))
                 carried_over += 1
+
+                if assignment is not None and assignment.assignment_source == "automatic":
+                    assignment.is_active = False
+                    assignment.unassigned_at = now_utc
+                    assignment.auto_route_status = None
+                    assignment.auto_route_work_date = None
+                    assignment.auto_route_run_ids = None
+                    assignment.auto_route_agent_ids = None
+                    assignment.auto_route_errors = None
+                    case.assigned_agent_id = None
+                    case.status = "pending"
+                    case.reopen_on = None
+
+                db.add(ActivityLog(
+                    actor_id=None,
+                    action="investigation.carried_over_at_shift_end",
+                    object_type="investigation",
+                    object_id=case.id,
+                    details={
+                        "shift_id": shift.id,
+                        "work_date": shift.work_date.isoformat(),
+                        "assignment_source": assignment_source,
+                        "previous_agent_id": shift.agent_id,
+                        "assigned_agent_id": case.assigned_agent_id,
+                        "next_work_date": next_work_date.isoformat() if next_work_date else None,
+                        "observed_at": now_utc.isoformat(),
+                        "reason": "shift_end_not_visited",
+                    },
+                ))
+                if next_work_date is not None:
+                    _queue_case_retry(
+                        db,
+                        case,
+                        next_work_date,
+                        "investigation_carried_over_at_shift_end",
+                        queued_scopes,
+                    )
             else:
-                # The no-contact attempt is the carry-over record. Finalize
-                # it in place and keep retries attached to the same work item.
-                for attempt in no_contact_events:
-                    if attempt.state in {"deferred", "retrying", "retry_failed"}:
-                        attempt.state = "carried_over"
-                        attempt.finalized_at = now_utc
-                    attempt.next_work_date = next_work_date
-                carried_over += 1
-
-            if assignment is not None and assignment.assignment_source == "automatic":
-                assignment.is_active = False
-                assignment.unassigned_at = now_utc
-                assignment.auto_route_status = None
-                assignment.auto_route_work_date = None
-                assignment.auto_route_run_ids = None
-                assignment.auto_route_agent_ids = None
-                assignment.auto_route_errors = None
-                case.assigned_agent_id = None
-                case.status = "pending"
-                case.reopen_on = None
-
-            db.add(ActivityLog(
-                actor_id=None,
-                action="investigation.carried_over_at_shift_end",
-                object_type="investigation",
-                object_id=case.id,
-                details={
-                    "shift_id": shift.id,
-                    "work_date": shift.work_date.isoformat(),
-                    "assignment_source": assignment_source,
-                    "previous_agent_id": shift.agent_id,
-                    "assigned_agent_id": case.assigned_agent_id,
-                    "next_work_date": next_work_date.isoformat() if next_work_date else None,
-                    "observed_at": now_utc.isoformat(),
-                    "reason": "shift_end_not_visited" if no_contact_event is None else "no_contact_attempt_carried_over",
-                },
-            ))
-            if next_work_date is not None:
-                _queue_case_retry(
-                    db,
-                    case,
-                    next_work_date,
-                    "investigation_carried_over_at_shift_end",
-                    queued_scopes,
+                # A no-contact attempt already covers this stop today
+                # (either the first attempt or a failed same-day retry).
+                # Cancel the case until the next day instead of an
+                # indefinite carry-over; the existing reopen loop below
+                # (and on later ticks) brings it back to "pending" and lets
+                # VROOM reassign it, same as the other cancellation trigger.
+                cancel_investigation_for_no_contact(
+                    db, case, no_contact_event, shift.work_date, now_utc,
+                    None, "investigation.cancelled_no_contact_shift_end",
                 )
+                cancelled += 1
 
     active_runs = (
         db.query(PlanningRun)

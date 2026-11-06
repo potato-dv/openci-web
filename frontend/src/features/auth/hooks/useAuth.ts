@@ -80,7 +80,10 @@ export function useAuth() {
       const now = Date.now();
       if (now - lastActivitySentAt.current < 60_000) return;
       lastActivitySentAt.current = now;
-      void requestJson<void>("/users/activity", { token: accessToken }).catch(() => {
+      void requestJson<void>("/users/activity", {
+        method: "POST",
+        token: accessToken,
+      }).catch(() => {
         // Session errors trigger the reauthentication state; transient network
         // errors leave the current page and its in-progress form untouched.
       });

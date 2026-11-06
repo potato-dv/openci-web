@@ -672,6 +672,94 @@ def record_unable_to_proceed(
     return event
 
 
+def cancel_investigation_for_no_contact(
+    db: Session,
+    case: Investigation,
+    event: InvestigationRouteEvent,
+    work_date: date,
+    now: datetime,
+    actor_id: int | None,
+    activity_action: str,
+) -> date:
+    """Finalize an open no-contact event and cancel the case until the next day.
+
+    Applies the same manual-keeps-owner / automatic-releases-to-pool rule the
+    shift-end reopen loop in app.services.shift_expiry already uses, so that
+    existing loop picks this case up automatically the next day without any
+    further changes to the reopen/reassignment logic.
+    """
+    now = _aware(now)
+    reopen_on = work_date + timedelta(days=1)
+    event.state = "carried_over"
+    event.finalized_at = now
+    event.next_work_date = reopen_on
+    if event.parent_event_id is not None:
+        parent = db.get(InvestigationRouteEvent, event.parent_event_id)
+        if parent is not None:
+            parent.state = "carried_over"
+            parent.finalized_at = now
+            parent.next_work_date = reopen_on
+    else:
+        for child in db.query(InvestigationRouteEvent).filter(
+            InvestigationRouteEvent.parent_event_id == event.id,
+        ).all():
+            child.state = "carried_over"
+            child.finalized_at = now
+            child.next_work_date = reopen_on
+
+    assignment = db.query(InvestigationAssignment).filter(
+        InvestigationAssignment.investigation_id == case.id,
+        InvestigationAssignment.is_active.is_(True),
+    ).with_for_update().first()
+    assignment_source = assignment.assignment_source if assignment else None
+    if assignment is not None and assignment.assignment_source == "automatic":
+        assignment.is_active = False
+        assignment.unassigned_at = now
+        assignment.auto_route_status = None
+        assignment.auto_route_work_date = None
+        assignment.auto_route_run_ids = None
+        assignment.auto_route_agent_ids = None
+        assignment.auto_route_errors = None
+        case.assigned_agent_id = None
+    # Manual assignments keep their agent, consistent with the existing
+    # shift-end reopen loop's handling of the other cancellation trigger.
+
+    case.status = "cancelled"
+    case.reopen_on = reopen_on
+    db.add(ActivityLog(
+        actor_id=actor_id,
+        action=activity_action,
+        object_type="investigation",
+        object_id=case.id,
+        details={
+            "route_event_id": event.id,
+            "work_date": work_date.isoformat(),
+            "reopen_on": reopen_on.isoformat(),
+            "assignment_source": assignment_source,
+            "reason": event.reason,
+        },
+    ))
+    return reopen_on
+
+
+def get_active_no_contact_event(
+    db: Session,
+    investigation_id: int,
+) -> InvestigationRouteEvent | None:
+    """Return the most recent unresolved no-contact attempt, if any.
+
+    Prefers a retry child's state over its root when both exist, since the
+    child carries the more current reason/notes once a retry has started.
+    """
+    return db.query(InvestigationRouteEvent).filter(
+        InvestigationRouteEvent.investigation_id == investigation_id,
+        InvestigationRouteEvent.event_type == "no_contact",
+        InvestigationRouteEvent.state.in_(("deferred", "retrying", "retry_failed")),
+    ).order_by(
+        InvestigationRouteEvent.attempted_at.desc(), InvestigationRouteEvent.id.desc(),
+    ).first()
+
+
 def finalize_no_contact_attempt(
     db: Session,
     event_id: int,
@@ -714,27 +802,65 @@ def finalize_no_contact_attempt(
         raise RouteActionConflict("Your route changed. Refresh it and continue from the current stop.")
     if state["can_finalize_event"] is None or state["can_finalize_event"].id != event.id:
         raise RouteActionConflict("Finish the remaining route or use the available retry before carrying this attempt over.")
-    event.state = "carried_over"
-    event.finalized_at = _aware(now or datetime.now(timezone.utc))
-    event.next_work_date = next_valid_work_date(db, actor.id, work_date)
-    if event.parent_event_id is not None:
-        parent = db.get(InvestigationRouteEvent, event.parent_event_id)
-        if parent is not None:
-            parent.state = "carried_over"
-            parent.finalized_at = event.finalized_at
-            parent.next_work_date = event.next_work_date
-    db.add(ActivityLog(
-        actor_id=actor.id,
-        action="investigation.no_contact_report_finalized",
-        object_type="investigation",
-        object_id=case.id,
-        details={"route_event_id": event.id, "work_date": work_date.isoformat(), "next_work_date": event.next_work_date.isoformat() if event.next_work_date else None, "reason": event.reason},
-    ))
-    # Shift-end processing owns the actual next-day trigger so automatic
-    # assignments can first be returned to the shared planning pool.
+    cancel_investigation_for_no_contact(
+        db, case, event, work_date,
+        now or datetime.now(timezone.utc),
+        actor.id,
+        "investigation.cancelled_no_contact_finalized",
+    )
+    # The existing shift-end reopen loop owns the next-day planning trigger,
+    # so automatic assignments are returned to the shared planning pool
+    # before VROOM reassigns this case.
     db.commit()
     db.refresh(event)
     return event
+
+
+def cancel_no_contact_event(
+    db: Session,
+    investigation_id: int,
+    event_id: int,
+    actor: User,
+    now: datetime | None = None,
+) -> Investigation:
+    """Let an admin or supervisor cancel an open no-contact attempt early.
+
+    Available at any point while the attempt is still open (deferred,
+    retrying, or retry_failed) -- the agent is not required to exhaust the
+    second attempt first. Uses the same cancellation helper as the automatic
+    2-attempt/shift-end path, so reassignment behaves identically.
+    """
+    event = db.query(InvestigationRouteEvent).filter(
+        InvestigationRouteEvent.id == event_id,
+        InvestigationRouteEvent.investigation_id == investigation_id,
+        InvestigationRouteEvent.event_type == "no_contact",
+    ).with_for_update().first()
+    if event is None:
+        raise RouteActionConflict("No-contact attempt not found for this investigation.")
+    if event.state not in {"deferred", "retrying", "retry_failed"}:
+        raise RouteActionConflict("This no-contact attempt is already finalized.")
+    case = db.query(Investigation).filter(
+        Investigation.id == investigation_id,
+        Investigation.deleted_at.is_(None),
+    ).with_for_update().first()
+    if case is None:
+        raise RouteActionConflict("Investigation not found.")
+    cancel_investigation_for_no_contact(
+        db, case, event, event.work_date,
+        now or datetime.now(timezone.utc),
+        actor.id,
+        "investigation.cancelled_no_contact_by_admin",
+    )
+    db.commit()
+    db.refresh(case)
+    # db.refresh() only reloads mapped columns; it does not clear a
+    # transient attribute set by an earlier get_one() call on this same
+    # identity-mapped instance (e.g. within one request-scoped session in
+    # tests). This cancellation has just definitively resolved the only
+    # open no-contact event for this investigation, so the response can
+    # authoritatively report none remaining.
+    case.active_no_contact_event = None
+    return case
 
 
 def next_valid_work_date(db: Session, agent_id: int, after: date) -> date | None:

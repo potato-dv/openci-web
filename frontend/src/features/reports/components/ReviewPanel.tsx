@@ -169,6 +169,42 @@ export function ReviewPanel({ token, investigation, onChanged }: ReviewPanelProp
 
       {loading && <p className="muted">Loading report and review history…</p>}
       {!loading && !report && <p className="empty-state">No report submitted yet.</p>}
+      {investigation.active_no_contact_event && (
+        <section className="report-copy" aria-label="Open no-contact attempt">
+          <h4>Open no-contact attempt</h4>
+          <dl className="report-detail-grid">
+            <div>
+              <dt>Reason</dt>
+              <dd>{investigation.active_no_contact_event.reason.replaceAll("_", " ")}</dd>
+            </div>
+            <div>
+              <dt>Attempt</dt>
+              <dd>{investigation.active_no_contact_event.retry_number + 1}</dd>
+            </div>
+            <div>
+              <dt>State</dt>
+              <dd>{investigation.active_no_contact_event.state.replaceAll("_", " ")}</dd>
+            </div>
+            <div>
+              <dt>Work date</dt>
+              <dd>{investigation.active_no_contact_event.work_date}</dd>
+            </div>
+            <div>
+              <dt>Attempted at</dt>
+              <dd>
+                {new Intl.DateTimeFormat("en-PH", {
+                  dateStyle: "medium",
+                  timeStyle: "short",
+                  timeZone: "Asia/Manila",
+                }).format(new Date(investigation.active_no_contact_event.attempted_at))}
+              </dd>
+            </div>
+          </dl>
+          {investigation.active_no_contact_event.notes && (
+            <p>{investigation.active_no_contact_event.notes}</p>
+          )}
+        </section>
+      )}
       {report && <ReportDetails report={report} />}
 
       {versions.length > 1 && (

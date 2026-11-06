@@ -1,4 +1,4 @@
-import type { PageResult, Report, ReportInput, ReportQueueItem, RevisitRequest, Review, RouteAttempt } from "@/types/api";
+import type { Investigation, NoContactReviewItem, PageResult, Report, ReportInput, ReportQueueItem, RevisitRequest, Review, RouteAttempt } from "@/types/api";
 import { requestJson } from "@/services/http";
 
 type RouteAction = { work_date: string; route_revision: number };
@@ -42,6 +42,28 @@ export function getReportQueue(
   return requestJson<PageResult<ReportQueueItem>>(
     `/reports/review-queue?${params}`,
     { token, signal },
+  );
+}
+
+export function getNoContactReviewQueue(
+  token: string,
+  params: URLSearchParams,
+  signal?: AbortSignal,
+) {
+  return requestJson<PageResult<NoContactReviewItem>>(
+    `/investigations/awaiting-no-contact-review?${params}`,
+    { token, signal },
+  );
+}
+
+export function cancelNoContactAttempt(
+  token: string,
+  investigationId: number,
+  eventId: number,
+) {
+  return requestJson<Investigation>(
+    `/investigations/${investigationId}/no-contact-events/${eventId}/cancel`,
+    { method: "POST", token },
   );
 }
 

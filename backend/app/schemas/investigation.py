@@ -2,6 +2,7 @@ from datetime import date, datetime
 from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
+from app.schemas.route_event import NoContactEventSummary
 from app.utils.names import normalize_user_name
 
 
@@ -117,6 +118,7 @@ class InvestigationResponse(BaseModel):
     assigned_agent_name: str | None = None
     location_confirmed: bool = False
     location_confirmed_at: datetime | None = None
+    active_no_contact_event: NoContactEventSummary | None = None
 
     @field_validator("first_name", "middle_name", "last_name", "subject_name", mode="before")
     @classmethod

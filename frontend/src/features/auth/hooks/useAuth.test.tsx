@@ -108,6 +108,7 @@ describe("authenticated user activity tracking", () => {
       dispatchActivity(eventType, eventType === "scroll" ? scrollArea : document.body);
       expect(authMocks.requestJson).toHaveBeenCalledTimes(index + 1);
       expect(authMocks.requestJson).toHaveBeenLastCalledWith("/users/activity", {
+        method: "POST",
         token: "access-token",
       });
     }

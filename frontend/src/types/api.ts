@@ -63,6 +63,16 @@ export type Investigation = {
   service_duration_seconds?: number;
   visit_not_before_at?: string | null;
   visit_due_at?: string | null;
+  active_no_contact_event?: NoContactEventSummary | null;
+};
+export type NoContactEventSummary = {
+  event_id: number;
+  reason: string;
+  notes: string | null;
+  state: "deferred" | "retrying" | "retry_failed";
+  retry_number: number;
+  attempted_at: string;
+  work_date: string;
 };
 
 export type NewInvestigation = {
@@ -595,9 +605,25 @@ export type ReportQueueItem = {
   author_name: string;
   version: number;
   priority: InvestigationPriority;
+  visit_outcome: VisitOutcome | null;
   status: ReportStatus;
   submitted_at: string | null;
   updated_at: string;
+};
+export type NoContactReviewItem = {
+  event_id: number;
+  investigation_id: number;
+  reference_number: string;
+  subject_name: string;
+  assigned_agent_name: string | null;
+  priority: InvestigationPriority;
+  reason: string;
+  state: "deferred" | "retrying" | "retry_failed" | "carried_over";
+  retry_number: number;
+  attempted_at: string;
+  work_date: string;
+  next_work_date: string | null;
+  notes: string | null;
 };
 export type ActivityLog = {
   id: number;

@@ -112,6 +112,55 @@ class WorkspaceAPITests(unittest.TestCase):
         self.assertEqual(self.client.get("/planning/agent-shifts?work_date=2026-11-04").status_code, 403)
         self.assertEqual(self.client.get("/reports/review-queue").status_code, 403)
 
+    def test_no_contact_attempt_is_visible_to_admin_and_cancellable(self):
+        from app.models.route_event import InvestigationRouteEvent
+
+        event = InvestigationRouteEvent(
+            investigation_id=self.second.id,
+            agent_id=self.other.id,
+            work_date=datetime.now(timezone.utc).date(),
+            event_type="no_contact",
+            state="deferred",
+            retry_number=0,
+            reason="nobody_at_location",
+            notes=None,
+            attempted_at=datetime.now(timezone.utc),
+        )
+        self.db.add(event)
+        self.db.commit()
+
+        detail = self.client.get(f"/investigations/{self.second.id}").json()
+        self.assertEqual(detail["active_no_contact_event"]["event_id"], event.id)
+        self.assertEqual(detail["active_no_contact_event"]["state"], "deferred")
+
+        queue = self.client.get("/investigations/awaiting-no-contact-review").json()
+        self.assertEqual(queue["total"], 1)
+        self.assertEqual(queue["items"][0]["investigation_id"], self.second.id)
+        self.assertEqual(queue["items"][0]["event_id"], event.id)
+
+        self.actor = self.agent
+        self.assertEqual(
+            self.client.get("/investigations/awaiting-no-contact-review").status_code, 403,
+        )
+        self.assertEqual(
+            self.client.post(f"/investigations/{self.second.id}/no-contact-events/{event.id}/cancel").status_code,
+            403,
+        )
+
+        self.actor = self.supervisor
+        cancelled = self.client.post(f"/investigations/{self.second.id}/no-contact-events/{event.id}/cancel")
+        self.assertEqual(cancelled.status_code, 200, cancelled.text)
+        body = cancelled.json()
+        self.assertEqual(body["status"], "cancelled")
+        self.assertIsNotNone(body["reopen_on"])
+        self.assertIsNone(body["active_no_contact_event"])
+
+        repeat = self.client.post(f"/investigations/{self.second.id}/no-contact-events/{event.id}/cancel")
+        self.assertEqual(repeat.status_code, 409)
+
+        empty_queue = self.client.get("/investigations/awaiting-no-contact-review").json()
+        self.assertEqual(empty_queue["total"], 0)
+
     def test_report_queue_latest_version_and_hidden_deleted(self):
         self.db.add_all([InvestigationReport(investigation_id=self.case.id, author_id=self.agent.id, version=1, content="Old", status="approved"), InvestigationReport(investigation_id=self.case.id, author_id=self.agent.id, version=2, content="New", status="submitted")]); self.db.commit()
         queue = self.client.get("/reports/review-queue").json()

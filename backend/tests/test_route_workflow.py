@@ -24,7 +24,10 @@ from app.schemas.route_event import UnableToProceedInput
 from app.services.investigation import save_report_draft, submit_report
 from app.services.route_workflow import (
     RouteActionConflict,
+    cancel_investigation_for_no_contact,
+    cancel_no_contact_event,
     finalize_no_contact_attempt,
+    get_active_no_contact_event,
     record_unable_to_proceed,
     route_workflow_snapshot,
     start_current_investigation,
@@ -266,24 +269,96 @@ class RouteWorkflowTests(unittest.TestCase):
             self.assertEqual(retry.state, "retry_failed")
             state = route_workflow_snapshot(db, agent.id, WORK_DATE, local_instant(13, 21))
             self.assertEqual(state["can_finalize_event"].id, retry.id)
-            with patch("app.services.route_workflow.next_valid_work_date", return_value=WORK_DATE + timedelta(days=1)):
-                finalized = finalize_no_contact_attempt(
-                    db,
-                    failed.id,
-                    agent,
-                    WORK_DATE,
-                    run.id,
-                    local_instant(13, 22),
-                )
+            finalized = finalize_no_contact_attempt(
+                db,
+                failed.id,
+                agent,
+                WORK_DATE,
+                run.id,
+                local_instant(13, 22),
+            )
 
             self.assertEqual(finalized.id, retry.id)
             self.assertEqual(finalized.state, "carried_over")
             self.assertEqual(original.state, "carried_over")
             self.assertEqual(finalized.next_work_date, WORK_DATE + timedelta(days=1))
-            self.assertEqual(first.status, "assigned")
+            # The second (retry) attempt also failed, so the investigation is
+            # cancelled until tomorrow instead of carried over indefinitely.
+            # It is a manual assignment, so it keeps the same agent.
+            self.assertEqual(first.status, "cancelled")
+            self.assertEqual(first.reopen_on, WORK_DATE + timedelta(days=1))
+            self.assertEqual(first.assigned_agent_id, agent.id)
             self.assertEqual(db.query(InvestigationReport).filter_by(investigation_id=first.id).count(), 0)
             self.assertEqual(db.query(InvestigationRouteEvent).filter_by(investigation_id=first.id).count(), 2)
             self.assertEqual(shift.last_attempted_investigation_id, first.id)
+
+    def test_cancel_investigation_for_no_contact_releases_automatic_assignment(self):
+        with Session(self.engine) as db:
+            supervisor = User(name="Supervisor", email="cancel-helper-supervisor@example.test", password="hash", role="supervisor")
+            agent = User(name="Agent", email="cancel-helper-agent@example.test", password="hash", role="agent")
+            db.add_all([supervisor, agent])
+            db.flush()
+            case = Investigation(
+                reference_number="INV-CANCEL-HELPER-AUTO",
+                first_name="Taylor", last_name="Example",
+                house_number="1", street="Sample Road", region_code=REGION,
+                status="in_progress", priority="normal", assigned_agent_id=agent.id,
+            )
+            db.add(case)
+            db.flush()
+            assignment = InvestigationAssignment(
+                investigation_id=case.id, agent_id=agent.id, assigned_by_id=supervisor.id,
+                assignment_source="automatic",
+            )
+            db.add(assignment)
+            event = InvestigationRouteEvent(
+                investigation_id=case.id, agent_id=agent.id, work_date=WORK_DATE,
+                event_type="no_contact", state="deferred", retry_number=0,
+                reason="nobody_at_location", notes=None, attempted_at=local_instant(9),
+            )
+            db.add(event)
+            db.commit()
+
+            reopen_on = cancel_investigation_for_no_contact(
+                db, case, event, WORK_DATE, local_instant(9, 5), agent.id,
+                "investigation.cancelled_no_contact_finalized",
+            )
+            db.commit()
+
+            self.assertEqual(reopen_on, WORK_DATE + timedelta(days=1))
+            self.assertEqual(case.status, "cancelled")
+            self.assertEqual(case.reopen_on, WORK_DATE + timedelta(days=1))
+            self.assertIsNone(case.assigned_agent_id)
+            self.assertFalse(assignment.is_active)
+            self.assertIsNotNone(assignment.unassigned_at)
+            self.assertEqual(event.state, "carried_over")
+            self.assertEqual(event.next_work_date, WORK_DATE + timedelta(days=1))
+
+    def test_cancel_no_contact_event_as_admin_before_a_second_attempt(self):
+        with Session(self.engine) as db:
+            _supervisor, agent, _other, _shift, run, cases = self.seed_route(db)
+            first, _second = cases
+            admin = User(name="Admin", email="cancel-admin@example.test", password="hash", role="admin")
+            db.add(admin)
+            db.flush()
+            start_current_investigation(db, first.id, agent, WORK_DATE, run.id, local_instant(9))
+            event = record_unable_to_proceed(
+                db, first.id, agent, WORK_DATE, run.id,
+                "nobody_at_location", None, None, None, local_instant(9, 5),
+            )
+            self.assertEqual(event.state, "deferred")
+            self.assertEqual(get_active_no_contact_event(db, first.id).id, event.id)
+
+            case = cancel_no_contact_event(db, first.id, event.id, admin, local_instant(9, 6))
+
+            self.assertEqual(case.status, "cancelled")
+            self.assertEqual(case.reopen_on, WORK_DATE + timedelta(days=1))
+            self.assertEqual(case.assigned_agent_id, agent.id)
+            self.assertEqual(event.state, "carried_over")
+            self.assertIsNone(get_active_no_contact_event(db, first.id))
+
+            with self.assertRaisesRegex(RouteActionConflict, "already finalized"):
+                cancel_no_contact_event(db, first.id, event.id, admin, local_instant(9, 7))
 
     def test_other_reason_requires_a_note(self):
         with self.assertRaises(ValidationError):

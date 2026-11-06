@@ -346,6 +346,22 @@ def get_one(
             detail="You do not have access to this investigation",
         )
 
+    from app.services.route_workflow import get_active_no_contact_event
+
+    active_event = get_active_no_contact_event(db, investigation.id)
+    investigation.active_no_contact_event = (
+        {
+            "event_id": active_event.id,
+            "reason": active_event.reason,
+            "notes": active_event.notes,
+            "state": active_event.state,
+            "retry_number": active_event.retry_number,
+            "attempted_at": active_event.attempted_at,
+            "work_date": active_event.work_date,
+        }
+        if active_event is not None
+        else None
+    )
     return investigation
 
 def update(

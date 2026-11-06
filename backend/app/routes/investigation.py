@@ -2,7 +2,7 @@ from datetime import datetime, timezone
 from typing import Literal
 from zoneinfo import ZoneInfo
 
-from sqlalchemy import select, func, case
+from sqlalchemy import select, func, case, and_, or_
 from fastapi import APIRouter, Depends, HTTPException, status, Query, Header
 from sqlalchemy.orm import Session, joinedload
 
@@ -38,6 +38,7 @@ from app.schemas.review import ReviewCreate, ReviewResponse
 from app.schemas.planning import GeocodeCandidate, LocationConfirm, LocationResponse
 from app.schemas.route_event import (
     NoContactFinalizeInput,
+    NoContactReviewQueueResponse,
     RouteActionInput,
     RouteActionResponse,
     RouteEventResponse,
@@ -45,6 +46,7 @@ from app.schemas.route_event import (
 )
 from app.services.route_workflow import (
     RouteActionConflict,
+    cancel_no_contact_event,
     finalize_no_contact_attempt,
     record_unable_to_proceed,
     start_current_investigation,
@@ -417,6 +419,35 @@ def submit_no_contact_report(
 
 
 @router.post(
+    "/{investigation_id}/no-contact-events/{event_id}/cancel",
+    response_model=InvestigationResponse,
+    dependencies=[Depends(require_planning_enabled)],
+)
+def cancel_investigation_no_contact(
+    investigation_id: int,
+    event_id: int,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(require_roles("admin", "supervisor")),
+):
+    try:
+        case = cancel_no_contact_event(db, investigation_id, event_id, current_user)
+        try:
+            from app.workers.tasks import dispatch_planning_triggers_task
+
+            dispatch_planning_triggers_task.delay()
+        except Exception:
+            import logging
+
+            logging.getLogger("app.planning").exception(
+                "Could not dispatch planning triggers after admin cancellation"
+            )
+        return case
+    except RouteActionConflict as error:
+        db.rollback()
+        raise HTTPException(status_code=409, detail=str(error)) from error
+
+
+@router.post(
     "/{investigation_id}/assign",
     response_model=AssignmentResponse,
 )
@@ -544,6 +575,88 @@ def list_trash(
     current_user: User = Depends(require_roles("admin", "supervisor")),
 ):
     return get_trash(db)
+
+
+@router.get("/awaiting-no-contact-review", response_model=NoContactReviewQueueResponse)
+def awaiting_no_contact_review(
+    q: str = "",
+    page: int = Query(default=1, ge=1),
+    page_size: int = Query(default=25, ge=1, le=100),
+    sort: Literal["attempted_at", "reference_number"] = "attempted_at",
+    direction: Literal["asc", "desc"] = "desc",
+    db: Session = Depends(get_db),
+    _: User = Depends(require_roles("admin", "supervisor")),
+):
+    agent_finalized_event_roots = (
+        db.query(
+            func.coalesce(
+                InvestigationRouteEvent.parent_event_id,
+                InvestigationRouteEvent.id,
+            )
+        )
+        .join(
+            ActivityLog,
+            ActivityLog.details["route_event_id"].as_integer() == InvestigationRouteEvent.id,
+        )
+        .filter(
+            ActivityLog.action == "investigation.cancelled_no_contact_finalized",
+            InvestigationRouteEvent.event_type == "no_contact",
+        )
+    )
+    open_attempt = InvestigationRouteEvent.state.in_(
+        ("deferred", "retrying", "retry_failed"),
+    )
+    finalized_submission_waiting_for_reopen = and_(
+        InvestigationRouteEvent.state == "carried_over",
+        InvestigationRouteEvent.id.in_(agent_finalized_event_roots),
+        Investigation.status == "cancelled",
+        Investigation.reopen_on.is_not(None),
+        InvestigationRouteEvent.next_work_date == Investigation.reopen_on,
+    )
+    query = (
+        db.query(InvestigationRouteEvent, Investigation)
+        .join(Investigation, Investigation.id == InvestigationRouteEvent.investigation_id)
+        .filter(
+            InvestigationRouteEvent.event_type == "no_contact",
+            InvestigationRouteEvent.parent_event_id.is_(None),
+            Investigation.deleted_at.is_(None),
+            or_(open_attempt, finalized_submission_waiting_for_reopen),
+        )
+    )
+    if q.strip():
+        query = query.filter(investigation_search(q))
+    total = query.count()
+    column = Investigation.reference_number if sort == "reference_number" else InvestigationRouteEvent.attempted_at
+    rows = (
+        query.options(joinedload(Investigation.assigned_agent))
+        .order_by(column.desc() if direction == "desc" else column.asc(), InvestigationRouteEvent.id)
+        .offset((page - 1) * page_size)
+        .limit(page_size)
+        .all()
+    )
+    return {
+        "total": total,
+        "page": page,
+        "page_size": page_size,
+        "items": [
+            {
+                "event_id": event.id,
+                "investigation_id": case.id,
+                "reference_number": case.reference_number,
+                "subject_name": case.subject_name,
+                "assigned_agent_name": case.assigned_agent_name,
+                "priority": case.priority,
+                "reason": event.reason,
+                "state": event.state,
+                "retry_number": event.retry_number,
+                "attempted_at": event.attempted_at,
+                "work_date": event.work_date,
+                "next_work_date": event.next_work_date,
+                "notes": event.notes,
+            }
+            for event, case in rows
+        ],
+    }
 
 
 @router.post("/{investigation_id}/restore", response_model=InvestigationResponse)

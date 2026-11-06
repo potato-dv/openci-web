@@ -52,6 +52,7 @@ class ReportQueueItemResponse(BaseModel):
     author_name: str
     version: int
     priority: str
+    visit_outcome: VisitOutcome | None
     status: ReportStatus
     submitted_at: datetime | None
     updated_at: datetime

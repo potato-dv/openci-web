@@ -243,8 +243,9 @@ class ShiftEndInvestigationTests(unittest.TestCase):
             self.assertEqual(carry_events[automatic_case.id].next_work_date, work_date + timedelta(days=1))
             self.assertEqual(old_shift.work_date, work_date)
 
-    def test_shift_end_finalizes_existing_no_contact_event_instead_of_creating_another(self):
+    def test_shift_end_cancels_instead_of_carrying_over_a_single_no_contact_attempt(self):
         work_date = date(2026, 11, 2)
+        reopen_on = work_date + timedelta(days=1)
         with Session(self.engine) as db:
             supervisor, agent, _other = self.create_people(db)
             self.add_shift(db, agent, work_date)
@@ -268,7 +269,8 @@ class ShiftEndInvestigationTests(unittest.TestCase):
 
             result = process_shift_end_investigations(db, local_instant(work_date, 17, 1))
 
-            self.assertEqual(result["carried_over"], 1)
+            self.assertEqual(result["cancelled"], 1)
+            self.assertEqual(result["carried_over"], 0)
             self.assertEqual(db.query(InvestigationRouteEvent).count(), 1)
             self.assertEqual(attempt.id, original_id)
             self.assertEqual(attempt.event_type, "no_contact")
@@ -277,7 +279,142 @@ class ShiftEndInvestigationTests(unittest.TestCase):
             if finalized_at.tzinfo is None:
                 finalized_at = finalized_at.replace(tzinfo=timezone.utc)
             self.assertEqual(finalized_at, local_instant(work_date, 17, 1).astimezone(timezone.utc))
-            self.assertEqual(case.status, "assigned")
+            self.assertEqual(attempt.next_work_date, reopen_on)
+            # Manual assignment keeps its agent, consistent with the other
+            # cancellation trigger's existing reopen behavior.
+            self.assertEqual(case.status, "cancelled")
+            self.assertEqual(case.reopen_on, reopen_on)
+            self.assertEqual(case.assigned_agent_id, agent.id)
+            self.assertEqual(
+                db.query(ActivityLog).filter_by(
+                    action="investigation.cancelled_no_contact_shift_end",
+                ).count(),
+                1,
+            )
+
+    def test_shift_end_cancels_and_releases_automatic_assignment_after_single_attempt(self):
+        work_date = date(2026, 11, 2)
+        reopen_on = work_date + timedelta(days=1)
+        with Session(self.engine) as db:
+            supervisor, agent, _other = self.create_people(db)
+            self.add_shift(db, agent, work_date)
+            case = self.add_case(db, supervisor, agent, "INV-NO-CONTACT-AUTO", "assigned", "automatic")
+            db.add(InvestigationRouteEvent(
+                investigation_id=case.id,
+                agent_id=agent.id,
+                work_date=work_date,
+                event_type="no_contact",
+                state="deferred",
+                retry_number=0,
+                reason="nobody_at_location",
+                notes=None,
+                attempted_at=local_instant(work_date, 10).astimezone(timezone.utc),
+                latitude=case.latitude,
+                longitude=case.longitude,
+            ))
+            db.flush()
+
+            result = process_shift_end_investigations(db, local_instant(work_date, 17, 1))
+
+            self.assertEqual(result["cancelled"], 1)
+            self.assertEqual(case.status, "cancelled")
+            self.assertEqual(case.reopen_on, reopen_on)
+            self.assertIsNone(case.assigned_agent_id)
+            assignment = db.query(InvestigationAssignment).filter_by(investigation_id=case.id).one()
+            self.assertFalse(assignment.is_active)
+            self.assertIsNotNone(assignment.unassigned_at)
+
+    def test_shift_end_cancels_manual_assignment_after_a_failed_retry(self):
+        work_date = date(2026, 11, 2)
+        reopen_on = work_date + timedelta(days=1)
+        with Session(self.engine) as db:
+            supervisor, agent, _other = self.create_people(db)
+            self.add_shift(db, agent, work_date)
+            case = self.add_case(db, supervisor, agent, "INV-NO-CONTACT-RETRY-FAILED", "assigned")
+            root = InvestigationRouteEvent(
+                investigation_id=case.id,
+                agent_id=agent.id,
+                work_date=work_date,
+                event_type="no_contact",
+                state="retry_failed",
+                retry_number=0,
+                reason="requested_later_visit",
+                notes=None,
+                attempted_at=local_instant(work_date, 9).astimezone(timezone.utc),
+                latitude=case.latitude,
+                longitude=case.longitude,
+            )
+            db.add(root)
+            db.flush()
+            child = InvestigationRouteEvent(
+                investigation_id=case.id,
+                agent_id=agent.id,
+                work_date=work_date,
+                parent_event_id=root.id,
+                event_type="no_contact",
+                state="retry_failed",
+                retry_number=1,
+                reason="no_contact_person",
+                notes=None,
+                attempted_at=local_instant(work_date, 14).astimezone(timezone.utc),
+                latitude=case.latitude,
+                longitude=case.longitude,
+            )
+            db.add(child)
+            db.flush()
+
+            result = process_shift_end_investigations(db, local_instant(work_date, 17, 1))
+
+            self.assertEqual(result["cancelled"], 1)
+            self.assertEqual(case.status, "cancelled")
+            self.assertEqual(case.reopen_on, reopen_on)
+            self.assertEqual(case.assigned_agent_id, agent.id)
+            self.assertEqual(root.state, "carried_over")
+            self.assertEqual(child.state, "carried_over")
+            self.assertEqual(root.next_work_date, reopen_on)
+            self.assertEqual(child.next_work_date, reopen_on)
+
+    def test_no_contact_cancellation_reopens_to_pending_and_requeues_planning_next_day(self):
+        work_date = date(2026, 11, 2)
+        next_date = work_date + timedelta(days=1)
+        with Session(self.engine) as db:
+            supervisor, agent, _other = self.create_people(db)
+            self.add_shift(db, agent, work_date)
+            automatic_case = self.add_case(db, supervisor, agent, "INV-REOPEN-AUTO", "assigned", "automatic")
+            manual_case = self.add_case(db, supervisor, agent, "INV-REOPEN-MANUAL", "assigned", "manual")
+            for case in (automatic_case, manual_case):
+                db.add(InvestigationRouteEvent(
+                    investigation_id=case.id,
+                    agent_id=agent.id,
+                    work_date=work_date,
+                    event_type="no_contact",
+                    state="deferred",
+                    retry_number=0,
+                    reason="nobody_at_location",
+                    notes=None,
+                    attempted_at=local_instant(work_date, 10).astimezone(timezone.utc),
+                    latitude=case.latitude,
+                    longitude=case.longitude,
+                ))
+            db.flush()
+
+            day_one = process_shift_end_investigations(db, local_instant(work_date, 17, 1))
+            self.assertEqual(day_one["cancelled"], 2)
+            self.assertEqual(automatic_case.status, "cancelled")
+            self.assertEqual(manual_case.status, "cancelled")
+
+            self.add_shift(db, agent, next_date)
+            day_two = process_shift_end_investigations(db, local_instant(next_date, 9))
+
+            self.assertEqual(day_two["reopened"], 2)
+            self.assertEqual(automatic_case.status, "pending")
+            self.assertEqual(manual_case.status, "pending")
+            self.assertIsNone(automatic_case.reopen_on)
+            self.assertIsNone(manual_case.reopen_on)
+            self.assertIsNone(automatic_case.assigned_agent_id)
+            self.assertEqual(manual_case.assigned_agent_id, agent.id)
+            triggers = db.query(PlanningTrigger).filter_by(work_date=next_date).all()
+            self.assertGreaterEqual(len(triggers), 1)
 
     def test_automatic_carryover_queues_once_for_the_next_planning_day(self):
         work_date = date(2026, 11, 2)

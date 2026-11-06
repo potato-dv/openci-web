@@ -50,6 +50,41 @@ class RouteActionResponse(BaseModel):
     started: bool
 
 
+class NoContactEventSummary(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    event_id: int
+    reason: str
+    notes: str | None
+    state: Literal["deferred", "retrying", "retry_failed"]
+    retry_number: int
+    attempted_at: datetime
+    work_date: date
+
+
+class NoContactReviewItemResponse(BaseModel):
+    event_id: int
+    investigation_id: int
+    reference_number: str
+    subject_name: str
+    assigned_agent_name: str | None
+    priority: str
+    reason: str
+    state: Literal["deferred", "retrying", "retry_failed", "carried_over"]
+    retry_number: int
+    attempted_at: datetime
+    work_date: date
+    next_work_date: date | None
+    notes: str | None
+
+
+class NoContactReviewQueueResponse(BaseModel):
+    items: list[NoContactReviewItemResponse]
+    total: int
+    page: int
+    page_size: int
+
+
 class RouteEventResponse(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 

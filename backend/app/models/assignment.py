@@ -18,6 +18,7 @@ class InvestigationAssignment(Base):
             "assignment_source IN ('manual', 'automatic')",
             name="ck_investigation_assignments_source",
         ),
+        
         Index(
             "uq_assignment_active_per_investigation",
             "investigation_id",
