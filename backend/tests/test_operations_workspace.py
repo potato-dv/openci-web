@@ -5,6 +5,7 @@ from io import StringIO
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import Mock, patch
+from zoneinfo import ZoneInfo
 
 import httpx
 from fastapi import HTTPException
@@ -171,17 +172,33 @@ class WorkspaceAPITests(unittest.TestCase):
         self.assertEqual(self.client.get("/reports/review-queue").json()["total"], 0)
 
     def test_readiness_points_density_and_shift_metadata(self):
-        response = self.client.put(f"/planning/agents/{self.agent.id}/shifts/2026-11-04", json={"work_date": "2026-11-04", "region_code": "1300000000", "shift_starts_at": "2026-11-04T08:00:00+08:00", "shift_ends_at": "2026-11-04T17:00:00+08:00", "start_latitude": 14.6, "start_longitude": 121.1, "max_visits": 8, "max_open_cases": 20, "start_location_label": "Configured office", "start_location_source": "manual"})
+        work_date = datetime.now(ZoneInfo("Asia/Manila")).date()
+        work_date_text = work_date.isoformat()
+        response = self.client.put(
+            f"/planning/agents/{self.agent.id}/shifts/{work_date_text}",
+            json={
+                "work_date": work_date_text,
+                "region_code": "1300000000",
+                "shift_starts_at": f"{work_date_text}T00:00:00+08:00",
+                "shift_ends_at": f"{work_date_text}T23:59:59+08:00",
+                "start_latitude": 14.55,
+                "start_longitude": 121.05,
+                "max_visits": 8,
+                "max_open_cases": 20,
+                "start_location_label": "Configured office",
+                "start_location_source": "manual",
+            },
+        )
         self.assertEqual(response.status_code, 200, response.text)
         for resolution in (7, 8, 9):
-            result = self.client.get(f"/planning/readiness?work_date=2026-11-04&region_code=1300000000&resolution={resolution}")
+            result = self.client.get(f"/planning/readiness?work_date={work_date_text}&region_code=1300000000&resolution={resolution}")
             self.assertEqual(result.status_code, 200, result.text)
             data = result.json(); self.assertEqual(data["available_agents"][0]["start"]["label"], "Configured office")
             self.assertEqual(data["active_agent_count"], 2)
             self.assertEqual(data["unavailable_agent_count"], 1)
             self.assertEqual(data["eligible_cases"][0]["latitude"], 14.5)
             polygon = data["density"][0]["geometry"]; self.assertEqual(polygon["type"], "Polygon"); self.assertEqual(polygon["coordinates"][0][0], polygon["coordinates"][0][-1])
-        self.assertEqual(len(self.client.get("/planning/agent-shifts?work_date=2026-11-04").json()), 2)
+        self.assertEqual(len(self.client.get(f"/planning/agent-shifts?work_date={work_date_text}").json()), 2)
 
     def test_route_overview_recognizes_assigned_agent_and_hides_stale_stop_sets(self):
         work_date = date(2026, 11, 4)

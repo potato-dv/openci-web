@@ -10,7 +10,7 @@ import { Skeleton, InlineAlert, Button } from "@/components/ui/Primitives";
 import { InvestigationDetailsPage } from "./InvestigationDetailsPage";
 export function InvestigationDetailRoute() {
   const { id } = useParams();
-  const { token, user } = useSession();
+  const { token, user, agentPermissions } = useSession();
   const navigate = useNavigate();
   const location = useLocation();
   const resource = useResource(
@@ -76,6 +76,7 @@ export function InvestigationDetailRoute() {
             <InvestigationDetailsPage
               token={token}
               user={user}
+              agentPermissions={agentPermissions}
               investigation={resource.data}
               onChanged={resource.refresh}
               onDeleted={() => navigate("/investigations")}

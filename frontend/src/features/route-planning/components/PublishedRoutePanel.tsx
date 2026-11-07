@@ -217,6 +217,18 @@ export function PublishedRoutePanel({
                 </dd>
               </div>
             )}
+            {selectedCase.agent_name && (
+              <div className={investigationFactClasses.row}>
+                <dt className={investigationFactClasses.label}>Routing</dt>
+                <dd className={investigationFactClasses.value}>
+                  {selectedCase.routing_status === "unscheduled"
+                    ? "Assigned — Unscheduled"
+                    : selectedCase.routing_status === "scheduled"
+                      ? "Scheduled on route"
+                      : "Route update pending"}
+                </dd>
+              </div>
+            )}
             {selectedStop?.estimated_service_start_at && (
               <div className={investigationFactClasses.row}>
                 <dt className={investigationFactClasses.label}>
@@ -231,6 +243,11 @@ export function PublishedRoutePanel({
           {selectedCase.planning_reason && (
             <p className="planning-reason-detail mt-3 rounded-md border border-openci-border bg-openci-surface-muted px-3 py-2 text-xs leading-relaxed text-openci-text-muted">
               {planningReasonCopy(selectedCase.planning_reason)}
+            </p>
+          )}
+          {selectedCase.routing_status === "unscheduled" && selectedCase.routing_reason && (
+            <p className="planning-reason-detail mt-3 rounded-md border border-openci-border bg-openci-surface-muted px-3 py-2 text-xs leading-relaxed text-openci-text-muted">
+              {planningReasonCopy(selectedCase.routing_reason)}
             </p>
           )}
           {!selectedCase.agent_name && (

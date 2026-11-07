@@ -8,40 +8,46 @@ import { AgentRouteView } from "@/features/agents/components/AgentRouteView";
 import { Button, InlineAlert, Skeleton } from "@/components/ui/Primitives";
 import { manilaToday } from "@/utils/format";
 export function MyRoutePage() {
-  const { token, user } = useSession();
+  const { token, user, agentPermissions } = useSession();
   const [params, setParams] = useSearchParams();
-  const date = params.get("date") ?? manilaToday();
+  const canViewHistory = agentPermissions?.["route.view_own_history"] ?? true;
+  const today = manilaToday();
+  const date = canViewHistory ? params.get("date") ?? today : today;
   const resource = useResource(
     useCallback((signal) => getAgentRoute(token, date, signal), [token, date]),
   );
+  const refreshRoute = resource.refresh;
   const routeRefreshPending =
     resource.data?.reason === "route_refresh_pending";
   useEffect(() => {
+    if (!canViewHistory && params.has("date")) setParams({}, { replace: true });
+  }, [canViewHistory, params, setParams]);
+  useEffect(() => {
     const refresh = () => {
-      if (document.visibilityState === "visible") resource.refresh();
+      if (document.visibilityState === "visible") refreshRoute();
     };
     const timer = window.setInterval(
       refresh,
       routeRefreshPending ? 4000 : 10000,
     );
     return () => window.clearInterval(timer);
-  }, [resource.refresh, routeRefreshPending]);
+  }, [refreshRoute, routeRefreshPending]);
   return (
     <>
       <PageHeader
         title="My Route"
-        description="Your remaining route starts from your latest reported visit when available, then falls back to your configured shift location. Reported locations are estimates, not live GPS."
+        description="Your route uses the latest reported visit when available, then your shift starting point. Reported locations are estimates, not live GPS."
         actions={
           <>
-            <label>
+            {canViewHistory && <label>
               Work date
               <input
                 type="date"
                 value={date}
                 onChange={(event) => setParams({ date: event.target.value })}
               />
-            </label>
-            <Button onClick={resource.refresh}>Refresh</Button>
+            </label>}
+            <Button onClick={refreshRoute}>Refresh</Button>
           </>
         }
       />

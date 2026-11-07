@@ -1,10 +1,12 @@
-import { useCallback, useEffect, useState } from "react";
+import { Table, TableHeader, TableBody, TableRow, TableHead, TableCell } from "@/components/ui/table";
+import { useCallback, useState } from "react";
 import { Link, useSearchParams } from "react-router";
 import { useSession } from "@/app/session";
 import { getAgentRoster } from "@/features/agents/api";
 import { getRegions } from "@/features/locations/api";
 import { useResource } from "@/hooks/useResource";
 import { PageHeader } from "@/components/layout/PageHeader";
+import { DataFilterBar, dataFilterFieldClassName } from "@/components/data/DataFilterBar";
 import { AgentShiftDrawer } from "@/features/agents/components/AgentShiftDrawer";
 import {
   Button,
@@ -52,11 +54,11 @@ export function FieldAgentsPage() {
       [token, date, region, inactive],
     ),
   );
-  useEffect(() => {
-    if (!selected || !roster.data) return;
-    const latest = roster.data.find((item) => item.agent.id === selected.agent.id);
-    if (latest) setSelected(latest);
-  }, [roster.data, selected]);
+  const selectedRow =
+    selected && roster.data
+      ? (roster.data.find((item) => item.agent.id === selected.agent.id) ??
+        selected)
+      : selected;
   function update(key: string, value: string) {
     const next = new URLSearchParams(params);
     if (value) next.set(key, value);
@@ -83,8 +85,8 @@ export function FieldAgentsPage() {
         {regions.error && (
           <InlineAlert onRetry={regions.refresh}>{regions.error}</InlineAlert>
         )}
-        <div className="data-filters">
-          <label>
+        <DataFilterBar>
+          <label className={dataFilterFieldClassName}>
             Work date
             <input
               type="date"
@@ -92,7 +94,7 @@ export function FieldAgentsPage() {
               onChange={(event) => update("date", event.target.value)}
             />
           </label>
-          <label>
+          <label className="min-w-[220px] flex-[1_1_220px] md:flex-[0_1_250px]">
             Service region
             <select
               value={region}
@@ -107,7 +109,7 @@ export function FieldAgentsPage() {
             </select>
           </label>
           {user.role === "admin" && (
-            <label>
+            <label className={dataFilterFieldClassName}>
               Accounts
               <select
                 value={inactive}
@@ -118,7 +120,7 @@ export function FieldAgentsPage() {
               </select>
             </label>
           )}
-        </div>
+        </DataFilterBar>
         {roster.error && (
           <InlineAlert onRetry={roster.refresh}>{roster.error}</InlineAlert>
         )}
@@ -127,63 +129,79 @@ export function FieldAgentsPage() {
         ) : roster.data?.length ? (
           <>
             <div className="table-wrap desktop-data">
-              <table>
-                <thead>
-                  <tr>
-                    <th>Agent</th>
-                    <th>Account</th>
-                    <th>Availability</th>
-                    <th>Hours · PHT</th>
-                    <th>Starting point</th>
-                    <th>Visit capacity</th>
-                    <th>Current open cases</th>
-                    <th>Action</th>
-                  </tr>
-                </thead>
-                <tbody>
+              <Table className="min-w-[1080px] table-fixed">
+                <colgroup>
+                  <col className="w-[18%]" />
+                  <col className="w-[10%]" />
+                  <col className="w-[14%]" />
+                  <col className="w-[13%]" />
+                  <col className="w-[19%]" />
+                  <col className="w-[8%]" />
+                  <col className="w-[8%]" />
+                  <col className="w-[10%]" />
+                </colgroup>
+                <TableHeader>
+                  <TableRow>
+                    <TableHead scope="col">Agent</TableHead>
+                    <TableHead scope="col">Account</TableHead>
+                    <TableHead scope="col">Availability</TableHead>
+                    <TableHead scope="col">Hours · PHT</TableHead>
+                    <TableHead scope="col">Starting point</TableHead>
+                    <TableHead scope="col" className="text-right">Visit limit</TableHead>
+                    <TableHead scope="col" className="text-right">Open cases</TableHead>
+                    <TableHead scope="col" className="text-right">Action</TableHead>
+                  </TableRow>
+                </TableHeader>
+                <TableBody>
                   {roster.data.map((row) => (
-                    <tr key={row.agent.id}>
-                      <td>
+                    <TableRow key={row.agent.id}>
+                      <TableCell className="min-w-0">
                         <strong>{row.agent.name}</strong>
-                        <small className="block">{row.agent.email}</small>
-                      </td>
-                      <td>
+                        <small className="block truncate" title={row.agent.email}>{row.agent.email}</small>
+                      </TableCell>
+                      <TableCell>
                         <span
                           className={`status-badge account-${row.agent.is_active ? "active" : "inactive"}`}
                         >
                           {row.agent.is_active ? "Active" : "Inactive"}
                         </span>
-                      </td>
-                      <td>
+                      </TableCell>
+                      <TableCell>
                         {shiftStatusLabel(row)}
-                        {row.shift?.source === "manual" && <small className="block">Manual override</small>}
-                      </td>
-                      <td className="nowrap">
+                        {row.shift?.source === "manual" && (
+                          <small className="block">Manual override</small>
+                        )}
+                      </TableCell>
+                      <TableCell className="nowrap">
                         {row.shift
                           ? `${time(row.shift.shift_starts_at)}–${time(row.shift.shift_ends_at)}`
-                          : row.availability_day?.shift_starts_at && row.availability_day.shift_ends_at
+                          : row.availability_day?.shift_starts_at &&
+                              row.availability_day.shift_ends_at
                             ? `${time(row.availability_day.shift_starts_at)}–${time(row.availability_day.shift_ends_at)}`
-                          : "—"}
-                      </td>
-                      <td className="location-cell">
+                            : "—"}
+                      </TableCell>
+                      <TableCell className="location-cell">
                         {row.shift?.start_location_label ||
                           (row.shift
                             ? `${row.shift.start_latitude.toFixed(5)}, ${row.shift.start_longitude.toFixed(5)}`
-                            : row.availability_day?.start_latitude != null && row.availability_day.start_longitude != null
+                            : row.availability_day?.start_latitude != null &&
+                                row.availability_day.start_longitude != null
                               ? `${row.availability_day.start_latitude.toFixed(5)}, ${row.availability_day.start_longitude.toFixed(5)}`
-                              : row.work_profile_set ? "Depot configured" : "Not configured")}
-                      </td>
-                      <td>{row.shift?.max_visits ?? "—"}</td>
-                      <td>{row.assigned_workload_count}</td>
-                      <td>
+                              : row.work_profile_set
+                                ? "Depot configured"
+                                : "Not configured")}
+                      </TableCell>
+                      <TableCell className="text-right">{row.shift?.max_visits ?? "—"}</TableCell>
+                      <TableCell className="text-right">{row.assigned_workload_count}</TableCell>
+                      <TableCell className="text-right">
                         <Button onClick={() => setSelected(row)}>
                           View agent
                         </Button>
-                      </td>
-                    </tr>
+                      </TableCell>
+                    </TableRow>
                   ))}
-                </tbody>
-              </table>
+                </TableBody>
+              </Table>
             </div>
             <ul
               className="workspace-mobile-list"
@@ -210,9 +228,10 @@ export function FieldAgentsPage() {
                       <dd>
                         {row.shift
                           ? `${time(row.shift.shift_starts_at)}–${time(row.shift.shift_ends_at)}`
-                          : row.availability_day?.shift_starts_at && row.availability_day.shift_ends_at
+                          : row.availability_day?.shift_starts_at &&
+                              row.availability_day.shift_ends_at
                             ? `${time(row.availability_day.shift_starts_at)}–${time(row.availability_day.shift_ends_at)}`
-                          : "—"}
+                            : "—"}
                       </dd>
                     </div>
                     <div>
@@ -221,9 +240,12 @@ export function FieldAgentsPage() {
                         {row.shift?.start_location_label ||
                           (row.shift
                             ? `${row.shift.start_latitude.toFixed(5)}, ${row.shift.start_longitude.toFixed(5)}`
-                            : row.availability_day?.start_latitude != null && row.availability_day.start_longitude != null
+                            : row.availability_day?.start_latitude != null &&
+                                row.availability_day.start_longitude != null
                               ? `${row.availability_day.start_latitude.toFixed(5)}, ${row.availability_day.start_longitude.toFixed(5)}`
-                              : row.work_profile_set ? "Depot configured" : "Not configured")}
+                              : row.work_profile_set
+                                ? "Depot configured"
+                                : "Not configured")}
                       </dd>
                     </div>
                     <div>
@@ -250,12 +272,12 @@ export function FieldAgentsPage() {
           </EmptyState>
         )}
       </section>
-      {selected && (
+      {selectedRow && (
         <AgentShiftDrawer
-          key={`${selected.agent.id}:${date}`}
+          key={`${selectedRow.agent.id}:${date}`}
           token={token}
           date={date}
-          row={selected}
+          row={selectedRow}
           regions={regions.data ?? []}
           onClose={() => setSelected(null)}
           onUpdated={roster.refresh}

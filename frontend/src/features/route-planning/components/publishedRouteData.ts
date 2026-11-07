@@ -21,6 +21,7 @@ export function routeStatusLabel(
     failed: "Route update failed",
     partially_published: "Route published with blockers",
     needs_refresh: "Route needs an update",
+    unscheduled: "Assigned — Unscheduled",
   };
   return labels[status];
 }
@@ -60,7 +61,7 @@ export function planningReasonCopy(reason: string | null | undefined) {
   const copy: Record<string, string> = {
     location_unconfirmed: "Confirm this location before planning can start.",
     no_available_agents:
-      "No agent is currently available to take this work. Check active shifts, in-progress visits, and remaining hours.",
+      "No agent is currently available to take this work. Check active shifts, configured depots, in-progress visits, and remaining hours.",
     agent_in_progress:
       "This agent has an in-progress investigation. The visit and existing route are left untouched until a report records completion.",
     shift_ended:
@@ -73,6 +74,12 @@ export function planningReasonCopy(reason: string | null | undefined) {
       "Available agents have reached their open case capacity.",
     no_feasible_route_under_constraints:
       "No feasible route fits the shifts, travel times, service times, time windows, and capacity limits.",
+    manual_stop_exceeds_shift:
+      "This manual assignment remains with the agent, but its minimum driving time exceeds the remaining shift.",
+    outside_service_radius:
+      "No available agent’s configured shift depot is within the automatic 10 km service radius.",
+    manual_assignment_required:
+      "This case was unassigned for manual selection. Choose an agent from its assignment panel.",
     deadline_before_service_window:
       "The requested visit window is shorter than the investigation service duration.",
     expired_visit_window:
@@ -181,6 +188,8 @@ export function buildPublishedRouteMapData(
         state?.planning_status ??
         (item.assigned_agent_id ? "assigned" : "pending"),
       planning_reason: state?.reason ?? null,
+      routing_status: state?.routing_status ?? "pending",
+      routing_reason: state?.routing_reason ?? null,
       assignment_source: state?.assignment_source ?? null,
       estimated_arrival_at: stop?.estimated_arrival_at ?? null,
       planned_arrival_at: stop?.planned_arrival_at ?? null,

@@ -7,12 +7,16 @@ const api = vi.hoisted(() => ({
   getAgentRoster: vi.fn(),
   getAssignments: vi.fn(),
   retryInvestigationRoute: vi.fn(),
+  submitAutomaticAssignment: vi.fn(),
+  unassignInvestigation: vi.fn(),
 }));
 
 vi.mock("@/features/investigations/api", () => ({
   assignInvestigation: api.assignInvestigation,
   getAssignments: api.getAssignments,
   retryInvestigationRoute: api.retryInvestigationRoute,
+  submitAutomaticAssignment: api.submitAutomaticAssignment,
+  unassignInvestigation: api.unassignInvestigation,
 }));
 vi.mock("@/features/agents/api", () => ({
   getAgentRoster: api.getAgentRoster,
@@ -88,6 +92,8 @@ describe("AssignmentPanel automatic route refresh", () => {
     api.getAgentRoster.mockReset();
     api.getAssignments.mockReset();
     api.retryInvestigationRoute.mockReset();
+    api.submitAutomaticAssignment.mockReset();
+    api.unassignInvestigation.mockReset();
     api.getAgentRoster.mockResolvedValue([{
       agent,
       shift: {

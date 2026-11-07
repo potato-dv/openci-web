@@ -1,5 +1,34 @@
 export type UserRole = "admin" | "supervisor" | "agent";
 
+export type AgentFeatureCode =
+  | "investigation.request_revisit"
+  | "route.view_own_history"
+  | "investigation.view_own_history";
+export type AgentPermissions = Record<AgentFeatureCode, boolean>;
+export type AgentPermissionEffect = "allow" | "deny" | "inherit";
+export type AgentPermissionFeature = {
+  code: AgentFeatureCode;
+  name: string;
+  description: string;
+  default_allowed: boolean;
+  override: "allow" | "deny" | null;
+  effective_allowed: boolean;
+};
+export type AgentPermissionState = {
+  agent: { id: number; name: string; is_active: boolean };
+  features: AgentPermissionFeature[];
+  mandatory_workflows: { name: string; description: string }[];
+};
+export type AgentPermissionHistoryItem = {
+  id: number;
+  actor_name: string | null;
+  created_at: string;
+  old_overrides: Record<string, "allow" | "deny" | "inherit">;
+  new_overrides: Record<string, "allow" | "deny" | "inherit">;
+  old_effective: Record<string, boolean>;
+  new_effective: Record<string, boolean>;
+};
+
 export type InvestigationStatus =
   | "pending"
   | "assigned"
@@ -57,6 +86,7 @@ export type Investigation = {
   priority: InvestigationPriority;
   assigned_agent_id?: number | null;
   assigned_agent_name?: string | null;
+  manual_assignment_required?: boolean;
   created_at?: string;
   location_confirmed?: boolean;
   location_confirmed_at?: string | null;
@@ -324,6 +354,8 @@ export type PlanningDashboard = {
     reason: string | null;
     planning_run_id: number | null;
     assignment_source: "automatic" | "manual" | null;
+    routing_status?: "pending" | "scheduled" | "unscheduled";
+    routing_reason?: string | null;
   }[];
 };
 export type PlanningDependency =
@@ -529,6 +561,16 @@ export type RevisitRequest = {
   created_at: string;
   completed_at: string | null;
 };
+export type RevisitRequestState = {
+  request: RevisitRequest | null;
+  can_request: boolean;
+};
+export type InvestigationActivityItem = {
+  id: number;
+  label: string;
+  actor_name: string | null;
+  created_at: string;
+};
 export type PlanningRouteOverviewAgent = {
   id: number;
   name: string;
@@ -542,7 +584,8 @@ export type PlanningRouteOverviewAgent = {
     | "published"
     | "failed"
     | "partially_published"
-    | "needs_refresh";
+    | "needs_refresh"
+    | "unscheduled";
   refresh_errors: string[];
   planning_warnings?: {
     investigation_id: number;
@@ -577,6 +620,14 @@ export type AgentRosterRow = {
   shift: AgentShift | null;
   assigned_workload_count: number;
   visit_workload_count: number;
+  configured_region_code?: string | null;
+  configured_region_name?: string | null;
+  depot_label?: string | null;
+  depot_latitude?: number | null;
+  depot_longitude?: number | null;
+  depot_distance_metres?: number | null;
+  outside_configured_region?: boolean | null;
+  outside_service_radius?: boolean | null;
   schedule_enabled?: boolean;
   work_profile_set?: boolean;
   availability_day?: AvailabilityDay | null;
@@ -652,7 +703,7 @@ export type Assignment = {
 };
 
 export type AssignmentRouteRefresh = {
-  status: "queued" | "running" | "published" | "failed" | "partially_published";
+  status: "queued" | "running" | "published" | "failed" | "partially_published" | "unscheduled";
   work_date: string;
   agent_ids: number[];
   run_ids: number[];

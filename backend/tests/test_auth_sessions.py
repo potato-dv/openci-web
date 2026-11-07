@@ -19,7 +19,6 @@ from app.database import Base
 from app.models.auth_session import AuthRefreshToken, AuthSession
 from app.models.user import User
 from app.routes.user import (
-    REFRESH_COOKIE_NAME,
     login_user,
     logout_user,
     record_user_activity,
@@ -134,7 +133,10 @@ class AuthSessionAPITests(unittest.TestCase):
             )
 
     def test_login_issues_short_access_token_and_httponly_secure_refresh_cookie(self):
-        response = self.login()
+        with patch("app.routes.user.AUTH_REFRESH_COOKIE_SECURE", True), patch(
+            "app.routes.user.REFRESH_COOKIE_NAME", "__Secure-openci_refresh"
+        ):
+            response = self.login()
         self.assertEqual(response.json()["token_type"], "bearer")
         claims = jwt.decode(
             response.json()["access_token"],

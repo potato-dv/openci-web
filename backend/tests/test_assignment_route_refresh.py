@@ -35,7 +35,11 @@ from app.services.planning import (
     _snapshot,
 )
 from app.controllers.investigation import assign
-from app.routes.investigation import confirm_investigation_location, retry_investigation_route_refresh
+from app.routes.investigation import (
+    confirm_investigation_location,
+    retry_investigation_route_refresh,
+    submit_investigation_for_automatic_assignment,
+)
 from app.workers.tasks import _sync_auto_route_assignments, optimize_planning_run
 
 
@@ -103,6 +107,17 @@ class AssignmentRouteRefreshTests(unittest.TestCase):
     def setUp(self):
         self.engine = create_engine("sqlite:///:memory:")
         Base.metadata.create_all(self.engine)
+        manila_test_time = datetime.combine(
+            _work_date(),
+            time(10),
+            tzinfo=ZoneInfo("Asia/Manila"),
+        ).astimezone(timezone.utc)
+        self._planning_clock_patch = patch(
+            "app.services.planning._database_now",
+            return_value=manila_test_time,
+        )
+        self._planning_clock_patch.start()
+        self.addCleanup(self._planning_clock_patch.stop)
 
     def tearDown(self):
         self.engine.dispose()
@@ -336,7 +351,7 @@ class AssignmentRouteRefreshTests(unittest.TestCase):
             _sync_auto_route_assignments(db, run)
 
             db.refresh(assignment)
-            self.assertEqual(assignment.auto_route_status, "failed")
+            self.assertEqual(assignment.auto_route_status, "unscheduled")
             self.assertIn("no_available_agents", assignment.auto_route_errors)
             self.assertEqual(assignment.auto_route_run_ids, [run.id])
 
@@ -438,11 +453,56 @@ class AssignmentRouteRefreshTests(unittest.TestCase):
             self.assertEqual(manual_case.assigned_agent_id, off_agent.id)
             self.assertTrue(manual_assignment.is_active)
 
-    def test_capacity_overflow_stales_a_queued_partial_run(self):
+    def test_automatic_assignment_uses_10km_radius_but_manual_override_is_preserved(self):
+        with Session(self.engine) as db:
+            supervisor, agent, _second = self._users(db)
+            case = _case("INV-OUTSIDE-AUTO-RADIUS", supervisor.id)
+            now = datetime.now(timezone.utc)
+            work_date = now.astimezone(ZoneInfo("Asia/Manila")).date()
+            shift = AgentShift(
+                agent_id=agent.id,
+                work_date=work_date,
+                region_code=REGION,
+                is_available=True,
+                shift_starts_at=now - timedelta(minutes=5),
+                shift_ends_at=now + timedelta(hours=2),
+                start_latitude=14.6,
+                start_longitude=121.1,
+                max_visits=10,
+                max_open_cases=30,
+            )
+            db.add_all([case, shift])
+            db.commit()
+
+            with patch("app.workers.tasks.optimize_planning_run.apply_async") as dispatch:
+                automatic_run = queue_automatic_planning(db, REGION, supervisor, work_date)
+                self.assertIsNone(automatic_run)
+                self.assertIsNone(db.get(Investigation, case.id).assigned_agent_id)
+
+                assign(db, case.id, AssignmentCreate(agent_id=agent.id), supervisor)
+
+            assignment = db.query(InvestigationAssignment).filter_by(
+                investigation_id=case.id,
+                is_active=True,
+            ).one()
+            run = db.query(PlanningRun).filter_by(auto_assignment_id=assignment.id).one()
+            self.assertEqual(assignment.assignment_source, "manual")
+            self.assertEqual(db.get(Investigation, case.id).assigned_agent_id, agent.id)
+            self.assertEqual(run.investigation_ids, [case.id])
+            self.assertEqual(run.locked_assignments, [{"investigation_id": case.id, "agent_id": agent.id}])
+            dispatch.assert_called_once_with(args=[run.id], countdown=3)
+
+    def test_capacity_overflow_batches_after_the_queued_scope(self):
         with Session(self.engine) as db:
             supervisor, agent, _second = self._users(db)
             cases = [_case(f"INV-CAPACITY-{index:03d}", supervisor.id) for index in range(81)]
-            db.add_all([_shift(agent.id), cases[0]])
+            shift = _shift(agent.id)
+            shift.start_latitude = 14.55
+            shift.start_longitude = 121.05
+            now = datetime.now(timezone.utc)
+            shift.shift_starts_at = now - timedelta(minutes=5)
+            shift.shift_ends_at = now + timedelta(hours=2)
+            db.add_all([shift, cases[0]])
             db.commit()
 
             with patch("app.workers.tasks.optimize_planning_run.apply_async") as dispatch:
@@ -452,11 +512,10 @@ class AssignmentRouteRefreshTests(unittest.TestCase):
                 overflow = queue_automatic_planning(db, REGION, supervisor, _work_date())
 
             db.refresh(first)
-            self.assertEqual(first.status, "stale")
-            self.assertEqual(first.error_code, "planning_scope_capacity_exceeded")
-            self.assertEqual(overflow.status, "failed")
-            self.assertEqual(overflow.error_code, "planning_scope_capacity_exceeded")
-            self.assertEqual(len(overflow.investigation_ids), 81)
+            self.assertEqual(overflow.id, first.id)
+            self.assertEqual(first.status, "queued")
+            self.assertTrue(first.auto_replan_requested)
+            self.assertEqual(len(first.investigation_ids), 80)
             self.assertEqual(dispatch.call_count, 1)
 
     def test_reconciliation_skips_invalid_only_assignment_and_permanent_failure(self):
@@ -818,7 +877,7 @@ class AssignmentRouteRefreshTests(unittest.TestCase):
             )
             other_region_case = _case("INV-LEGACY-OTHER-REGION", supervisor.id, agent.id)
             other_region_case.region_code = "0400000000"
-            db.add_all([valid_case, unlocated_case, other_region_case, _shift(agent.id)])
+            db.add_all([valid_case, unlocated_case, other_region_case])
             db.flush()
             assignments = [
                 InvestigationAssignment(
@@ -829,7 +888,11 @@ class AssignmentRouteRefreshTests(unittest.TestCase):
                 )
                 for case in (valid_case, unlocated_case, other_region_case)
             ]
-            db.add_all(assignments)
+            shift = _shift(agent.id)
+            now = datetime.now(timezone.utc)
+            shift.shift_starts_at = now - timedelta(minutes=5)
+            shift.shift_ends_at = now + timedelta(hours=2)
+            db.add_all([*assignments, shift])
             db.commit()
 
             with _planning_clock(_work_date()), patch("app.workers.tasks.optimize_planning_run.apply_async") as queue:
@@ -843,17 +906,17 @@ class AssignmentRouteRefreshTests(unittest.TestCase):
             run = db.query(PlanningRun).filter_by(auto_assignment_id=assignments[0].id).one()
             self.assertEqual(refreshed.auto_route_status, "queued")
             self.assertEqual(run.agent_ids, [agent.id])
-            self.assertEqual(run.investigation_ids, [valid_case.id])
+            self.assertEqual(run.investigation_ids, [valid_case.id, other_region_case.id])
             self.assertEqual(
                 run.locked_assignments,
-                [{"investigation_id": valid_case.id, "agent_id": agent.id}],
+                [
+                    {"investigation_id": valid_case.id, "agent_id": agent.id},
+                    {"investigation_id": other_region_case.id, "agent_id": agent.id},
+                ],
             )
             self.assertEqual(
                 {(warning["investigation_id"], warning["reason"]) for warning in run.warnings},
-                {
-                    (unlocated_case.id, "location_unconfirmed"),
-                    (other_region_case.id, "region_mismatch"),
-                },
+                {(unlocated_case.id, "location_unconfirmed")},
             )
             self.assertEqual(
                 [db.get(Investigation, case.id).assigned_agent_id for case in (valid_case, unlocated_case, other_region_case)],
@@ -894,14 +957,22 @@ class AssignmentRouteRefreshTests(unittest.TestCase):
 
             class Solver:
                 def solve(self, payload):
+                    steps = [
+                        {"type": "start", "arrival": start_epoch, "waiting_time": 0},
+                    ]
+                    job_ids = [job["id"] for job in payload["jobs"]]
+                    arrival = start_epoch + 600
+                    for index, case_id in enumerate(job_ids):
+                        steps.append({"type": "job", "id": case_id, "arrival": arrival, "waiting_time": 0})
+                        arrival += 2700
+                        if index == 0 and len(job_ids) > 1:
+                            # Both assigned cases share a confirmed point.
+                            continue
+                    steps.append({"type": "end", "arrival": arrival})
                     return {
                         "routes": [{
                             "vehicle": agent.id,
-                            "steps": [
-                                {"type": "start", "arrival": start_epoch, "waiting_time": 0},
-                                {"type": "job", "id": valid_case.id, "arrival": start_epoch + 600, "waiting_time": 0},
-                                {"type": "end", "arrival": start_epoch + 3900},
-                            ],
+                            "steps": steps,
                         }],
                         "unassigned": [],
                     }
@@ -921,10 +992,7 @@ class AssignmentRouteRefreshTests(unittest.TestCase):
             self.assertEqual(db.get(PlanningRun, run.id).status, "ready")
             self.assertEqual(
                 {(warning["investigation_id"], warning["reason"]) for warning in db.get(PlanningRun, run.id).warnings},
-                {
-                    (unlocated_case.id, "location_unconfirmed"),
-                    (other_region_case.id, "region_mismatch"),
-                },
+                {(unlocated_case.id, "location_unconfirmed")},
             )
             with _planning_clock(_work_date()), patch(
                 "app.services.planning._database_now",
@@ -935,12 +1003,21 @@ class AssignmentRouteRefreshTests(unittest.TestCase):
             overview = planning_route_overview(db, _work_date(), REGION)
             agent_route = overview["agents"][0]
             self.assertEqual(agent_route["route_status"], "partially_published")
-            self.assertEqual([stop["investigation_id"] for stop in agent_route["stops"]], [valid_case.id])
+            self.assertEqual(
+                [stop["investigation_id"] for stop in agent_route["stops"]],
+                [valid_case.id, other_region_case.id],
+            )
 
     def test_overview_publishes_valid_stop_and_explains_blocked_assignments(self):
         with Session(self.engine) as db:
             supervisor, agent, _second = self._users(db)
             valid_case = _case("INV-OVERVIEW-VALID", supervisor.id, agent.id)
+            valid_case.latitude = 14.55
+            valid_case.longitude = 121.05
+            valid_case_cells = cells_for_point(valid_case.latitude, valid_case.longitude)
+            valid_case.h3_r7 = valid_case_cells["h3_r7"]
+            valid_case.h3_r8 = valid_case_cells["h3_r8"]
+            valid_case.h3_r9 = valid_case_cells["h3_r9"]
             unlocated_case = Investigation(
                 reference_number="INV-OVERVIEW-UNLOCATED",
                 first_name="Fictional",
@@ -953,10 +1030,18 @@ class AssignmentRouteRefreshTests(unittest.TestCase):
             other_region_case = _case("INV-OVERVIEW-OTHER-REGION", supervisor.id, agent.id)
             other_region_case.region_code = "0400000000"
             shift = _shift(agent.id)
+            now = datetime.now(timezone.utc)
+            shift.shift_starts_at = now - timedelta(minutes=5)
+            shift.shift_ends_at = now + timedelta(hours=2)
             db.add_all([valid_case, unlocated_case, other_region_case, shift])
             db.flush()
             db.add_all([
-                InvestigationAssignment(investigation_id=case.id, agent_id=agent.id, assigned_by_id=supervisor.id)
+                InvestigationAssignment(
+                    investigation_id=case.id,
+                    agent_id=agent.id,
+                    assigned_by_id=supervisor.id,
+                    assignment_source="automatic",
+                )
                 for case in (valid_case, unlocated_case, other_region_case)
             ])
             run = PlanningRun(
@@ -972,7 +1057,7 @@ class AssignmentRouteRefreshTests(unittest.TestCase):
             db.add(run)
             db.flush()
             shift.current_planning_run_id = run.id
-            geometry = {"type": "LineString", "coordinates": [[121.1, 14.6], [121.0, 14.5]]}
+            geometry = {"type": "LineString", "coordinates": [[121.1, 14.6], [121.05, 14.55]]}
             db.add_all([
                 PlanningItem(
                     planning_run_id=run.id,
@@ -1023,7 +1108,13 @@ class AssignmentRouteRefreshTests(unittest.TestCase):
                 status="running",
                 auto_publish=True,
             )
-            db.add_all([run, _shift(agent.id)])
+            shift = _shift(agent.id)
+            shift.start_latitude = 14.55
+            shift.start_longitude = 121.05
+            now = datetime.now(timezone.utc)
+            shift.shift_starts_at = now - timedelta(minutes=5)
+            shift.shift_ends_at = now + timedelta(hours=2)
+            db.add_all([run, shift])
             db.commit()
             run_id = run.id
 
@@ -1091,7 +1182,7 @@ class AssignmentRouteRefreshTests(unittest.TestCase):
             self.assertEqual(refreshed.id, run.id)
             self.assertTrue(refreshed.auto_replan_requested)
 
-    def test_missing_shift_rejects_manual_override_without_creating_assignment(self):
+    def test_missing_shift_keeps_manual_assignment_without_a_route(self):
         with Session(self.engine) as db:
             supervisor, agent, _second = self._users(db)
             case = _case("INV-AUTO-NO-SHIFT", supervisor.id)
@@ -1099,15 +1190,16 @@ class AssignmentRouteRefreshTests(unittest.TestCase):
             db.commit()
 
             with patch("app.workers.tasks.optimize_planning_run.apply_async") as queue:
-                with self.assertRaises(HTTPException) as raised:
-                    assign(db, case.id, AssignmentCreate(agent_id=agent.id), supervisor)
-            self.assertEqual(raised.exception.status_code, 409)
-            self.assertIsNone(db.get(Investigation, case.id).assigned_agent_id)
-            self.assertEqual(db.query(InvestigationAssignment).filter_by(investigation_id=case.id).count(), 0)
+                assign(db, case.id, AssignmentCreate(agent_id=agent.id), supervisor)
+            self.assertEqual(db.get(Investigation, case.id).assigned_agent_id, agent.id)
+            assignment = db.query(InvestigationAssignment).filter_by(investigation_id=case.id).one()
+            self.assertEqual(assignment.assignment_source, "manual")
+            self.assertEqual(assignment.auto_route_status, "unscheduled")
+            self.assertIn("no_routeable_assigned_work", assignment.auto_route_errors)
             self.assertEqual(queue.call_count, 0)
             self.assertEqual(db.query(PlanningRun).count(), 0)
 
-    def test_location_confirmation_queues_automatic_planning_once(self):
+    def test_manual_unassignment_requires_submit_before_automatic_planning(self):
         with Session(self.engine) as db:
             supervisor, agent, _second = self._users(db)
             case = Investigation(
@@ -1117,12 +1209,20 @@ class AssignmentRouteRefreshTests(unittest.TestCase):
                 region_code=REGION,
                 status="pending",
                 priority="normal",
+                manual_assignment_required=True,
             )
-            db.add_all([case, _shift(agent.id)])
+            shift = _shift(agent.id)
+            shift.start_latitude = 14.55
+            shift.start_longitude = 121.05
+            now = datetime.now(timezone.utc)
+            shift.shift_starts_at = now - timedelta(minutes=5)
+            shift.shift_ends_at = now + timedelta(hours=2)
+            db.add_all([case, shift])
             db.commit()
             case_id = case.id
 
-            with patch("app.workers.tasks.optimize_planning_run.apply_async") as queue:
+            with patch("app.workers.tasks.dispatch_planning_triggers_task.delay") as dispatch_trigger, \
+                    patch("app.workers.tasks.optimize_planning_run.apply_async") as queue:
                 confirmed = confirm_investigation_location(
                     case_id,
                     LocationConfirm(latitude=14.5, longitude=121.0, source="manual"),
@@ -1130,13 +1230,21 @@ class AssignmentRouteRefreshTests(unittest.TestCase):
                     supervisor,
                 )
                 self.assertTrue(confirmed.location_confirmed)
-                run = db.query(PlanningRun).filter_by(auto_publish=True).one()
+                self.assertTrue(confirmed.manual_assignment_required)
+                self.assertEqual(db.query(PlanningRun).count(), 0)
+                self.assertEqual(queue.call_count, 0)
+
+                submit_investigation_for_automatic_assignment(case_id, db, supervisor)
+                self.assertFalse(db.get(Investigation, case_id).manual_assignment_required)
+                run = queue_automatic_planning(db, REGION, supervisor, _work_date())
+                self.assertIsNotNone(run)
                 self.assertEqual(run.investigation_ids, [case_id])
                 self.assertEqual(run.agent_ids, [agent.id])
                 self.assertEqual(run.status, "queued")
+                dispatch_trigger.assert_called_once()
+                queue.assert_called_once_with(args=[run.id], countdown=3)
 
-                # A repeated confirmation of the same point does not enqueue
-                # duplicate automatic work.
+                # The same confirmed point does not enqueue duplicate planning.
                 confirm_investigation_location(
                     case_id,
                     LocationConfirm(latitude=14.5, longitude=121.0, source="manual"),

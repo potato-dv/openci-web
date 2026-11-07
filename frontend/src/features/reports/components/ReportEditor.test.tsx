@@ -129,7 +129,7 @@ describe("ReportEditor revisit action", () => {
     vi.clearAllMocks();
     api.getReport.mockResolvedValue(returnedReport);
     api.getReportVersions.mockResolvedValue([returnedReport]);
-    api.getRevisitRequest.mockResolvedValue(null);
+    api.getRevisitRequest.mockResolvedValue({ request: null, can_request: true });
     api.requestRevisit.mockResolvedValue(pendingRequest);
     routeApi.getAgentRoute.mockResolvedValue(null);
   });
@@ -144,13 +144,29 @@ describe("ReportEditor revisit action", () => {
   });
 
   it("keeps report submission disabled until a requested revisit route is published", async () => {
-    api.getRevisitRequest.mockResolvedValue(pendingRequest);
+    api.getRevisitRequest.mockResolvedValue({ request: pendingRequest, can_request: false });
     renderEditor();
 
     expect(await screen.findByText(/Submit after it is published/)).toBeInTheDocument();
     await waitFor(() =>
       expect(screen.queryByRole("button", { name: "Submit report" })).not.toBeInTheDocument(),
     );
+  });
+
+  it("does not fetch earlier report versions when history is denied but still uses revisit eligibility", async () => {
+    render(
+      <MemoryRouter>
+        <ReportEditor
+          token="token"
+          investigation={investigation}
+          onChanged={vi.fn()}
+          canViewEarlierReportVersions={false}
+        />
+      </MemoryRouter>,
+    );
+
+    expect(await screen.findByRole("button", { name: /request revisit route/i })).toBeInTheDocument();
+    expect(api.getReportVersions).not.toHaveBeenCalled();
   });
 
   it("enables report actions only for the current actionable stop", async () => {

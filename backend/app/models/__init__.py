@@ -9,5 +9,6 @@ from app.models.agent_schedule import AgentWorkProfile, AgentWeeklySchedule, Pla
 from app.models.agent_revisit import AgentRevisitRequest
 from app.models.auth_session import AuthSession, AuthRefreshToken
 from app.models.route_event import InvestigationRouteEvent
+from app.models.user_permission_override import UserPermissionOverride
 
-__all__ = ["ActivityLog", "InvestigationAssignment", "Investigation", "InvestigationReport", "InvestigationReview", "User", "AgentShift", "PlanningItem", "PlanningRun", "PlanningRoute", "AgentWorkProfile", "AgentWeeklySchedule", "PlanningTrigger", "AgentRevisitRequest", "AuthSession", "AuthRefreshToken", "InvestigationRouteEvent"]
+__all__ = ["ActivityLog", "InvestigationAssignment", "Investigation", "InvestigationReport", "InvestigationReview", "User", "AgentShift", "PlanningItem", "PlanningRun", "PlanningRoute", "AgentWorkProfile", "AgentWeeklySchedule", "PlanningTrigger", "AgentRevisitRequest", "AuthSession", "AuthRefreshToken", "InvestigationRouteEvent", "UserPermissionOverride"]

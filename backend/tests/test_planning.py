@@ -1,6 +1,7 @@
 import json
 import unittest
 from datetime import date, datetime, time, timedelta, timezone
+from math import ceil
 from types import SimpleNamespace
 from unittest.mock import Mock, patch
 from zoneinfo import ZoneInfo
@@ -744,11 +745,12 @@ class PlanningInputTests(unittest.TestCase):
         )
 
     def test_all_region_vehicle_uses_region_skills_and_validates_waiting_and_fixed_break(self):
-        work_date = date(2026, 11, 5)
-        shift_start = datetime(2026, 11, 5, 8, 0, tzinfo=timezone.utc)
-        visit_start = datetime(2026, 11, 5, 8, 15, tzinfo=timezone.utc)
-        break_start = datetime(2026, 11, 5, 12, 0, tzinfo=timezone.utc)
-        break_end = datetime(2026, 11, 5, 13, 0, tzinfo=timezone.utc)
+        now = datetime.now(timezone.utc).replace(microsecond=0)
+        work_date = now.astimezone(ZoneInfo("Asia/Manila")).date()
+        shift_start = now + timedelta(minutes=1)
+        visit_start = shift_start + timedelta(minutes=15)
+        break_start = shift_start + timedelta(hours=4)
+        break_end = break_start + timedelta(hours=1)
         case = SimpleNamespace(
             id=301,
             latitude=14.5,
@@ -764,8 +766,8 @@ class PlanningInputTests(unittest.TestCase):
             agent_id=7,
             work_date=work_date,
             region_code="ALL",
-            start_latitude=14.6,
-            start_longitude=121.1,
+            start_latitude=14.55,
+            start_longitude=121.05,
             start_location_label="Depot",
             end_latitude=None,
             end_longitude=None,
@@ -777,7 +779,7 @@ class PlanningInputTests(unittest.TestCase):
             max_open_cases=10,
             max_visits=8,
             shift_starts_at=shift_start,
-            shift_ends_at=datetime(2026, 11, 5, 17, 0, tzinfo=timezone.utc),
+            shift_ends_at=shift_start + timedelta(hours=9),
         )
 
         class Solver:
@@ -790,9 +792,9 @@ class PlanningInputTests(unittest.TestCase):
                         "vehicle": 7,
                         "steps": [
                             {"type": "start", "arrival": int(shift_start.timestamp()), "waiting_time": 0},
-                            {"type": "job", "id": case.id, "arrival": int(datetime(2026, 11, 5, 8, 10, tzinfo=timezone.utc).timestamp()), "waiting_time": 300},
-                            {"type": "break", "arrival": int(datetime(2026, 11, 5, 11, 55, tzinfo=timezone.utc).timestamp()), "waiting_time": 300, "service": 3600},
-                            {"type": "end", "arrival": int(datetime(2026, 11, 5, 13, 10, tzinfo=timezone.utc).timestamp())},
+                            {"type": "job", "id": case.id, "arrival": int((shift_start + timedelta(minutes=10)).timestamp()), "waiting_time": 300},
+                            {"type": "break", "arrival": int((break_start - timedelta(minutes=5)).timestamp()), "waiting_time": 300, "service": 3600},
+                            {"type": "end", "arrival": int((break_end + timedelta(minutes=10)).timestamp())},
                         ],
                     }],
                     "unassigned": [],
@@ -801,8 +803,8 @@ class PlanningInputTests(unittest.TestCase):
         solver = Solver()
         outcomes = _run_component(
             [0, 1],
-            {(14.5, 121.0): 0, (14.6, 121.1): 1},
-            [(14.5, 121.0), (14.6, 121.1)],
+            {(14.5, 121.0): 0, (14.55, 121.05): 1},
+            [(14.5, 121.0), (14.55, 121.05)],
             [[0, 600], [600, 0]],
             [[0, 5000], [5000, 0]],
             [case],
@@ -810,14 +812,15 @@ class PlanningInputTests(unittest.TestCase):
             {},
             {7: 0},
             solver,
+            radius_eligible_agent_ids_by_case={case.id: {7}},
         )
 
         job = solver.payload["jobs"][0]
         vehicle = solver.payload["vehicles"][0]
-        self.assertEqual(job["skills"], [_region_skill(case.region_code)])
+        self.assertEqual(job["skills"], [_region_skill(case.region_code), 10_000_001])
         self.assertEqual(
             vehicle["skills"],
-            [_region_skill(code) for code in sorted(catalog()["region_codes"])] + [1_000_007],
+            [_region_skill(code) for code in sorted(catalog()["region_codes"])] + [1_000_007, 10_000_001],
         )
         self.assertEqual(vehicle["breaks"], [{
             "id": 2_000_007,
@@ -1101,7 +1104,11 @@ class AutomaticPublicationTests(unittest.TestCase):
 
         engine = create_engine("sqlite:///:memory:")
         Base.metadata.create_all(engine)
-        work_date = datetime(2026, 11, 5, tzinfo=timezone.utc).date()
+        planning_now = datetime.now(timezone.utc)
+        work_date = planning_now.astimezone(ZoneInfo("Asia/Manila")).date()
+        shift_start = planning_now - timedelta(minutes=5)
+        visit_not_before = planning_now + timedelta(hours=3)
+        visit_due = visit_not_before + timedelta(hours=1, minutes=30)
 
         class Router:
             def __init__(self):
@@ -1140,9 +1147,9 @@ class AutomaticPublicationTests(unittest.TestCase):
                     "routes": [{
                         "vehicle": agent_b_id,
                         "steps": [
-                            {"type": "start", "arrival": int(datetime(2026, 11, 5, 8, tzinfo=timezone.utc).timestamp()), "waiting_time": 0},
-                            {"type": "job", "id": case_id, "arrival": int(datetime(2026, 11, 5, 11, tzinfo=timezone.utc).timestamp()), "waiting_time": 0},
-                            {"type": "end", "arrival": int(datetime(2026, 11, 5, 12, 10, tzinfo=timezone.utc).timestamp())},
+                            {"type": "start", "arrival": int(planning_now.timestamp()), "waiting_time": 0},
+                            {"type": "job", "id": case_id, "arrival": ceil(visit_not_before.timestamp()), "waiting_time": 0},
+                            {"type": "end", "arrival": int((visit_not_before + timedelta(hours=1, minutes=10)).timestamp())},
                         ],
                     }],
                     "unassigned": [],
@@ -1165,15 +1172,15 @@ class AutomaticPublicationTests(unittest.TestCase):
                 first_name="Fictional",
                 last_name="Case",
                 region_code="1300000000",
-                latitude=14.5,
-                longitude=121.0,
+                latitude=14.65,
+                longitude=121.15,
                 location_source="manual",
-                location_confirmed_at=datetime(2026, 11, 1, tzinfo=timezone.utc),
-                **cells_for_point(14.5, 121.0),
+                location_confirmed_at=planning_now,
+                **cells_for_point(14.65, 121.15),
                 status="pending",
                 priority="urgent",
-                visit_not_before_at=datetime(2026, 11, 5, 11, tzinfo=timezone.utc),
-                visit_due_at=datetime(2026, 11, 5, 12, 30, tzinfo=timezone.utc),
+                visit_not_before_at=visit_not_before,
+                visit_due_at=visit_due,
             )
             db.add(case)
             db.flush()
@@ -1184,8 +1191,8 @@ class AutomaticPublicationTests(unittest.TestCase):
                     work_date=work_date,
                     region_code="1300000000",
                     is_available=True,
-                    shift_starts_at=datetime(2026, 11, 5, 8, tzinfo=timezone.utc),
-                    shift_ends_at=datetime(2026, 11, 5, 10, tzinfo=timezone.utc),
+                    shift_starts_at=shift_start,
+                    shift_ends_at=planning_now + timedelta(hours=2),
                     start_latitude=14.6,
                     start_longitude=121.1,
                     max_visits=8,
@@ -1196,8 +1203,8 @@ class AutomaticPublicationTests(unittest.TestCase):
                     work_date=work_date,
                     region_code="1300000000",
                     is_available=True,
-                    shift_starts_at=datetime(2026, 11, 5, 8, tzinfo=timezone.utc),
-                    shift_ends_at=datetime(2026, 11, 5, 14, tzinfo=timezone.utc),
+                    shift_starts_at=shift_start,
+                    shift_ends_at=planning_now + timedelta(hours=6),
                     start_latitude=14.7,
                     start_longitude=121.2,
                     max_visits=5,
@@ -1208,8 +1215,8 @@ class AutomaticPublicationTests(unittest.TestCase):
                     work_date=work_date,
                     region_code="1300000000",
                     is_available=False,
-                    shift_starts_at=datetime(2026, 11, 5, 8, tzinfo=timezone.utc),
-                    shift_ends_at=datetime(2026, 11, 5, 17, tzinfo=timezone.utc),
+                    shift_starts_at=shift_start,
+                    shift_ends_at=planning_now + timedelta(hours=9),
                     start_latitude=14.8,
                     start_longitude=121.3,
                     max_visits=5,
@@ -1236,8 +1243,8 @@ class AutomaticPublicationTests(unittest.TestCase):
             self.assertEqual(vehicle_ids, {agent_a.id, agent_b_id})
             self.assertEqual(job["priority"], 100)
             self.assertEqual(job["time_windows"], [[
-                int(datetime(2026, 11, 5, 11, tzinfo=timezone.utc).timestamp()),
-                int(datetime(2026, 11, 5, 11, 45, tzinfo=timezone.utc).timestamp()),
+                ceil(visit_not_before.timestamp()),
+                int((visit_due - timedelta(seconds=case.service_duration_seconds)).timestamp()),
             ]])
             self.assertEqual(item.outcome, "assigned")
             self.assertEqual(item.agent_id, agent_b_id)
@@ -1333,7 +1340,9 @@ class AutomaticPublicationTests(unittest.TestCase):
 
         engine = create_engine("sqlite:///:memory:")
         Base.metadata.create_all(engine)
-        work_date = datetime(2026, 11, 4, tzinfo=timezone.utc).date()
+        planning_now = datetime.now(ZoneInfo("Asia/Manila"))
+        work_date = planning_now.date()
+        shift_start = planning_now.astimezone(timezone.utc) - timedelta(minutes=5)
 
         class Router:
             def __init__(self):
@@ -1392,10 +1401,10 @@ class AutomaticPublicationTests(unittest.TestCase):
                 work_date=work_date,
                 region_code="1300000000",
                 is_available=True,
-                shift_starts_at=datetime(2026, 11, 4, 0, tzinfo=timezone.utc),
-                shift_ends_at=datetime(2026, 11, 4, 9, tzinfo=timezone.utc),
-                start_latitude=14.6,
-                start_longitude=121.1,
+                shift_starts_at=shift_start,
+                shift_ends_at=shift_start + timedelta(hours=2),
+                start_latitude=14.501,
+                start_longitude=121.001,
                 max_visits=4,
                 max_open_cases=10,
             ))
@@ -1590,8 +1599,8 @@ class AutomaticPublicationTests(unittest.TestCase):
                 is_available=True,
                 shift_starts_at=datetime(2026, 11, 5, 0, tzinfo=timezone.utc),
                 shift_ends_at=datetime(2026, 11, 5, 9, tzinfo=timezone.utc),
-                start_latitude=14.6,
-                start_longitude=121.1,
+                start_latitude=14.55,
+                start_longitude=121.05,
                 max_visits=4,
                 max_open_cases=10,
             )

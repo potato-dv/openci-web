@@ -1,6 +1,8 @@
-from fastapi import APIRouter, Depends, HTTPException, Request, Response, status
+from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response, status
 from fastapi.responses import JSONResponse
 from sqlalchemy.orm import Session
+from sqlalchemy import func
+from sqlalchemy.exc import IntegrityError
 
 from app.config.settings import AUTH_REFRESH_COOKIE_SAMESITE, AUTH_REFRESH_COOKIE_SECURE
 from app.controllers.user import (
@@ -15,6 +17,10 @@ from app.controllers.user import (
 from app.database.session import get_db
 from app.schemas.user import UserActivationUpdate, UserCreate, UserResponse, UserLogin, UserRoleUpdate
 from app.models.user import User
+from app.models.activity import ActivityLog
+from app.models.user_permission_override import UserPermissionOverride
+from app.schemas.agent_permissions import AgentPermissionHistoryResponse, AgentPermissionOverrideMap, AgentPermissionState
+from app.services.agent_permissions import FEATURES_BY_CODE, effective_agent_permissions, permission_state
 from app.services.auth_sessions import (
     parse_session_id,
     record_interactive_activity,
@@ -111,6 +117,128 @@ def get_agents(
     db: Session = Depends(get_db),
 ):
     return get_all_agents(db)
+
+
+@router.get("/me/agent-permissions")
+def get_my_agent_permissions(
+    response: Response,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    if current_user.role != "agent":
+        raise HTTPException(status_code=403, detail="Agent permissions are available only to Agents")
+    response.headers["Cache-Control"] = "private, no-store"
+    return {"permissions": effective_agent_permissions(db, current_user)}
+
+
+def _get_agent_for_permissions(db: Session, agent_id: int) -> User:
+    agent = db.query(User).filter(User.id == agent_id, User.role == "agent").first()
+    if agent is None:
+        raise HTTPException(status_code=404, detail="Agent not found")
+    return agent
+
+
+@router.get("/{agent_id}/agent-permissions", response_model=AgentPermissionState)
+def get_agent_permissions(
+    agent_id: int,
+    response: Response,
+    db: Session = Depends(get_db),
+    _: User = Depends(require_roles("admin")),
+):
+    response.headers["Cache-Control"] = "private, no-store"
+    return permission_state(db, _get_agent_for_permissions(db, agent_id))
+
+
+@router.put("/{agent_id}/agent-permissions", response_model=AgentPermissionState)
+def set_agent_permissions(
+    agent_id: int,
+    data: AgentPermissionOverrideMap,
+    response: Response,
+    db: Session = Depends(get_db),
+    actor: User = Depends(require_roles("admin")),
+):
+    agent = _get_agent_for_permissions(db, agent_id)
+    rows = db.query(UserPermissionOverride).filter(
+        UserPermissionOverride.user_id == agent.id,
+    ).with_for_update().all()
+    old_overrides = {code: "inherit" for code in FEATURES_BY_CODE}
+    old_overrides.update({row.feature_code: row.effect for row in rows})
+    old_effective = {
+        code: (old_overrides[code] == "allow" if old_overrides[code] != "inherit" else FEATURES_BY_CODE[code]["default_allowed"])
+        for code in FEATURES_BY_CODE
+    }
+    row_by_code = {row.feature_code: row for row in rows}
+    new_overrides = dict(data.overrides)
+    for code, effect in new_overrides.items():
+        row = row_by_code.get(code)
+        if effect == "inherit":
+            if row is not None:
+                db.delete(row)
+        elif row is None:
+            db.add(UserPermissionOverride(user_id=agent.id, feature_code=code, effect=effect))
+        else:
+            row.effect = effect
+    new_effective = {
+        code: (new_overrides[code] == "allow" if new_overrides[code] != "inherit" else FEATURES_BY_CODE[code]["default_allowed"])
+        for code in FEATURES_BY_CODE
+    }
+    if old_overrides != new_overrides or old_effective != new_effective:
+        db.add(ActivityLog(
+            actor_id=actor.id,
+            action="agent.permissions_changed",
+            object_type="user",
+            object_id=agent.id,
+            details={
+                "old_overrides": old_overrides,
+                "new_overrides": new_overrides,
+                "old_effective": old_effective,
+                "new_effective": new_effective,
+            },
+        ))
+    try:
+        db.commit()
+    except IntegrityError as error:
+        db.rollback()
+        raise HTTPException(status_code=409, detail="Agent permissions changed concurrently; reload and try again") from error
+    response.headers["Cache-Control"] = "private, no-store"
+    return permission_state(db, agent)
+
+
+@router.get("/{agent_id}/agent-permissions/history", response_model=AgentPermissionHistoryResponse)
+def get_agent_permission_history(
+    agent_id: int,
+    response: Response,
+    limit: int = Query(default=25, ge=1, le=100),
+    offset: int = Query(default=0, ge=0),
+    db: Session = Depends(get_db),
+    _: User = Depends(require_roles("admin")),
+):
+    agent = _get_agent_for_permissions(db, agent_id)
+    query = db.query(ActivityLog).filter(
+        ActivityLog.action == "agent.permissions_changed",
+        ActivityLog.object_type == "user",
+        ActivityLog.object_id == agent.id,
+    )
+    total = query.with_entities(func.count(ActivityLog.id)).scalar() or 0
+    rows = query.order_by(ActivityLog.created_at.desc(), ActivityLog.id.desc()).offset(offset).limit(limit).all()
+    response.headers["Cache-Control"] = "private, no-store"
+    return {
+        "items": [
+            {
+                "id": row.id,
+                "actor_name": row.actor.name if row.actor else None,
+                "created_at": row.created_at,
+                "old_overrides": row.details.get("old_overrides", {}),
+                "new_overrides": row.details.get("new_overrides", {}),
+                "old_effective": row.details.get("old_effective", {}),
+                "new_effective": row.details.get("new_effective", {}),
+            }
+            for row in rows
+        ],
+        "total": total,
+        "limit": limit,
+        "offset": offset,
+    }
 
 
 # Admin only: Get a specific user

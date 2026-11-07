@@ -1,3 +1,4 @@
+import { Table, TableHeader, TableBody, TableRow, TableHead, TableCell } from "@/components/ui/table";
 import { useCallback, useState } from "react";
 import { Link, useSearchParams } from "react-router";
 import { useSession } from "@/app/session";
@@ -5,6 +6,11 @@ import { cancelNoContactAttempt, getNoContactReviewQueue, getReportQueue } from 
 import type { NoContactReviewItem } from "@/types/api";
 import { useResource } from "@/hooks/useResource";
 import { PageHeader } from "@/components/layout/PageHeader";
+import {
+  DataFilterBar,
+  dataFilterFieldClassName,
+  dataFilterSearchClassName,
+} from "@/components/data/DataFilterBar";
 import { Pagination } from "@/components/data/Pagination";
 import { Modal } from "@/components/ui/Modal";
 import { PriorityBadge } from "@/components/ui/PriorityBadge";
@@ -114,8 +120,8 @@ export function ReportsPage() {
             { value: "approved", label: "Approved" },
           ]}
         />
-        <div className="data-filters">
-          <label className="filter-search">
+        <DataFilterBar>
+          <label className={dataFilterSearchClassName}>
             Search
             <input
               type="search"
@@ -124,7 +130,7 @@ export function ReportsPage() {
               onChange={(event) => update("q", event.target.value)}
             />
           </label>
-          <label>
+          <label className={dataFilterFieldClassName}>
             Sort
             <select
               value={params.get("sort") ?? "submitted_at"}
@@ -135,7 +141,7 @@ export function ReportsPage() {
               <option value="reference_number">Reference</option>
             </select>
           </label>
-          <label>
+          <label className={dataFilterFieldClassName}>
             Order
             <select
               value={params.get("direction") ?? "asc"}
@@ -145,7 +151,7 @@ export function ReportsPage() {
               <option value="desc">Newest first</option>
             </select>
           </label>
-        </div>
+        </DataFilterBar>
         {resource.error && (
           <InlineAlert onRetry={resource.refresh}>{resource.error}</InlineAlert>
         )}
@@ -154,23 +160,33 @@ export function ReportsPage() {
         ) : resource.data?.items.length ? (
           <>
             <div className="table-wrap desktop-data">
-              <table>
-                <thead>
-                  <tr>
-                    <th scope="col">Investigation</th>
-                    <th scope="col">Agent</th>
-                    <th scope="col">Version</th>
-                    <th scope="col">Visit outcome</th>
-                    <th scope="col">Priority</th>
-                    <th scope="col">Submitted / updated</th>
-                    <th scope="col">Status</th>
-                    <th scope="col">Action</th>
-                  </tr>
-                </thead>
-                <tbody>
+              <Table className="min-w-[1040px] table-fixed">
+                <colgroup>
+                  <col className="w-[22%]" />
+                  <col className="w-[12%]" />
+                  <col className="w-[7%]" />
+                  <col className="w-[13%]" />
+                  <col className="w-[9%]" />
+                  <col className="w-[15%]" />
+                  <col className="w-[12%]" />
+                  <col className="w-[10%]" />
+                </colgroup>
+                <TableHeader>
+                  <TableRow>
+                    <TableHead scope="col">Investigation</TableHead>
+                    <TableHead scope="col">Agent</TableHead>
+                    <TableHead scope="col" className="text-right">Version</TableHead>
+                    <TableHead scope="col">Visit outcome</TableHead>
+                    <TableHead scope="col">Priority</TableHead>
+                    <TableHead scope="col">Submitted / updated</TableHead>
+                    <TableHead scope="col">Status</TableHead>
+                    <TableHead scope="col" className="text-right">Action</TableHead>
+                  </TableRow>
+                </TableHeader>
+                <TableBody>
                   {resource.data.items.map((item) => (
-                    <tr key={item.report_id}>
-                      <td>
+                    <TableRow key={item.report_id}>
+                      <TableCell>
                         <Link
                           className="record-identity"
                           to={`/investigations/${item.investigation_id}#report`}
@@ -178,16 +194,16 @@ export function ReportsPage() {
                           <strong>{item.reference_number}</strong>
                           <span>{item.subject_name}</span>
                         </Link>
-                      </td>
-                      <td>{item.assigned_agent_name ?? item.author_name}</td>
-                      <td>{item.version}</td>
-                      <td className="capitalize">
+                      </TableCell>
+                      <TableCell>{item.assigned_agent_name ?? item.author_name}</TableCell>
+                      <TableCell className="text-right">{item.version}</TableCell>
+                      <TableCell className="capitalize">
                         {item.visit_outcome?.replaceAll("_", " ") ?? "Not recorded"}
-                      </td>
-                      <td>
+                      </TableCell>
+                      <TableCell>
                         <PriorityBadge priority={item.priority} />
-                      </td>
-                      <td>
+                      </TableCell>
+                      <TableCell>
                         {date(
                           value === "submitted"
                             ? item.submitted_at
@@ -200,9 +216,9 @@ export function ReportsPage() {
                               : item.updated_at,
                           )}
                         </small>
-                      </td>
-                      <td>{item.status.replaceAll("_", " ")}</td>
-                      <td>
+                      </TableCell>
+                      <TableCell><span className={`status-badge status-${item.status.replaceAll("_", "-")}`}>{item.status.replaceAll("_", " ")}</span></TableCell>
+                      <TableCell className="text-right">
                         <Link
                           to={`/investigations/${item.investigation_id}#report`}
                         >
@@ -210,11 +226,11 @@ export function ReportsPage() {
                             ? "Review report"
                             : "View report"}
                         </Link>
-                      </td>
-                    </tr>
+                      </TableCell>
+                    </TableRow>
                   ))}
-                </tbody>
-              </table>
+                </TableBody>
+              </Table>
             </div>
             <ul className="workspace-mobile-list" aria-label="Report queue">
               {resource.data.items.map((item) => {
@@ -312,23 +328,33 @@ export function ReportsPage() {
                   </p>
                 )}
                 <div className="table-wrap desktop-data">
-                  <table>
-                    <thead>
-                      <tr>
-                        <th scope="col">Investigation</th>
-                        <th scope="col">Assigned agent</th>
-                        <th scope="col">Attempt</th>
-                        <th scope="col">Reason</th>
-                        <th scope="col">Attempted</th>
-                        <th scope="col">State</th>
-                        <th scope="col">Next workday</th>
-                        <th scope="col">Action</th>
-                      </tr>
-                    </thead>
-                    <tbody>
+                  <Table className="min-w-[1040px] table-fixed">
+                    <colgroup>
+                      <col className="w-[20%]" />
+                      <col className="w-[13%]" />
+                      <col className="w-[7%]" />
+                      <col className="w-[16%]" />
+                      <col className="w-[13%]" />
+                      <col className="w-[12%]" />
+                      <col className="w-[11%]" />
+                      <col className="w-[8%]" />
+                    </colgroup>
+                    <TableHeader>
+                      <TableRow>
+                        <TableHead scope="col">Investigation</TableHead>
+                        <TableHead scope="col">Assigned agent</TableHead>
+                        <TableHead scope="col" className="text-right">Attempt</TableHead>
+                        <TableHead scope="col">Reason</TableHead>
+                        <TableHead scope="col">Attempted</TableHead>
+                        <TableHead scope="col">State</TableHead>
+                        <TableHead scope="col">Next workday</TableHead>
+                        <TableHead scope="col" className="text-right">Action</TableHead>
+                      </TableRow>
+                    </TableHeader>
+                    <TableBody>
                       {noContactResource.data.items.map((item) => (
-                        <tr key={item.event_id}>
-                          <td>
+                        <TableRow key={item.event_id}>
+                          <TableCell>
                             <Link
                               className="record-identity"
                               to={`/investigations/${item.investigation_id}#report`}
@@ -336,20 +362,20 @@ export function ReportsPage() {
                               <strong>{item.reference_number}</strong>
                               <span>{item.subject_name}</span>
                             </Link>
-                          </td>
-                          <td>{item.assigned_agent_name ?? "Unassigned"}</td>
-                          <td>{item.retry_number + 1}</td>
-                          <td>
+                          </TableCell>
+                          <TableCell>{item.assigned_agent_name ?? "Unassigned"}</TableCell>
+                          <TableCell className="text-right">{item.retry_number + 1}</TableCell>
+                          <TableCell>
                             <span className="capitalize">{item.reason.replaceAll("_", " ")}</span>
-                            {item.notes && <small className="block">{item.notes}</small>}
-                          </td>
-                          <td>
+                            {item.notes && <small className="mt-1 line-clamp-2" title={item.notes}>{item.notes}</small>}
+                          </TableCell>
+                          <TableCell>
                             {date(item.attempted_at)}
                             <small className="block">{time(item.attempted_at)} PHT</small>
-                          </td>
-                          <td className="capitalize">{item.state.replaceAll("_", " ")}</td>
-                          <td>{item.next_work_date ?? "Not scheduled"}</td>
-                          <td>
+                          </TableCell>
+                          <TableCell><span className={`status-badge status-${item.state.replaceAll("_", "-")}`}>{item.state.replaceAll("_", " ")}</span></TableCell>
+                          <TableCell>{item.next_work_date ?? "Not scheduled"}</TableCell>
+                          <TableCell className="text-right">
                             <RowActions label={item.reference_number}>
                               <Link
                                 role="menuitem"
@@ -372,11 +398,11 @@ export function ReportsPage() {
                                 </button>
                               )}
                             </RowActions>
-                          </td>
-                        </tr>
+                          </TableCell>
+                        </TableRow>
                       ))}
-                    </tbody>
-                  </table>
+                    </TableBody>
+                  </Table>
                 </div>
                 <ul className="workspace-mobile-list" aria-label="No-contact attempts awaiting review">
                   {noContactResource.data.items.map((item) => (

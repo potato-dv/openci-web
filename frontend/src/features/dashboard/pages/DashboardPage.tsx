@@ -169,21 +169,6 @@ export function DashboardPage() {
           ))}
         </div>
       )}
-      <section className="content-card">
-        <div className="section-title">
-          <h2>Recent investigations</h2>
-          <Link to="/investigations">View all</Link>
-        </div>
-        {data.loading ? (
-          <Skeleton />
-        ) : data.data?.items.length ? (
-          <InvestigationTable items={data.data.items} />
-        ) : (
-          <EmptyState title="No investigations yet">
-            Your recent investigation records will appear here.
-          </EmptyState>
-        )}
-      </section>
       {(manage || PLANNING_ENABLED) && (
         <section className="content-card dashboard-queue">
           <div className="section-title">
@@ -283,6 +268,21 @@ export function DashboardPage() {
           )}
         </section>
       )}
+      <section className="content-card">
+        <div className="section-title">
+          <h2>Recent investigations</h2>
+          <Link to="/investigations">View all</Link>
+        </div>
+        {data.loading ? (
+          <Skeleton />
+        ) : data.data?.items.length ? (
+          <InvestigationTable items={data.data.items} />
+        ) : (
+          <EmptyState title="No investigations yet">
+            Your recent investigation records will appear here.
+          </EmptyState>
+        )}
+      </section>
     </>
   );
 }

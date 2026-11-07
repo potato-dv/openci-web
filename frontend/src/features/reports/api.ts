@@ -1,4 +1,4 @@
-import type { Investigation, NoContactReviewItem, PageResult, Report, ReportInput, ReportQueueItem, RevisitRequest, Review, RouteAttempt } from "@/types/api";
+import type { Investigation, InvestigationActivityItem, NoContactReviewItem, PageResult, Report, ReportInput, ReportQueueItem, RevisitRequest, RevisitRequestState, Review, RouteAttempt } from "@/types/api";
 import { requestJson } from "@/services/http";
 
 type RouteAction = { work_date: string; route_revision: number };
@@ -104,8 +104,15 @@ export function submitReport(token: string, investigationId: number, routeAction
 }
 
 export function getRevisitRequest(token: string, investigationId: number) {
-  return requestJson<RevisitRequest | null>(
+  return requestJson<RevisitRequestState>(
     `/investigations/${investigationId}/revisit-request`,
+    { token },
+  );
+}
+
+export function getInvestigationActivity(token: string, investigationId: number) {
+  return requestJson<{ items: InvestigationActivityItem[] }>(
+    `/investigations/${investigationId}/activity-history`,
     { token },
   );
 }

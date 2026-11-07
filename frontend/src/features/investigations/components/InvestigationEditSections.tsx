@@ -29,7 +29,7 @@ type Props = {
 };
 
 const editCardClass =
-  "min-w-0 rounded-xl border border-openci-border bg-openci-surface p-4 shadow-sm md:p-6";
+  "min-w-0 rounded-xl border border-openci-border bg-openci-surface p-4 md:p-6";
 
 function EditSectionHeading({
   id,

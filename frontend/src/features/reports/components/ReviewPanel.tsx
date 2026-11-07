@@ -43,29 +43,58 @@ function ReportDetails({ report }: { report: Report }) {
           <strong>{displayValue(report.visit_outcome)}</strong>
         </div>
       </div>
-      <dl className="report-detail-grid">
-        <div>
-          <dt>Investigation outcome</dt>
-          <dd>
+      <dl className="report-detail-grid m-0 grid grid-cols-2 gap-4 bg-transparent p-0 max-[520px]:grid-cols-1">
+        <div className="border-t border-openci-border pt-3">
+          <dt className="text-xs text-openci-text-muted">Investigation outcome</dt>
+          <dd className="m-0 mt-1 break-words text-[13px] text-openci-text capitalize">
             <span className={`report-fact-badge is-${(report.outcome ?? "unknown").replaceAll("_", "-")}`}>
               {displayValue(report.outcome)}
             </span>
           </dd>
         </div>
-        <div>
-          <dt>Occupancy</dt>
-          <dd>
+        <div className="border-t border-openci-border pt-3">
+          <dt className="text-xs text-openci-text-muted">Occupancy</dt>
+          <dd className="m-0 mt-1 break-words text-[13px] text-openci-text capitalize">
             <span className={`report-fact-badge is-${(report.occupancy_status ?? "unknown").replaceAll("_", "-")}`}>
               {displayValue(report.occupancy_status)}
             </span>
           </dd>
         </div>
-        <div><dt>Visited at</dt><dd>{report.visited_at ? new Date(report.visited_at).toLocaleString() : "—"}</dd></div>
-        <div><dt>Verified address</dt><dd>{report.verified_address || "—"}</dd></div>
-        <div><dt>Author</dt><dd>{formatUserName(report.author_name)}</dd></div>
+        <div className="border-t border-openci-border pt-3">
+          <dt className="text-xs text-openci-text-muted">Visited at</dt>
+          <dd className="m-0 mt-1 break-words text-[13px] text-openci-text capitalize">
+            {report.visited_at ? new Date(report.visited_at).toLocaleString() : "—"}
+          </dd>
+        </div>
+        <div className="border-t border-openci-border pt-3">
+          <dt className="text-xs text-openci-text-muted">Verified address</dt>
+          <dd className="m-0 mt-1 break-words text-[13px] text-openci-text capitalize">
+            {report.verified_address || "—"}
+          </dd>
+        </div>
+        <div className="border-t border-openci-border pt-3">
+          <dt className="text-xs text-openci-text-muted">Author</dt>
+          <dd className="m-0 mt-1 break-words text-[13px] text-openci-text capitalize">
+            {formatUserName(report.author_name)}
+          </dd>
+        </div>
       </dl>
-      {report.property_condition && <div className="report-copy"><h4>Property condition</h4><p>{report.property_condition}</p></div>}
-      {report.interaction_notes && <div className="report-copy"><h4>Interaction notes</h4><p>{report.interaction_notes}</p></div>}
+      {report.property_condition && (
+        <div className="report-copy mt-4 max-w-[72ch]">
+          <h4 className="mb-2 text-[13px] font-semibold text-openci-text">Property condition</h4>
+          <p className="m-0 break-words whitespace-pre-wrap text-[13px] leading-relaxed text-openci-text-muted">
+            {report.property_condition}
+          </p>
+        </div>
+      )}
+      {report.interaction_notes && (
+        <div className="report-copy mt-4 max-w-[72ch]">
+          <h4 className="mb-2 text-[13px] font-semibold text-openci-text">Interaction notes</h4>
+          <p className="m-0 break-words whitespace-pre-wrap text-[13px] leading-relaxed text-openci-text-muted">
+            {report.interaction_notes}
+          </p>
+        </div>
+      )}
       <section className="report-findings" aria-label="Agent findings">
         <div className="report-findings-heading">
           <span className="report-findings-icon" aria-hidden="true">
@@ -170,28 +199,28 @@ export function ReviewPanel({ token, investigation, onChanged }: ReviewPanelProp
       {loading && <p className="muted">Loading report and review history…</p>}
       {!loading && !report && <p className="empty-state">No report submitted yet.</p>}
       {investigation.active_no_contact_event && (
-        <section className="report-copy" aria-label="Open no-contact attempt">
-          <h4>Open no-contact attempt</h4>
-          <dl className="report-detail-grid">
+        <section className="report-copy mt-4 max-w-[72ch]" aria-label="Open no-contact attempt">
+          <h4 className="mb-2 text-[13px] font-semibold text-openci-text">Open no-contact attempt</h4>
+          <dl className="report-detail-grid m-0 grid grid-cols-2 gap-4 bg-transparent p-0 max-[520px]:grid-cols-1">
             <div>
-              <dt>Reason</dt>
-              <dd>{investigation.active_no_contact_event.reason.replaceAll("_", " ")}</dd>
+              <dt className="text-xs text-openci-text-muted">Reason</dt>
+              <dd className="m-0 mt-1 break-words text-[13px] text-openci-text capitalize">{investigation.active_no_contact_event.reason.replaceAll("_", " ")}</dd>
             </div>
             <div>
-              <dt>Attempt</dt>
-              <dd>{investigation.active_no_contact_event.retry_number + 1}</dd>
+              <dt className="text-xs text-openci-text-muted">Attempt</dt>
+              <dd className="m-0 mt-1 break-words text-[13px] text-openci-text capitalize">{investigation.active_no_contact_event.retry_number + 1}</dd>
             </div>
             <div>
-              <dt>State</dt>
-              <dd>{investigation.active_no_contact_event.state.replaceAll("_", " ")}</dd>
+              <dt className="text-xs text-openci-text-muted">State</dt>
+              <dd className="m-0 mt-1 break-words text-[13px] text-openci-text capitalize">{investigation.active_no_contact_event.state.replaceAll("_", " ")}</dd>
             </div>
             <div>
-              <dt>Work date</dt>
-              <dd>{investigation.active_no_contact_event.work_date}</dd>
+              <dt className="text-xs text-openci-text-muted">Work date</dt>
+              <dd className="m-0 mt-1 break-words text-[13px] text-openci-text capitalize">{investigation.active_no_contact_event.work_date}</dd>
             </div>
             <div>
-              <dt>Attempted at</dt>
-              <dd>
+              <dt className="text-xs text-openci-text-muted">Attempted at</dt>
+              <dd className="m-0 mt-1 break-words text-[13px] text-openci-text capitalize">
                 {new Intl.DateTimeFormat("en-PH", {
                   dateStyle: "medium",
                   timeStyle: "short",
@@ -201,7 +230,9 @@ export function ReviewPanel({ token, investigation, onChanged }: ReviewPanelProp
             </div>
           </dl>
           {investigation.active_no_contact_event.notes && (
-            <p>{investigation.active_no_contact_event.notes}</p>
+            <p className="m-0 break-words whitespace-pre-wrap text-[13px] leading-relaxed text-openci-text-muted">
+              {investigation.active_no_contact_event.notes}
+            </p>
           )}
         </section>
       )}
@@ -210,10 +241,10 @@ export function ReviewPanel({ token, investigation, onChanged }: ReviewPanelProp
       {versions.length > 1 && (
         <div className="workflow-history report-version-history">
           <h4>Report versions</h4>
-          <div className="report-version-list">
+          <div className="report-version-list grid gap-1.5">
             {versions.map((version) => (
-              <details key={version.id} className="report-version-item">
-                <summary>Version {version.version} · {version.status.replaceAll("_", " ")} · {formatUserName(version.author_name)}</summary>
+              <details key={version.id} className="report-version-item rounded-md border border-openci-border px-2.5 py-2">
+                <summary className="cursor-pointer text-xs text-openci-text-muted open:mb-2 open:text-openci-text open:font-medium">Version {version.version} · {version.status.replaceAll("_", " ")} · {formatUserName(version.author_name)}</summary>
                 <ReportDetails report={version} />
               </details>
             ))}

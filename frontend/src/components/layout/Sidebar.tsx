@@ -10,6 +10,7 @@ import {
   MapPinned,
   PanelLeftClose,
   PanelLeftOpen,
+  ShieldCheck,
 } from "lucide-react";
 import type { User } from "../../types/api";
 import { PLANNING_ENABLED } from "../../config";
@@ -84,6 +85,7 @@ export function Sidebar({
                 `nav-item ${isActive ? "active" : ""}`
               }
               onClick={onNavigate}
+              title={collapsed ? label : undefined}
             >
               <Icon
                 className="nav-icon"
@@ -116,6 +118,16 @@ export function Sidebar({
             >
               <Settings2 className="nav-icon" aria-hidden="true" />
               <span className="nav-item-label">User Management</span>
+            </NavLink>
+            <NavLink
+              to="/access-control"
+              className={({ isActive }) =>
+                `nav-item ${isActive ? "active" : ""}`
+              }
+              onClick={onNavigate}
+            >
+              <ShieldCheck className="nav-icon" aria-hidden="true" />
+              <span className="nav-item-label">Access Control</span>
             </NavLink>
           </div>
         )}

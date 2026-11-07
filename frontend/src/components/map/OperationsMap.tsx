@@ -143,6 +143,7 @@ export function AgentMarker({
     published: "Route published",
     failed: "Route update failed",
     partially_published: "Some routes need attention",
+    unscheduled: "Assigned work is not on the current route",
     needs_refresh: "Route needs an update",
   }[agent.route_status ?? "none"];
   const description = [
@@ -163,7 +164,7 @@ export function AgentMarker({
         String(index + 1),
         selected,
         true,
-        routeColor(agent.id),
+        routeColor(),
         "#fff",
         false,
         offsetX,
@@ -257,21 +258,19 @@ export function InvestigationMarker({
         included,
         color,
         item.priority === "high" ? "#302400" : "#fff",
-        ["under_review", "returned_for_correction", "completed", "cancelled"].includes(
-          item.status,
-        ),
+        [
+          "under_review",
+          "returned_for_correction",
+          "completed",
+          "cancelled",
+        ].includes(item.status),
         offsetX,
       )}
       title={markerLabel}
       keyboard
       eventHandlers={{
         add: (event) =>
-          event.target
-            .getElement()
-            ?.setAttribute(
-              "aria-label",
-              markerLabel,
-            ),
+          event.target.getElement()?.setAttribute("aria-label", markerLabel),
         click: () => onSelect?.({ type: "investigation", id: item.id }),
       }}
     >
@@ -518,30 +517,30 @@ function ViewportMarkers({
   return (
     <>
       {visibleAgents.map((agent) => (
-          <AgentMarker
-            key={agent.id}
-            agent={agent}
-            index={agents.findIndex((item) => item.id === agent.id)}
-            offsetX={markerOffsets.get(`agent:${agent.id}`) ?? 0}
-            selected={selection?.type === "agent" && selection.id === agent.id}
-            onSelect={onSelect}
-          />
-        ))}
+        <AgentMarker
+          key={agent.id}
+          agent={agent}
+          index={agents.findIndex((item) => item.id === agent.id)}
+          offsetX={markerOffsets.get(`agent:${agent.id}`) ?? 0}
+          selected={selection?.type === "agent" && selection.id === agent.id}
+          onSelect={onSelect}
+        />
+      ))}
       {visibleInvestigations.map((item) => (
-          <InvestigationMarker
-            key={item.id}
-            item={item}
-            color={investigationPriorityColor(item.priority)}
-            offsetX={markerOffsets.get(`investigation:${item.id}`) ?? 0}
-            included={
-              selection?.type !== "agent" || item.agent_id === selection.id
-            }
-            selected={
-              selection?.type === "investigation" && selection.id === item.id
-            }
-            onSelect={onSelect}
-          />
-        ))}
+        <InvestigationMarker
+          key={item.id}
+          item={item}
+          color={investigationPriorityColor(item.priority)}
+          offsetX={markerOffsets.get(`investigation:${item.id}`) ?? 0}
+          included={
+            selection?.type !== "agent" || item.agent_id === selection.id
+          }
+          selected={
+            selection?.type === "investigation" && selection.id === item.id
+          }
+          onSelect={onSelect}
+        />
+      ))}
       {visibleDepot && (
         <DepotMarker
           key={`depot:${visibleDepot.id}`}
@@ -896,7 +895,8 @@ function MapControls({
         label="Fit to route"
         onClick={fitRoute}
         disabled={
-          !routesVisible || !routesInFocus.some(
+          !routesVisible ||
+          !routesInFocus.some(
             (route) => route.geometry || route.completed_geometry,
           )
         }
@@ -1162,11 +1162,17 @@ export function MapLegend({
             className="map-priority-key"
             aria-label="Investigation priority colors"
           >
-            <i style={{ backgroundColor: investigationPriorityColor("normal") }} />
+            <i
+              style={{ backgroundColor: investigationPriorityColor("normal") }}
+            />
             Normal
-            <i style={{ backgroundColor: investigationPriorityColor("high") }} />
+            <i
+              style={{ backgroundColor: investigationPriorityColor("high") }}
+            />
             High
-            <i style={{ backgroundColor: investigationPriorityColor("urgent") }} />
+            <i
+              style={{ backgroundColor: investigationPriorityColor("urgent") }}
+            />
             Urgent
           </span>
         </>
@@ -1183,30 +1189,32 @@ export function MapLegend({
       {routedAgents.length > 0 && (
         <>
           <strong>Road routes</strong>
-          {routedAgents.filter((route) => route.geometry).map((route) => {
-            const style = routeStyles.get(route.agent_id) ?? {
-              color: routeColor(route.agent_id),
-            };
-            const [dashLength, gapLength] = (style.dashArray ?? "")
-              .split(" ")
-              .map(Number);
-            return (
-              <span key={route.agent_id}>
-                <i
-                  className="map-route-key"
-                  style={{
-                    backgroundColor: style.dashArray
-                      ? "transparent"
-                      : style.color,
-                    backgroundImage: style.dashArray
-                      ? `repeating-linear-gradient(to right, ${style.color} 0 ${dashLength}px, transparent ${dashLength}px ${dashLength + gapLength}px)`
-                      : "none",
-                  }}
-                />
-                {route.agent_name} · Remaining route
-              </span>
-            );
-          })}
+          {routedAgents
+            .filter((route) => route.geometry)
+            .map((route) => {
+              const style = routeStyles.get(route.agent_id) ?? {
+                color: routeColor(),
+              };
+              const [dashLength, gapLength] = (style.dashArray ?? "")
+                .split(" ")
+                .map(Number);
+              return (
+                <span key={route.agent_id}>
+                  <i
+                    className="map-route-key"
+                    style={{
+                      backgroundColor: style.dashArray
+                        ? "transparent"
+                        : style.color,
+                      backgroundImage: style.dashArray
+                        ? `repeating-linear-gradient(to right, ${style.color} 0 ${dashLength}px, transparent ${dashLength}px ${dashLength + gapLength}px)`
+                        : "none",
+                    }}
+                  />
+                  {route.agent_name} · Remaining route
+                </span>
+              );
+            })}
           {routedAgents.some((route) => route.completed_geometry) && (
             <span>
               <i
@@ -1336,7 +1344,7 @@ export function OperationsMap({
               route={route}
               style={
                 lineStyles.get(route.agent_id) ?? {
-                  color: routeColor(route.agent_id),
+                  color: routeColor(),
                 }
               }
               selected={highlightedAgentId === route.agent_id}
@@ -1363,7 +1371,7 @@ export function OperationsMap({
       </MapContainer>
       <div className="map-layer-control">
         <IconButton
-          className="transition-all duration-150 hover:border-openci-accent! hover:bg-openci-surface-selected! hover:text-openci-accent-strong! hover:shadow-lg! focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-openci-accent"
+          className="transition-[background-color,border-color,color] duration-150 hover:border-openci-accent! hover:bg-openci-surface-selected! hover:text-openci-accent-strong! focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-openci-accent"
           label="Map layers and style"
           onClick={() => setLayersOpen((value) => !value)}
           aria-expanded={layersOpen}

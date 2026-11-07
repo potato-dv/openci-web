@@ -18,13 +18,18 @@ from app.services.investigation import (
     get_report_versions,
     review_investigation_report,
     restore_investigation,
+    resume_automatic_assignment,
     save_report_draft,
     submit_report,
+    unassign_investigation,
     update_investigation,
     )
 
 from fastapi import HTTPException, status
+from app.models.assignment import InvestigationAssignment
 from app.models.user import User
+from app.models.agent_revisit import AgentRevisitRequest
+from app.models.report import InvestigationReport
 from app.schemas.assignment import AssignmentCreate
 from app.schemas.report import ReportUpsert
 from app.schemas.review import ReviewCreate
@@ -39,6 +44,32 @@ def read_revisit_request(db: Session, investigation_id: int, current_user: User)
     from app.services.agent_revisits import get_agent_revisit_request
 
     return get_agent_revisit_request(db, investigation.id, investigation.assigned_agent_id)
+
+
+def read_revisit_request_state(db: Session, investigation_id: int, current_user: User):
+    investigation = get_one(db, investigation_id, current_user)
+    if current_user.role == "agent" and investigation.assigned_agent_id != current_user.id:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Only the assigned agent can view this revisit status")
+    from app.services.agent_revisits import can_request_agent_revisit, get_agent_revisit_request
+
+    assigned_agent_id = investigation.assigned_agent_id
+    request = None
+    if assigned_agent_id:
+        if current_user.role == "agent":
+            returned_report = db.query(InvestigationReport).filter(
+                InvestigationReport.investigation_id == investigation.id,
+                InvestigationReport.status == "returned_for_correction",
+            ).order_by(InvestigationReport.version.desc(), InvestigationReport.id.desc()).first()
+            if returned_report is not None:
+                request = db.query(AgentRevisitRequest).filter(
+                    AgentRevisitRequest.report_id == returned_report.id,
+                ).order_by(AgentRevisitRequest.created_at.desc(), AgentRevisitRequest.id.desc()).first()
+        else:
+            request = get_agent_revisit_request(db, investigation.id, assigned_agent_id)
+    return {
+        "request": request,
+        "can_request": current_user.role == "agent" and can_request_agent_revisit(db, investigation, current_user),
+    }
 
 
 def create_revisit_request(db: Session, investigation_id: int, current_user: User):
@@ -167,15 +198,34 @@ def assign(
 
         if should_refresh_route:
             from app.services.planning import queue_assignment_route_refresh
+            try:
+                refreshed = queue_assignment_route_refresh(
+                    db,
+                    assignment.id,
+                    [item for item in (previous_agent_id, agent.id) if item is not None],
+                    current_user,
+                )
+                if refreshed is not None:
+                    assignment = refreshed
+            except Exception:
+                # Assignment persistence is authoritative. Route generation is
+                # a separate workflow and must not make a saved override look
+                # like a failed assignment to the caller.
+                db.rollback()
+                assignment = db.query(InvestigationAssignment).filter(
+                    InvestigationAssignment.id == assignment.id,
+                ).first()
+                if assignment is not None:
+                    from datetime import datetime
+                    from zoneinfo import ZoneInfo
 
-            refreshed = queue_assignment_route_refresh(
-                db,
-                assignment.id,
-                [item for item in (previous_agent_id, agent.id) if item is not None],
-                current_user,
-            )
-            if refreshed is not None:
-                assignment = refreshed
+                    assignment.auto_route_work_date = datetime.now(ZoneInfo("Asia/Manila")).date()
+                    assignment.auto_route_agent_ids = [
+                        item for item in (previous_agent_id, agent.id) if item is not None
+                    ]
+                    assignment.auto_route_status = "failed"
+                    assignment.auto_route_errors = ["route_refresh_could_not_be_queued"]
+                    db.commit()
         return assignment
     except ValueError as error:
         raise HTTPException(
@@ -185,6 +235,115 @@ def assign(
     except IntegrityError as error:
         db.rollback()
         raise HTTPException(status_code=409, detail="The investigation was assigned concurrently; refresh and try again") from error
+
+
+def unassign(
+    db: Session,
+    investigation_id: int,
+    current_user: User,
+):
+    investigation = get_one(db, investigation_id, current_user)
+    previous_agent_id = investigation.assigned_agent_id
+    try:
+        investigation = unassign_investigation(db, investigation, current_user)
+        from app.services.activity import record_activity
+
+        record_activity(
+            db,
+            current_user,
+            "investigation.unassigned",
+            "investigation",
+            investigation.id,
+            {
+                "previous_agent_id": previous_agent_id,
+                "manual_assignment_required": True,
+            },
+        )
+        try:
+            from app.workers.tasks import dispatch_planning_triggers_task
+
+            dispatch_planning_triggers_task.delay()
+        except Exception:
+            import logging
+
+            logging.getLogger("app.planning").exception(
+                "Could not dispatch planning triggers after manual unassignment"
+            )
+        return investigation
+    except ValueError as error:
+        db.rollback()
+        messages = {
+            "Only pending or assigned investigations can be unassigned": (
+                409,
+                "Only pending or assigned investigations can be unassigned.",
+            ),
+            "Investigation is not assigned to an agent": (
+                409,
+                "This investigation does not have an active agent assignment.",
+            ),
+        }
+        code, message = messages.get(str(error), (409, "Could not unassign this investigation."))
+        raise HTTPException(status_code=code, detail=message) from error
+    except IntegrityError as error:
+        db.rollback()
+        raise HTTPException(
+            status_code=409,
+            detail="The assignment changed at the same time; refresh and try again.",
+        ) from error
+
+
+def submit_automatic_assignment(
+    db: Session,
+    investigation_id: int,
+    current_user: User,
+):
+    investigation = get_one(db, investigation_id, current_user)
+    try:
+        investigation = resume_automatic_assignment(db, investigation, current_user)
+        from app.services.activity import record_activity
+
+        record_activity(
+            db,
+            current_user,
+            "investigation.automatic_assignment_requested",
+            "investigation",
+            investigation.id,
+        )
+        try:
+            from app.workers.tasks import dispatch_planning_triggers_task
+
+            dispatch_planning_triggers_task.delay()
+        except Exception:
+            import logging
+
+            logging.getLogger("app.planning").exception(
+                "Could not dispatch planning trigger after automatic assignment request"
+            )
+        return investigation
+    except ValueError as error:
+        db.rollback()
+        messages = {
+            "Only unassigned pending investigations can be submitted for automatic assignment": (
+                409,
+                "Only unassigned pending investigations can be submitted for automatic assignment.",
+            ),
+            "Investigation is not waiting for automatic assignment": (
+                409,
+                "This investigation is not paused for manual assignment.",
+            ),
+            "Confirm the investigation location before submitting automatic assignment": (
+                409,
+                "Confirm the investigation location before submitting it for automatic assignment.",
+            ),
+        }
+        code, message = messages.get(str(error), (409, "Could not submit automatic assignment."))
+        raise HTTPException(status_code=code, detail=message) from error
+    except IntegrityError as error:
+        db.rollback()
+        raise HTTPException(
+            status_code=409,
+            detail="The investigation changed at the same time; refresh and try again.",
+        ) from error
 
 
 def get_assignments(
@@ -210,6 +369,10 @@ def get_investigation_report_versions(
     current_user: User,
 ):
     investigation = get_one(db, investigation_id, current_user)
+    if current_user.role == "agent":
+        from app.services.agent_permissions import require_agent_feature
+
+        require_agent_feature(db, current_user, "investigation.view_own_history")
     return get_report_versions(db, investigation.id)
 
 
@@ -345,6 +508,11 @@ def get_one(
             status_code=status.HTTP_403_FORBIDDEN,
             detail="You do not have access to this investigation",
         )
+
+    if current_user.role == "agent" and investigation.status == "completed":
+        from app.services.agent_permissions import require_agent_feature
+
+        require_agent_feature(db, current_user, "investigation.view_own_history")
 
     from app.services.route_workflow import get_active_no_contact_event
 

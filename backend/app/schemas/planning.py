@@ -529,7 +529,7 @@ class PlanningRouteOverviewAgentResponse(BaseModel):
     shift: AgentShiftResponse | None = None
     route_status: Literal[
         "none", "queued", "running", "published", "failed",
-        "partially_published", "needs_refresh",
+        "partially_published", "needs_refresh", "unscheduled",
     ] = "none"
     refresh_errors: list[str] = Field(default_factory=list)
     planning_warnings: list[PlanningRouteWarning] = Field(default_factory=list)
@@ -558,6 +558,8 @@ class PlanningDashboardCaseState(BaseModel):
     reason: str | None = None
     planning_run_id: int | None = None
     assignment_source: Literal["automatic", "manual"] | None = None
+    routing_status: Literal["pending", "scheduled", "unscheduled"] = "pending"
+    routing_reason: str | None = None
 
 
 class PlanningDashboardResponse(BaseModel):
@@ -598,6 +600,14 @@ class AgentRosterResponse(BaseModel):
     shift: AgentShiftResponse | None
     assigned_workload_count: int
     visit_workload_count: int
+    configured_region_code: str | None = None
+    configured_region_name: str | None = None
+    depot_label: str | None = None
+    depot_latitude: float | None = None
+    depot_longitude: float | None = None
+    depot_distance_metres: float | None = None
+    outside_configured_region: bool | None = None
+    outside_service_radius: bool | None = None
     schedule_enabled: bool = False
     work_profile_set: bool = False
     availability_day: AvailabilityDayResponse | None = None

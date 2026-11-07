@@ -9,6 +9,7 @@ from app.routes.activity import router as activity_router
 from app.routes.planning import router as planning_router
 
 from app.routes.report import router as report_router
+from app.routes.agent_permissions import router as agent_permissions_router
 
 app = FastAPI()
 
@@ -26,6 +27,7 @@ app.include_router(location_router)
 app.include_router(activity_router)
 app.include_router(planning_router)
 app.include_router(report_router)
+app.include_router(agent_permissions_router)
 
 @app.get("/")
 def root():

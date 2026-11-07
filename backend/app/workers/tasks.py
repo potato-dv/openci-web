@@ -131,6 +131,7 @@ def reconcile_missing_routes(_task):
             Investigation.deleted_at.is_(None),
             Investigation.status == "pending",
             Investigation.assigned_agent_id.is_(None),
+            Investigation.manual_assignment_required.is_(False),
             Investigation.location_confirmed_at.is_not(None),
             Investigation.latitude.is_not(None),
             Investigation.longitude.is_not(None),

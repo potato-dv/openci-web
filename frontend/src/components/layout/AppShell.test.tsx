@@ -1,6 +1,6 @@
 import { render, waitFor } from "@testing-library/react";
 import { MemoryRouter, Route, Routes } from "react-router";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { SessionContext } from "../../app/session";
 import type { User } from "../../types/api";
 import { AppShell } from "./AppShell";
@@ -13,10 +13,22 @@ const supervisor: User = {
   is_active: true,
 };
 
-function renderAt(path: string) {
+const agent: User = {
+  id: 2,
+  name: "Test Agent",
+  email: "agent@example.test",
+  role: "agent",
+  is_active: true,
+};
+
+function renderAt(
+  path: string,
+  user: User = supervisor,
+  refreshAgentPermissions?: () => Promise<void>,
+) {
   return render(
     <SessionContext.Provider
-      value={{ token: "test-token", user: supervisor, logout() {} }}
+      value={{ token: "test-token", user, logout() {}, refreshAgentPermissions }}
     >
       <MemoryRouter initialEntries={[path]}>
         <Routes>
@@ -44,5 +56,21 @@ describe("AppShell browser title", () => {
     renderAt("/route-planning");
 
     await waitFor(() => expect(document.title).toBe("route planning · Collector"));
+  });
+
+  it("refreshes Agent permissions while the app remains open", async () => {
+    vi.useFakeTimers();
+    const refreshAgentPermissions = vi.fn().mockResolvedValue(undefined);
+
+    try {
+      renderAt("/dashboard", agent, refreshAgentPermissions);
+      expect(refreshAgentPermissions).toHaveBeenCalledTimes(1);
+
+      await vi.advanceTimersByTimeAsync(15_000);
+
+      expect(refreshAgentPermissions).toHaveBeenCalledTimes(2);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 });

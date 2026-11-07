@@ -14,6 +14,7 @@ export default defineConfig(({ mode }) => {
     '/activity-logs',
     '/planning',
     '/reports',
+    '/agent-permissions',
   ]
 
   return {

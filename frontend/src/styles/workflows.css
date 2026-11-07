@@ -36,7 +36,7 @@
 }
 
 .topbar-account-trigger:focus-visible {
-  outline: 2px solid var(--color-accent);
+  outline: 2px solid var(--openci-brand);
   outline-offset: 2px;
 }
 
@@ -172,6 +172,17 @@
   border: 1px solid #ddd6fe;
 }
 
+.status-submitted {
+  color: #4a50a4;
+  background: #eef0ff;
+}
+
+.status-approved,
+.status-carried-over {
+  color: var(--color-success);
+  background: var(--color-success-surface);
+}
+
 .status-returned-for-correction {
   color: #a16207;
   background: #fef3c7;
@@ -214,11 +225,6 @@
 }
 
 /* Investigation detail and embedded workflow panels */
-.details-layout {
-  display: grid;
-  gap: 12px;
-}
-
 .breadcrumbs ol {
   display: flex;
   align-items: center;
@@ -238,7 +244,7 @@
 
 .breadcrumb-link {
   padding: 0;
-  color: var(--color-accent);
+  color: var(--openci-brand);
   background: transparent;
   border: 0;
   font-size: inherit;
@@ -255,7 +261,6 @@
   color: var(--color-text-muted);
 }
 
-.details-summary,
 .workflow-panel {
   padding: 16px;
   background: var(--color-surface);
@@ -271,49 +276,12 @@
   margin-bottom: 14px;
 }
 
-.section-heading h2,
-.details-page-heading h1 {
+.section-heading h2 {
   margin: 0;
   color: var(--color-text);
   font-size: 15px;
   font-weight: 600;
   letter-spacing: -0.015em;
-}
-
-.details-page-heading {
-  display: flex;
-  align-items: flex-start;
-  justify-content: space-between;
-  gap: 12px;
-  min-width: 0;
-}
-
-.details-page-heading h1 {
-  overflow-wrap: anywhere;
-}
-
-.details-page-identity {
-  display: flex;
-  min-width: 0;
-  flex-direction: column;
-  align-items: flex-start;
-}
-
-.details-page-controls {
-  display: flex;
-  flex: 0 0 auto;
-  align-items: center;
-  justify-content: flex-end;
-  gap: 9px;
-  flex-wrap: wrap;
-}
-
-.details-page-heading .details-reference {
-  margin: 3px 0 0;
-  color: var(--color-text-muted);
-  font-size: 12px;
-  font-weight: 550;
-  letter-spacing: 0.01em;
 }
 
 .section-heading h3 {
@@ -326,40 +294,6 @@
 .section-heading p {
   margin: 3px 0 0;
   font-size: 12px;
-}
-
-.details-summary p {
-  margin: 3px 0 0;
-  color: var(--color-text-muted);
-  font-size: 12px;
-}
-
-.details-grid {
-  display: grid;
-  grid-template-columns: repeat(4, minmax(0, 1fr));
-  gap: 14px;
-  margin: 16px 0 0;
-  padding-top: 13px;
-  border-top: 1px solid var(--color-border);
-}
-
-.details-grid dt {
-  color: var(--color-text-muted);
-  font-size: 12px;
-  font-weight: 500;
-}
-
-.details-grid dd {
-  margin: 4px 0 0;
-  color: var(--color-text);
-  font-size: 12px;
-  overflow-wrap: anywhere;
-}
-
-.details-actions {
-  display: flex;
-  gap: 7px;
-  flex-wrap: wrap;
 }
 
 .workflow-form-row {
@@ -387,7 +321,8 @@
 }
 
 .assignment-route-status.is-failed,
-.assignment-route-status.is-partially_published {
+.assignment-route-status.is-partially_published,
+.assignment-route-status.is-unscheduled {
   background: var(--color-warning-surface);
   border-color: var(--color-warning-border);
 }
@@ -423,89 +358,6 @@
   min-height: 36px;
 }
 
-.report-fields {
-  display: grid;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
-  gap: 10px;
-  margin-bottom: 12px;
-}
-
-.report-fields label {
-  display: grid;
-  min-width: 0;
-  gap: 5px;
-  color: var(--color-text-muted);
-  font-size: 12px;
-  font-weight: 550;
-}
-
-.report-detail-grid {
-  display: grid;
-  grid-template-columns: repeat(3, minmax(0, 1fr));
-  gap: 10px;
-  margin: 0 0 12px;
-  padding: 10px;
-  background: var(--color-surface-muted);
-  border: 1px solid var(--color-border);
-  border-radius: 6px;
-}
-
-.report-detail-grid dt {
-  color: var(--color-text-muted);
-  font-size: 12px;
-}
-
-.report-detail-grid dd {
-  margin: 3px 0 0;
-  color: var(--color-text);
-  font-size: 12px;
-  overflow-wrap: anywhere;
-  text-transform: capitalize;
-}
-
-.report-copy {
-  margin-top: 11px;
-}
-
-.report-copy h4 {
-  margin: 0 0 4px;
-  color: var(--color-text);
-  font-size: 12px;
-  font-weight: 600;
-}
-
-.report-copy p {
-  margin: 0;
-  color: var(--color-text-muted);
-  font-size: 12px;
-  line-height: 1.5;
-  overflow-wrap: anywhere;
-  white-space: pre-wrap;
-}
-
-.report-version-list {
-  display: grid;
-  gap: 6px;
-}
-
-.report-version-item {
-  padding: 8px 10px;
-  border: 1px solid var(--color-border);
-  border-radius: 6px;
-}
-
-.report-version-item summary {
-  color: var(--color-text-muted);
-  cursor: pointer;
-  font-size: 12px;
-}
-
-.report-version-item[open] summary {
-  margin-bottom: 10px;
-  color: var(--color-text);
-  font-weight: 550;
-}
-
 .workflow-panel select,
 .workflow-panel textarea {
   width: 100%;
@@ -533,6 +385,10 @@
 }
 
 @media (max-width: 520px) {
+  .investigation-assignment-panel > .section-heading .danger-button {
+    min-height: 44px;
+  }
+
   .assignment-route-status {
     flex-direction: column;
     align-items: stretch;
@@ -835,7 +691,7 @@
 }
 
 .inline-link-button:hover {
-  color: var(--color-accent);
+  color: var(--openci-brand);
 }
 
 .trash-table {
@@ -955,4 +811,178 @@
 .row-actions-menu button:disabled {
   color: var(--color-text-muted);
   cursor: not-allowed;
+}
+.history-access-heading {
+  display: grid;
+  gap: 8px;
+}
+
+.history-access-title {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.history-access-title svg {
+  flex: 0 0 auto;
+  color: var(--color-text-muted);
+}
+
+.history-access-title h3 {
+  margin: 0;
+  color: var(--color-text);
+  font-size: 15px;
+  font-weight: 600;
+  line-height: 1.3;
+}
+
+.history-access-agent {
+  margin: 0;
+  color: var(--color-text-muted);
+  font-size: 14px;
+  line-height: 1.45;
+}
+
+.history-access-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(10rem, 14rem);
+  align-items: center;
+  gap: 24px;
+  margin-top: 16px;
+}
+
+.history-access-info h4 {
+  margin: 0;
+  color: var(--color-text);
+  font-size: 14px;
+  font-weight: 600;
+  line-height: 1.4;
+}
+
+.history-access-info p {
+  max-width: 72ch;
+  margin: 4px 0 0;
+  color: var(--color-text-muted);
+  font-size: 13px;
+  line-height: 1.5;
+}
+
+.history-access-choices {
+  display: flex;
+  width: 100%;
+  gap: 4px;
+  margin: 0;
+  padding: 0;
+  border: 0;
+}
+
+.history-access-choice {
+  position: relative;
+  display: flex;
+  flex: 1 1 0;
+  min-width: 0;
+  min-height: 38px;
+  align-items: center;
+  cursor: pointer;
+}
+
+.history-access-choice input {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  margin: 0;
+  opacity: 0;
+  cursor: pointer;
+}
+
+.history-access-choice span {
+  display: flex;
+  width: 100%;
+  min-width: 0;
+  min-height: 38px;
+  align-items: center;
+  justify-content: center;
+  padding: 7px 12px;
+  border-radius: 999px;
+  color: var(--color-text-muted);
+  font-size: 14px;
+  font-weight: 550;
+  transition:
+    background-color 150ms ease,
+    color 150ms ease;
+}
+
+.history-access-choice input:checked + span {
+  background: var(--color-surface-muted);
+  color: var(--color-text);
+}
+
+.history-access-choice:hover input:not(:checked) + span {
+  background: var(--color-bg);
+  color: var(--color-text);
+}
+
+.history-access-choice input:focus-visible + span {
+  outline: 2px solid var(--color-accent-strong);
+  outline-offset: 2px;
+}
+
+.history-access-effective {
+  margin-top: 16px;
+  padding-top: 14px;
+  border-top: 1px solid var(--color-border);
+}
+
+.history-access-effective h4 {
+  margin: 0;
+  color: var(--color-text);
+  font-size: 14px;
+  font-weight: 600;
+}
+
+.history-access-effective p {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin: 10px 0 0;
+  color: var(--color-text);
+  font-size: 14px;
+  line-height: 1.45;
+}
+
+.history-access-effective p svg {
+  flex: 0 0 auto;
+}
+
+.history-access-effective .is-allowed svg {
+  color: var(--color-success);
+}
+
+.history-access-effective .is-denied svg {
+  color: var(--color-danger);
+}
+
+.history-access-pending {
+  margin: 6px 0 0 !important;
+  color: var(--color-warning) !important;
+  font-size: 12px !important;
+  font-weight: 600;
+}
+
+@media (max-width: 680px) {
+  .history-access-row {
+    grid-template-columns: 1fr;
+    gap: 8px;
+  }
+
+  .history-access-choice,
+  .history-access-choice span {
+    min-height: 44px;
+  }
+
+  .history-access-choices {
+    width: min(100%, 14rem);
+    justify-self: start;
+  }
 }

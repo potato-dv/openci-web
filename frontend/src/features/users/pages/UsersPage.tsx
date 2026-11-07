@@ -1,3 +1,4 @@
+import { Table, TableHeader, TableBody, TableRow, TableHead, TableCell } from "@/components/ui/table";
 import { useCallback, useState } from "react";
 import { useSearchParams } from "react-router";
 import { useSession } from "@/app/session";
@@ -11,7 +12,7 @@ import { PageHeader } from "@/components/layout/PageHeader";
 import { UserCreateForm } from "@/features/users/components/UserCreateForm";
 import { RowActions } from "@/components/ui/RowActions";
 import { Modal } from "@/components/ui/Modal";
-import { Button, InlineAlert, Skeleton } from "@/components/ui/Primitives";
+import { Button, EmptyState, InlineAlert, Skeleton } from "@/components/ui/Primitives";
 import type { User, UserRole } from "@/types/api";
 export function UsersPage() {
   const { token, user } = useSession();
@@ -39,6 +40,36 @@ export function UsersPage() {
       setBusy(false);
     }
   }
+  function accountActions(item: User) {
+    return (
+      <RowActions label={item.name}>
+        <button
+          type="button"
+          role="menuitem"
+          disabled={busy}
+          onClick={() => {
+            setEditing(item);
+            setRole(item.role);
+            setError("");
+          }}
+        >
+          Edit role
+        </button>
+        <button
+          type="button"
+          role="menuitem"
+          disabled={busy || item.id === user.id}
+          onClick={() =>
+            void mutate(() =>
+              updateUserActivation(token, item.id, !item.is_active),
+            )
+          }
+        >
+          {item.is_active ? "Deactivate" : "Activate"}
+        </button>
+      </RowActions>
+    );
+  }
   return (
     <>
       <PageHeader
@@ -52,74 +83,73 @@ export function UsersPage() {
       />
       {error && !editing && <InlineAlert>{error}</InlineAlert>}
       <section className="content-card">
+        <div className="section-title">
+          <h2>Accounts</h2>
+          {resource.data && <span className="text-xs text-openci-text-muted">{resource.data.length} total</span>}
+        </div>
         {resource.error && (
           <InlineAlert onRetry={resource.refresh}>{resource.error}</InlineAlert>
         )}
         {resource.loading ? (
           <Skeleton />
-        ) : (
-          <div className="table-wrap">
-            <table>
-              <thead>
-                <tr>
-                  <th>Name</th>
-                  <th>Email</th>
-                  <th>Role</th>
-                  <th>Account status</th>
-                  <th>Actions</th>
-                </tr>
-              </thead>
-              <tbody>
+        ) : resource.data?.length ? (
+          <>
+          <div className="table-wrap desktop-data">
+            <Table className="min-w-[680px] table-fixed">
+              <colgroup>
+                <col className="w-[24%]" />
+                <col className="w-[35%]" />
+                <col className="w-[16%]" />
+                <col className="w-[17%]" />
+                <col className="w-[8%]" />
+              </colgroup>
+              <TableHeader>
+                <TableRow>
+                  <TableHead scope="col">Name</TableHead>
+                  <TableHead scope="col">Email</TableHead>
+                  <TableHead scope="col">Role</TableHead>
+                  <TableHead scope="col">Account status</TableHead>
+                  <TableHead scope="col" className="text-right">Actions</TableHead>
+                </TableRow>
+              </TableHeader>
+              <TableBody>
                 {resource.data?.map((item) => (
-                  <tr key={item.id}>
-                    <td>{item.name}</td>
-                    <td>{item.email}</td>
-                    <td className="capitalize">{item.role}</td>
-                    <td>
+                  <TableRow key={item.id}>
+                    <TableCell className="font-medium">{item.name}</TableCell>
+                    <TableCell className="truncate text-openci-text-muted" title={item.email}>{item.email}</TableCell>
+                    <TableCell className="capitalize">{item.role}</TableCell>
+                    <TableCell>
                       <span
                         className={`status-badge account-${item.is_active ? "active" : "inactive"}`}
                       >
                         {item.is_active ? "Active" : "Inactive"}
                       </span>
-                    </td>
-                    <td>
-                      <RowActions label={item.name}>
-                        <button
-                          type="button"
-                          role="menuitem"
-                          disabled={busy}
-                          onClick={() => {
-                            setEditing(item);
-                            setRole(item.role);
-                            setError("");
-                          }}
-                        >
-                          Edit role
-                        </button>
-                        <button
-                          type="button"
-                          role="menuitem"
-                          disabled={busy || item.id === user.id}
-                          onClick={() =>
-                            void mutate(() =>
-                              updateUserActivation(
-                                token,
-                                item.id,
-                                !item.is_active,
-                              ),
-                            )
-                          }
-                        >
-                          {item.is_active ? "Deactivate" : "Activate"}
-                        </button>
-                      </RowActions>
-                    </td>
-                  </tr>
+                    </TableCell>
+                    <TableCell className="text-right">{accountActions(item)}</TableCell>
+                  </TableRow>
                 ))}
-              </tbody>
-            </table>
+              </TableBody>
+            </Table>
           </div>
-        )}
+          <ul className="workspace-mobile-list" aria-label="User accounts">
+            {resource.data.map((item) => (
+              <li key={item.id}>
+                <div className="mobile-row-heading">
+                  <strong>{item.name}</strong>
+                  {accountActions(item)}
+                </div>
+                <span className="mobile-row-meta">{item.email}</span>
+                <dl className="mobile-row-facts">
+                  <div><dt>Role</dt><dd className="capitalize">{item.role}</dd></div>
+                  <div><dt>Account</dt><dd><span className={`status-badge account-${item.is_active ? "active" : "inactive"}`}>{item.is_active ? "Active" : "Inactive"}</span></dd></div>
+                </dl>
+              </li>
+            ))}
+          </ul>
+          </>
+        ) : !resource.error ? (
+          <EmptyState title="No accounts yet">Create an account to give your team access to Collector.</EmptyState>
+        ) : null}
       </section>
       <UserCreateForm
         token={token}

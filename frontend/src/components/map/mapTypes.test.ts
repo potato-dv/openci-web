@@ -24,8 +24,7 @@ it("uses the same solid Google blue for every route regardless of ordering", () 
   const firstOrder = routeLineStyles([route(7), route(42)]);
   const reverseOrder = routeLineStyles([route(42), route(7)]);
 
-  expect(routeColor(7)).toBe("#4285f4");
-  expect(routeColor(42)).toBe("#4285f4");
+  expect(routeColor()).toBe("#4285f4");
   expect(firstOrder.get(7)).toEqual({ color: "#4285f4" });
   expect(firstOrder.get(42)).toEqual(reverseOrder.get(42));
 });

@@ -5,12 +5,15 @@ import {
   assignInvestigation,
   getAssignments,
   retryInvestigationRoute,
+  submitAutomaticAssignment,
+  unassignInvestigation,
 } from "@/features/investigations/api";
 import { getAgentRoster } from "@/features/agents/api";
 import type { AgentRosterRow, Assignment, AssignmentRouteRefresh, Investigation } from "@/types/api";
 import { formatUserName } from "@/utils/userName";
 import { routeRefreshErrorCopy } from "@/utils/routeRefresh";
 import { manilaToday } from "@/utils/format";
+import { ConfirmDialog } from "@/components/ui/Primitives";
 
 type AssignmentPanelProps = {
   token: string;
@@ -24,12 +27,16 @@ export function AssignmentPanel({
   onChanged,
 }: AssignmentPanelProps) {
   const canAssign = ["pending", "assigned"].includes(investigation.status);
-  const [eligibleAgents, setEligibleAgents] = useState<AgentRosterRow[]>([]);
+  const [agents, setAgents] = useState<AgentRosterRow[]>([]);
   const [assignments, setAssignments] = useState<Assignment[]>([]);
   const [agentId, setAgentId] = useState("");
   const [note, setNote] = useState("");
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
+  const [unassigning, setUnassigning] = useState(false);
+  const [submittingAutomatic, setSubmittingAutomatic] = useState(false);
+  const [automaticAssignmentMessage, setAutomaticAssignmentMessage] = useState("");
+  const [confirmUnassign, setConfirmUnassign] = useState(false);
   const [retrying, setRetrying] = useState(false);
   const [error, setError] = useState("");
   const activeAssignment = useMemo(
@@ -48,28 +55,16 @@ export function AssignmentPanel({
 
       try {
         const params = new URLSearchParams({ work_date: manilaToday() });
-        if (investigation.region_code) params.set("region_code", investigation.region_code);
+        params.set("investigation_id", String(investigation.id));
         const [rosterData, assignmentData] = await Promise.all([
-          canAssign && investigation.region_code
+          canAssign
             ? getAgentRoster(token, params)
             : Promise.resolve([]),
           getAssignments(token, investigation.id),
         ]);
 
         if (!cancelled) {
-          setEligibleAgents(rosterData.filter((row) => {
-            const shift = row.shift;
-            const isCurrentAgent = row.agent.id === investigation.assigned_agent_id;
-            return Boolean(
-              row.agent.is_active &&
-              shift?.is_available &&
-              shift.region_code === investigation.region_code &&
-              (isCurrentAgent || (
-                row.assigned_workload_count < shift.max_open_cases &&
-                row.visit_workload_count < shift.max_visits
-              )),
-            );
-          }));
+          setAgents(rosterData.filter((row) => row.agent.is_active));
           setAssignments(assignmentData);
         }
       } catch (err) {
@@ -90,7 +85,7 @@ export function AssignmentPanel({
     return () => {
       cancelled = true;
     };
-  }, [canAssign, investigation.assigned_agent_id, investigation.id, investigation.region_code, token]);
+  }, [canAssign, investigation.id, investigation.region_code, token]);
 
   useEffect(() => {
     if (!isRouteRefreshActive) {
@@ -170,8 +165,53 @@ export function AssignmentPanel({
     }
   }
 
+  async function handleUnassign() {
+    setUnassigning(true);
+    setError("");
+    try {
+      await unassignInvestigation(token, investigation.id);
+      setAssignments((current) =>
+        current.map((assignment) =>
+          assignment.is_active
+            ? { ...assignment, is_active: false }
+            : assignment,
+        ),
+      );
+      setAgentId("");
+      setNote("");
+      setConfirmUnassign(false);
+      onChanged();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Could not unassign case.");
+    } finally {
+      setUnassigning(false);
+    }
+  }
+
+  async function handleSubmitAutomaticAssignment() {
+    setSubmittingAutomatic(true);
+    setError("");
+    setAutomaticAssignmentMessage("");
+    try {
+      await submitAutomaticAssignment(token, investigation.id);
+      setAutomaticAssignmentMessage(
+        "Submitted for automatic assignment. Only an eligible agent within the 10 km depot radius will be considered.",
+      );
+      onChanged();
+    } catch (err) {
+      setError(
+        err instanceof Error
+          ? err.message
+          : "Could not submit automatic assignment.",
+      );
+    } finally {
+      setSubmittingAutomatic(false);
+    }
+  }
+
+  const selectedAgent = agents.find((row) => String(row.agent.id) === agentId);
   const routeStatusCopy = routeRefresh ? getRouteRefreshCopy(routeRefresh) : null;
-  const routeRetryable = routeRefresh && ["failed", "partially_published"].includes(routeRefresh.status);
+  const routeRetryable = routeRefresh && ["failed", "partially_published", "unscheduled"].includes(routeRefresh.status);
 
   return (
     <section className="workflow-panel investigation-assignment-panel">
@@ -185,13 +225,56 @@ export function AssignmentPanel({
               <h3>Agent assignment</h3>
               <p>
                 {canAssign
-                  ? "Manual override. Only active agents with an available matching shift and remaining capacity are listed."
+                  ? "Manual override. All active agents can be selected; route availability is checked separately."
                   : "Assignment is closed while this investigation is being handled or reviewed."}
               </p>
             </div>
           </div>
         </div>
+        {canAssign && activeAssignment && (
+          <button
+            type="button"
+            className="danger-button compact-button"
+            onClick={() => {
+              setError("");
+              setConfirmUnassign(true);
+            }}
+            disabled={unassigning}
+          >
+            Unassign
+          </button>
+        )}
       </div>
+
+      {automaticAssignmentMessage && (
+        <p className="form-hint" role="status">
+          {automaticAssignmentMessage}
+        </p>
+      )}
+      {investigation.manual_assignment_required &&
+        investigation.assigned_agent_id == null &&
+        !automaticAssignmentMessage && (
+          <div className="workflow-actions">
+            <p className="form-hint" role="status">
+              Automatic assignment is paused. Submit this case to let the planner assign it again.
+            </p>
+            <button
+              type="button"
+              className="primary-button compact-button"
+              onClick={() => void handleSubmitAutomaticAssignment()}
+              disabled={submittingAutomatic || !investigation.location_confirmed}
+            >
+              {submittingAutomatic
+                ? "Submitting…"
+                : "Submit for automatic assignment"}
+            </button>
+            {!investigation.location_confirmed && (
+              <p className="form-hint">
+                Confirm the investigation location before submitting it for automatic assignment.
+              </p>
+            )}
+          </div>
+        )}
 
       {canAssign && (
         <>
@@ -204,13 +287,35 @@ export function AssignmentPanel({
               disabled={loading || saving}
             >
               <option value="">Select an agent</option>
-              {eligibleAgents.map(({ agent, shift, assigned_workload_count, visit_workload_count }) => (
+              {agents.map(({ agent, configured_region_name, configured_region_code }) => (
                 <option key={agent.id} value={agent.id}>
-                  {formatUserName(agent.name)} · {assigned_workload_count}/{shift?.max_open_cases ?? "—"} open · {visit_workload_count}/{shift?.max_visits ?? "—"} visits
+                  {formatUserName(agent.name)} · {configured_region_name ?? configured_region_code ?? "No region"}
                 </option>
               ))}
             </select>
           </div>
+
+          {selectedAgent && (
+            <p className="form-hint">
+              Region: {selectedAgent.configured_region_name ?? selectedAgent.configured_region_code ?? "Not configured"} · Depot: {selectedAgent.depot_label ?? (
+                selectedAgent.depot_latitude != null && selectedAgent.depot_longitude != null
+                  ? `${selectedAgent.depot_latitude.toFixed(4)}, ${selectedAgent.depot_longitude.toFixed(4)}`
+                  : "Not configured"
+              )} · {selectedAgent.assigned_workload_count} open cases · {selectedAgent.visit_workload_count} visits{selectedAgent.shift ? ` / ${selectedAgent.shift.max_visits} today` : ""}
+            </p>
+          )}
+          {selectedAgent?.outside_configured_region && (
+            <p className="form-hint">This investigation is outside the agent’s configured region. Manual assignment can still proceed.</p>
+          )}
+          {selectedAgent?.outside_service_radius && (
+            <p className="form-hint">This investigation is {(selectedAgent.depot_distance_metres! / 1000).toFixed(1)} km from the configured depot, outside the normal 10 km automatic service radius. Manual assignment can still proceed.</p>
+          )}
+          {selectedAgent && !selectedAgent.shift && (
+            <p className="form-hint">No shift is configured for this date. The assignment can be saved, but a route may not be available today.</p>
+          )}
+          {selectedAgent && investigation.location_confirmed && selectedAgent.depot_distance_metres == null && (
+            <p className="form-hint">The depot distance cannot be assessed for this date. Manual assignment can still proceed.</p>
+          )}
 
           <div className="workflow-form-row">
             <label htmlFor="assignment-note">Assignment note</label>
@@ -228,12 +333,12 @@ export function AssignmentPanel({
             type="button"
             className="primary-button compact-button"
             onClick={() => void handleAssign()}
-            disabled={loading || saving || !eligibleAgents.length || !investigation.location_confirmed}
+            disabled={loading || saving || !agents.length || !investigation.location_confirmed}
           >
             {saving ? "Applying override…" : "Apply manual override"}
           </button>
           {!investigation.location_confirmed && <p className="form-hint">Confirm the investigation location before assigning an agent.</p>}
-          {investigation.location_confirmed && !eligibleAgents.length && <p className="form-hint">No active agent has an available matching shift with remaining capacity today.</p>}
+          {investigation.location_confirmed && !agents.length && <p className="form-hint">No active agents are available.</p>}
         </>
       )}
 
@@ -284,6 +389,7 @@ export function AssignmentPanel({
                 {assignment.assignment_source === "manual" ? "Manual override" : "Automatic assignment"} · {formatUserName(assignment.agent_name)} · assigned by {formatUserName(assignment.assigned_by_name)}
                 {assignment.is_active ? " · active" : " · ended"}
                 {assignment.route_refresh?.status === "published" ? " · route published" : ""}
+                {assignment.route_refresh?.status === "unscheduled" ? " · assigned — unscheduled" : ""}
               </li>
             ))}
           </ul>
@@ -291,6 +397,22 @@ export function AssignmentPanel({
           <p className="empty-state">No assignment history yet.</p>
         )}
       </details>
+      <ConfirmDialog
+        open={confirmUnassign}
+        title="Unassign investigation"
+        action="Unassign"
+        danger
+        busy={unassigning}
+        onClose={() => setConfirmUnassign(false)}
+        onConfirm={() => void handleUnassign()}
+      >
+        <p>
+          End <strong>{investigation.reference_number}</strong>’s current
+          assignment? Its history will be kept, and automatic assignment will
+          remain paused until you choose an agent manually.
+        </p>
+        {error && <p className="error" role="alert">{error}</p>}
+      </ConfirmDialog>
     </section>
   );
 }
@@ -321,6 +443,11 @@ function getRouteRefreshCopy(routeRefresh: AssignmentRouteRefresh) {
       return {
         title: "Route update failed",
         message: "The assignment is saved, but no new route was published. Fix the issue and retry.",
+      };
+    case "unscheduled":
+      return {
+        title: "Assigned — Unscheduled",
+        message: "The manual assignment is saved. No feasible stop fits the current route; route actions remain unavailable until a validated route includes this investigation.",
       };
   }
 }

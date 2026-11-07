@@ -54,7 +54,7 @@
 .map-zoom-controls button:focus-visible {
   position: relative;
   z-index: 1;
-  outline: 2px solid var(--color-accent);
+  outline: 2px solid var(--openci-brand);
   outline-offset: -2px;
 }
 .map-zoom-controls button:disabled {
@@ -104,7 +104,7 @@
   color: inherit;
 }
 .map-symbol.selected:not(.agent) .symbol-icon {
-  outline: 3px solid var(--color-accent);
+  outline: 3px solid var(--openci-brand);
   outline-offset: 2px;
 }
 .map-symbol.review-pending {
@@ -660,7 +660,7 @@
 }
 
 .map-search-form:focus-within {
-  border-color: var(--color-accent);
+  border-color: var(--openci-brand);
   box-shadow: 0 0 0 2px rgb(94 106 210 / 22%), 0 2px 8px rgb(20 30 50 / 14%);
 }
 
@@ -712,7 +712,7 @@
 .map-search-form > button:focus-visible,
 .map-search-results button:focus-visible,
 .map-failure button:focus-visible {
-  outline: 2px solid var(--color-accent);
+  outline: 2px solid var(--openci-brand);
   outline-offset: 1px;
 }
 
@@ -884,7 +884,7 @@
 }
 
 .map-style-options button:focus-visible {
-  outline: 2px solid var(--color-accent);
+  outline: 2px solid var(--openci-brand);
   outline-offset: 1px;
 }
 

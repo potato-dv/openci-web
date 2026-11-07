@@ -2,7 +2,7 @@ from datetime import date, datetime, timedelta, timezone
 from zoneinfo import ZoneInfo
 
 from fastapi import APIRouter, Depends, HTTPException
-from sqlalchemy import func, text
+from sqlalchemy import func, or_, text
 from sqlalchemy.orm import Session
 
 from app.database.session import get_db
@@ -34,7 +34,8 @@ from app.schemas.planning import (
     PlanningDashboardResponse,
 )
 from app.services.geocoding import suggest_locations
-from app.services.geospatial import cells_for_point
+from app.services.agent_permissions import require_agent_feature
+from app.services.geospatial import DEFAULT_SERVICE_RADIUS_METRES, cells_for_point, distance_metres
 from app.services.locations import catalog
 from app.services.planning import (
     OPEN_STATUSES,
@@ -449,13 +450,21 @@ def published_agent_route(db: Session, agent: User, work_date: date) -> dict:
         ), None)
         if active:
             return "route_refresh_pending"
+        manual_assigned_ids = db.query(InvestigationAssignment.investigation_id).filter(
+            InvestigationAssignment.agent_id == agent.id,
+            InvestigationAssignment.is_active.is_(True),
+            InvestigationAssignment.assignment_source == "manual",
+        )
+        regional_scope = (
+            Investigation.region_code.in_(catalog()["region_codes"])
+            if shift.region_code == ALL_REGIONS
+            else Investigation.region_code == shift.region_code
+        )
         has_confirmed_work = db.query(Investigation.id).filter(
             Investigation.assigned_agent_id == agent.id,
             Investigation.deleted_at.is_(None),
             Investigation.status.in_(("pending", "assigned")),
-            Investigation.region_code.in_(catalog()["region_codes"])
-            if shift.region_code == ALL_REGIONS
-            else Investigation.region_code == shift.region_code,
+            or_(regional_scope, Investigation.id.in_(manual_assigned_ids)),
             Investigation.location_confirmed_at.is_not(None),
             Investigation.latitude.is_not(None),
             Investigation.longitude.is_not(None),
@@ -484,8 +493,41 @@ def published_agent_route(db: Session, agent: User, work_date: date) -> dict:
         PlanningItem.outcome == "assigned", Investigation.assigned_agent_id == agent.id,
         Investigation.deleted_at.is_(None), Investigation.status != "cancelled",
         Investigation.latitude.is_not(None),
+        Investigation.longitude.is_not(None),
         Investigation.location_confirmed_at.is_not(None),
     ).order_by(PlanningItem.sequence).all()
+    route_case_ids = {case.id for _item, case in rows}
+    active_route_assignments = {
+        assignment.investigation_id: assignment
+        for assignment in db.query(InvestigationAssignment).filter(
+            InvestigationAssignment.investigation_id.in_(route_case_ids),
+            InvestigationAssignment.is_active.is_(True),
+            InvestigationAssignment.agent_id == agent.id,
+        ).all()
+    } if route_case_ids else {}
+
+    def current_route_case_is_allowed(case: Investigation) -> bool:
+        assignment = active_route_assignments.get(case.id)
+        if assignment is None or assignment.assignment_source != "automatic":
+            return True
+        if shift.region_code != ALL_REGIONS and case.region_code != shift.region_code:
+            return False
+        if (
+            shift.start_latitude is None or shift.start_longitude is None
+            or case.latitude is None or case.longitude is None
+        ):
+            return False
+        try:
+            return distance_metres(
+                shift.start_latitude,
+                shift.start_longitude,
+                case.latitude,
+                case.longitude,
+            ) <= DEFAULT_SERVICE_RADIUS_METRES
+        except ValueError:
+            return False
+
+    rows = [(item, case) for item, case in rows if current_route_case_is_allowed(case)]
     route = db.query(PlanningRoute).filter(PlanningRoute.planning_run_id == run.id, PlanningRoute.agent_id == agent.id).first()
     # A direct override changes the official assignment pointer before route
     # optimization finishes. Never pair those current assignments with stale
@@ -502,6 +544,18 @@ def published_agent_route(db: Session, agent: User, work_date: date) -> dict:
         ).all()
     }
     current_route_case_ids = {case.id for _item, case in rows}
+    manual_assigned_ids = {
+        investigation_id for (investigation_id,) in db.query(InvestigationAssignment.investigation_id).filter(
+            InvestigationAssignment.agent_id == agent.id,
+            InvestigationAssignment.is_active.is_(True),
+            InvestigationAssignment.assignment_source == "manual",
+        ).all()
+    }
+    regional_scope = (
+        Investigation.region_code.in_(catalog()["region_codes"])
+        if shift.region_code == ALL_REGIONS
+        else Investigation.region_code == shift.region_code
+    )
     expected_open_case_ids = {
         case_id for (case_id,) in db.query(Investigation.id).filter(
             Investigation.assigned_agent_id == agent.id,
@@ -509,12 +563,24 @@ def published_agent_route(db: Session, agent: User, work_date: date) -> dict:
             Investigation.status.in_(
                 ("pending", "assigned", "in_progress", "returned_for_correction")
             ),
-            Investigation.region_code == shift.region_code,
+            or_(regional_scope, Investigation.id.in_(manual_assigned_ids)),
             Investigation.location_confirmed_at.is_not(None),
             Investigation.latitude.is_not(None),
             Investigation.longitude.is_not(None),
         ).all()
     }
+    unscheduled_assigned_ids = {
+        case_id for (case_id,) in db.query(PlanningItem.investigation_id).join(
+            Investigation, Investigation.id == PlanningItem.investigation_id,
+        ).filter(
+            PlanningItem.planning_run_id == run.id,
+            PlanningItem.outcome == "unassigned",
+            Investigation.assigned_agent_id == agent.id,
+            Investigation.deleted_at.is_(None),
+            Investigation.status.in_(("pending", "assigned", "in_progress", "returned_for_correction")),
+        ).all()
+    }
+    expected_open_case_ids.difference_update(unscheduled_assigned_ids)
     route_matches_assignments = (
         current_route_case_ids == planned_case_ids
         and expected_open_case_ids.issubset(current_route_case_ids)
@@ -571,6 +637,25 @@ def published_agent_route(db: Session, agent: User, work_date: date) -> dict:
 
 @router.get("/my-route", response_model=AgentRouteResponse)
 def get_my_route(work_date: date, db: Session = Depends(get_db), agent: User = Depends(require_roles("agent"))):
+    now = datetime.now(timezone.utc)
+    current_date = now.astimezone(ZoneInfo("Asia/Manila")).date()
+    active_prior_date_shift = False
+    if work_date < current_date:
+        shift = db.query(AgentShift).filter(
+            AgentShift.agent_id == agent.id,
+            AgentShift.work_date == work_date,
+            AgentShift.is_available.is_(True),
+        ).first()
+        if shift is not None:
+            starts_at = shift.shift_starts_at
+            ends_at = shift.shift_ends_at
+            if starts_at.tzinfo is None:
+                starts_at = starts_at.replace(tzinfo=timezone.utc)
+            if ends_at.tzinfo is None:
+                ends_at = ends_at.replace(tzinfo=timezone.utc)
+            active_prior_date_shift = starts_at.astimezone(timezone.utc) <= now < ends_at.astimezone(timezone.utc)
+    if work_date < current_date and not active_prior_date_shift:
+        require_agent_feature(db, agent, "route.view_own_history")
     return published_agent_route(db, agent, work_date)
 
 
@@ -583,11 +668,17 @@ def get_agent_route(agent_id: int, work_date: date, db: Session = Depends(get_db
 
 
 @router.get("/agent-shifts", response_model=list[AgentRosterResponse])
-def get_agent_shifts(work_date: date, region_code: str | None = None, include_inactive: bool = False, db: Session = Depends(get_db), actor: User = Depends(require_roles("admin", "supervisor"))):
+def get_agent_shifts(work_date: date, region_code: str | None = None, investigation_id: int | None = None, include_inactive: bool = False, db: Session = Depends(get_db), actor: User = Depends(require_roles("admin", "supervisor"))):
     query = db.query(User).filter(User.role == "agent")
     if actor.role != "admin" or not include_inactive:
         query = query.filter(User.is_active.is_(True))
     agents = query.order_by(User.name).all()
+    target = db.query(Investigation).filter(
+        Investigation.id == investigation_id,
+        Investigation.deleted_at.is_(None),
+    ).first() if investigation_id is not None else None
+    if investigation_id is not None and target is None:
+        raise HTTPException(status_code=404, detail="Investigation not found")
     shifts = {shift.agent_id: shift for shift in db.query(AgentShift).filter(AgentShift.work_date == work_date).all()}
     workloads = dict(db.query(Investigation.assigned_agent_id, func.count(Investigation.id)).filter(
         Investigation.assigned_agent_id.in_([agent.id for agent in agents]),
@@ -610,14 +701,43 @@ def get_agent_shifts(work_date: date, region_code: str | None = None, include_in
     for agent in agents:
         shift = shifts.get(agent.id)
         schedule = get_weekly_schedule(db, agent.id, work_date)
+        profile = get_work_profile(db, agent.id)
         availability_day = resolve_availability_day(db, agent.id, work_date)
         if region_code and (not shift or shift.region_code not in {region_code, ALL_REGIONS}) and (not schedule or not schedule.enabled or schedule.region_code not in {region_code, ALL_REGIONS}):
             continue
+        depot_latitude = shift.start_latitude if shift else (profile.depot_latitude if profile else None)
+        depot_longitude = shift.start_longitude if shift else (profile.depot_longitude if profile else None)
+        configured_region = shift.region_code if shift else (schedule.region_code if schedule else None)
+        depot_distance = None
+        if target and target.location_confirmed and target.latitude is not None and target.longitude is not None and depot_latitude is not None and depot_longitude is not None:
+            try:
+                depot_distance = distance_metres(depot_latitude, depot_longitude, target.latitude, target.longitude)
+            except ValueError:
+                depot_distance = None
+        visit_count = (
+            visit_workloads.get((agent.id, shift.region_code), 0)
+            if shift and shift.region_code != ALL_REGIONS
+            else sum(count for (workload_agent_id, _region), count in visit_workloads.items() if workload_agent_id == agent.id)
+        )
         result.append({"agent": {"id": agent.id, "name": agent.name, "email": agent.email, "role": agent.role, "is_active": agent.is_active},
             "shift": AgentShiftResponse.model_validate(shift) if shift else None,
             "assigned_workload_count": workloads.get(agent.id, 0),
-            "visit_workload_count": visit_workloads.get((agent.id, shift.region_code), 0) if shift and shift.region_code != ALL_REGIONS else workloads.get(agent.id, 0),
+            "visit_workload_count": visit_count,
+            "configured_region_code": configured_region,
+            "configured_region_name": catalog()["names"].get(configured_region) if configured_region and configured_region != ALL_REGIONS else ("All regions" if configured_region == ALL_REGIONS else None),
+            "depot_label": (
+                shift.start_location_label if shift and shift.start_location_label
+                else profile.depot_label if profile and profile.depot_label
+                else "Configured shift depot" if shift
+                else "Configured profile depot" if profile and profile.depot_latitude is not None
+                else None
+            ),
+            "depot_latitude": depot_latitude,
+            "depot_longitude": depot_longitude,
+            "depot_distance_metres": depot_distance,
+            "outside_configured_region": bool(target and configured_region not in {None, ALL_REGIONS, target.region_code}),
+            "outside_service_radius": depot_distance > DEFAULT_SERVICE_RADIUS_METRES if depot_distance is not None else None,
             "schedule_enabled": bool(schedule and schedule.enabled),
-            "work_profile_set": bool(get_work_profile(db, agent.id) and get_work_profile(db, agent.id).depot_latitude is not None),
+            "work_profile_set": bool(profile and profile.depot_latitude is not None),
             "availability_day": availability_day})
     return result

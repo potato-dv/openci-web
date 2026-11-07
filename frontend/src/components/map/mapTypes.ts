@@ -21,6 +21,7 @@ export type MapAgent = {
     | "published"
     | "failed"
     | "partially_published"
+    | "unscheduled"
     | "needs_refresh";
   included?: boolean;
   number?: number;
@@ -42,8 +43,11 @@ export type MapInvestigation = {
   included?: boolean;
   outcome?: "assigned" | "unassigned";
   service_duration_seconds?: number;
-  planning_status?: "pending" | "optimizing" | "assigned" | "unassigned" | "failed";
+  planning_status?:
+    "pending" | "optimizing" | "assigned" | "unassigned" | "failed";
   planning_reason?: string | null;
+  routing_status?: "pending" | "scheduled" | "unscheduled";
+  routing_reason?: string | null;
   assignment_source?: "automatic" | "manual" | null;
   estimated_arrival_at?: string | null;
   planned_arrival_at?: string | null;
@@ -69,7 +73,7 @@ export type RouteLineStyle = {
   dashArray?: string;
 };
 
-export function routeColor(_agentId: number) {
+export function routeColor() {
   return ROUTE_BLUE;
 }
 

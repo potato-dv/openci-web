@@ -1,3 +1,4 @@
+import { Table, TableHeader, TableBody, TableRow, TableHead, TableCell } from "@/components/ui/table";
 import { useRef, useState } from "react";
 import type { Investigation } from "@/types/api";
 import {
@@ -10,6 +11,7 @@ import { StatusBadge } from "@/components/ui/StatusBadge";
 import { Modal } from "@/components/ui/Modal";
 import { SectionToolbar } from "@/components/layout/SectionToolbar";
 import { RowActions } from "@/components/ui/RowActions";
+import { EmptyState, InlineAlert, Skeleton } from "@/components/ui/Primitives";
 
 type TrashPageProps = {
   token: string;
@@ -79,72 +81,100 @@ export function TrashPage({
 
   const busy = restoreId !== null || deleteId !== null;
 
+  function trashActions(item: Investigation) {
+    return (
+      <RowActions label={item.reference_number}>
+        <button
+          type="button"
+          role="menuitem"
+          disabled={busy}
+          onClick={() => void handleRestore(item)}
+        >
+          {restoreId === item.id ? "Restoring…" : "Restore"}
+        </button>
+        {isAdmin && (
+          <button
+            type="button"
+            role="menuitem"
+            className="danger-menu-item"
+            disabled={busy}
+            onClick={() => { setActionError(""); setSuccessMessage(""); setConfirmItem(item); }}
+          >
+            Permanently delete
+          </button>
+        )}
+      </RowActions>
+    );
+  }
+
   return (
     <section className="content-card">
       <SectionToolbar
-        title="Trash"
+        title="Deleted investigations"
         description="Restore investigations or permanently delete them. Permanent deletion also removes their reports, reviews, and assignment history."
         actions={<span className="count-badge">{items.length} in Trash</span>}
       />
-      {error && <p className="error" role="alert">{error} <button className="inline-link-button" type="button" onClick={onRetry}>Retry</button></p>}
-      {actionError && !confirmItem && <p className="error" role="alert">{actionError}</p>}
+      {error && <InlineAlert onRetry={onRetry}>{error}</InlineAlert>}
+      {actionError && !confirmItem && <InlineAlert>{actionError}</InlineAlert>}
       {successMessage && <p className="success-message" role="status" aria-live="polite">{successMessage}</p>}
       {loading ? (
-        <p className="muted" role="status">Loading Trash…</p>
+        <Skeleton rows={4} />
       ) : items.length === 0 ? (
-        <p className="empty-state">Trash is empty.</p>
+        <EmptyState title="Trash is empty">Deleted investigations will appear here until they are restored or permanently removed.</EmptyState>
       ) : (
-        <div className="table-wrap">
-          <table className="trash-table">
-            <thead>
-              <tr>
-                <th scope="col">Subject</th>
-                <th scope="col">Address</th>
-                <th scope="col">Last workflow status</th>
-                <th scope="col">Assigned agent</th>
-                <th scope="col" className="trash-actions-heading">Actions</th>
-              </tr>
-            </thead>
-            <tbody>
+        <>
+        <div className="table-wrap desktop-data">
+          <Table className="trash-table min-w-[760px] table-fixed">
+            <colgroup>
+              <col className="w-[24%]" />
+              <col className="w-[32%]" />
+              <col className="w-[18%]" />
+              <col className="w-[18%]" />
+              <col className="w-[8%]" />
+            </colgroup>
+            <TableHeader>
+              <TableRow>
+                <TableHead scope="col">Subject</TableHead>
+                <TableHead scope="col">Address</TableHead>
+                <TableHead scope="col">Last workflow status</TableHead>
+                <TableHead scope="col">Assigned agent</TableHead>
+                <TableHead scope="col" className="trash-actions-heading text-right">Actions</TableHead>
+              </TableRow>
+            </TableHeader>
+            <TableBody>
               {items.map((item) => (
-                <tr key={item.id}>
-                  <td className="trash-actions-cell">
+                <TableRow key={item.id}>
+                  <TableCell className="trash-actions-cell">
                     <InvestigationSubjectCell
                       subjectName={item.subject_name}
                       referenceNumber={item.reference_number}
                     />
-                  </td>
-                  <td>{item.address_display || item.legacy_address || "—"}</td>
-                  <td><StatusBadge status={item.status} reopenOn={item.reopen_on} /></td>
-                  <td>{item.assigned_agent_name ? formatUserName(item.assigned_agent_name) : "Unassigned"}</td>
-                  <td>
-                    <RowActions label={item.reference_number}>
-                      <button
-                        type="button"
-                        role="menuitem"
-                        disabled={busy}
-                        onClick={() => void handleRestore(item)}
-                      >
-                        {restoreId === item.id ? "Restoring…" : "Restore"}
-                      </button>
-                      {isAdmin && (
-                        <button
-                          type="button"
-                          role="menuitem"
-                          className="danger-menu-item"
-                          disabled={busy}
-                          onClick={() => { setActionError(""); setSuccessMessage(""); setConfirmItem(item); }}
-                        >
-                          Permanently delete
-                        </button>
-                      )}
-                    </RowActions>
-                  </td>
-                </tr>
+                  </TableCell>
+                  <TableCell className="max-w-0 truncate" title={item.address_display || item.legacy_address || undefined}>{item.address_display || item.legacy_address || "—"}</TableCell>
+                  <TableCell><StatusBadge status={item.status} reopenOn={item.reopen_on} /></TableCell>
+                  <TableCell>{item.assigned_agent_name ? formatUserName(item.assigned_agent_name) : "Unassigned"}</TableCell>
+                  <TableCell className="text-right">{trashActions(item)}</TableCell>
+                </TableRow>
               ))}
-            </tbody>
-          </table>
+            </TableBody>
+          </Table>
         </div>
+        <ul className="workspace-mobile-list" aria-label="Deleted investigations">
+          {items.map((item) => (
+            <li key={item.id}>
+              <div className="mobile-row-heading">
+                <InvestigationSubjectCell subjectName={item.subject_name} referenceNumber={item.reference_number} />
+                {trashActions(item)}
+              </div>
+              <span className="mobile-row-meta">{item.address_display || item.legacy_address || "Address unavailable"}</span>
+              <dl className="mobile-row-facts">
+                <div><dt>Status</dt><dd><StatusBadge status={item.status} reopenOn={item.reopen_on} /></dd></div>
+                <div><dt>Agent</dt><dd>{item.assigned_agent_name ? formatUserName(item.assigned_agent_name) : "Unassigned"}</dd></div>
+              </dl>
+            </li>
+          ))}
+        </ul>
+        </>
       )}
 
       {isAdmin && (

@@ -114,6 +114,7 @@ class InvestigationResponse(BaseModel):
     visit_not_before_at: datetime | None = None
     visit_due_at: datetime | None = None
     assigned_agent_id: int | None
+    manual_assignment_required: bool = False
     created_at: datetime
     assigned_agent_name: str | None = None
     location_confirmed: bool = False

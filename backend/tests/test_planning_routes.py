@@ -1,5 +1,6 @@
 import unittest
-from datetime import date, datetime, timezone
+from datetime import date, datetime, time, timedelta, timezone
+from zoneinfo import ZoneInfo
 
 from fastapi import HTTPException
 from sqlalchemy import create_engine
@@ -19,7 +20,10 @@ class PlanningRouteTests(unittest.TestCase):
     def test_supervisor_can_create_and_read_shift_but_agent_cannot_read_planning_data(self):
         engine = create_engine("sqlite:///:memory:")
         Base.metadata.create_all(engine)
-        work_date = date(2026, 11, 4)
+        now = datetime.now(ZoneInfo("Asia/Manila"))
+        work_date = now.date()
+        shift_start = datetime.combine(work_date, time(0), tzinfo=now.tzinfo)
+        shift_end = datetime.combine(work_date, time(23, 59, 59), tzinfo=now.tzinfo)
         with Session(engine) as db:
             supervisor = User(name="Supervisor", email="supervisor-route@example.test", password="hash", role="supervisor")
             agent = User(name="Agent", email="agent-route@example.test", password="hash", role="agent")
@@ -32,8 +36,8 @@ class PlanningRouteTests(unittest.TestCase):
                 work_date=work_date,
                 region_code="1300000000",
                 is_available=True,
-                shift_starts_at="2026-11-04T08:00:00+08:00",
-                shift_ends_at="2026-11-04T17:00:00+08:00",
+                shift_starts_at=shift_start.isoformat(),
+                shift_ends_at=shift_end.isoformat(),
                 start_latitude=14.6,
                 start_longitude=121.1,
                 max_visits=8,
@@ -55,7 +59,7 @@ class PlanningRouteTests(unittest.TestCase):
                 latitude=14.6,
                 longitude=121.1,
                 location_source="manual",
-                location_confirmed_at=datetime(2026, 11, 4, tzinfo=timezone.utc),
+                location_confirmed_at=shift_start.astimezone(timezone.utc),
                 location_confirmed_by_id=supervisor.id,
                 h3_r7=cells["h3_r7"],
                 h3_r8=cells["h3_r8"],

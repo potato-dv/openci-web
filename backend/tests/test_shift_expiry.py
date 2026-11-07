@@ -185,8 +185,9 @@ class ShiftEndInvestigationTests(unittest.TestCase):
             self.assertTrue(all(event.state == "carried_over" for event in events))
 
     def test_shift_end_keeps_manual_owner_and_returns_automatic_work_to_pool(self):
-        work_date = date(2026, 11, 2)
-        next_date = date(2026, 11, 5)
+        work_date = datetime.now(MANILA).date()
+        days_until_scheduled_thursday = (3 - work_date.weekday()) % 7 or 7
+        next_date = work_date + timedelta(days=days_until_scheduled_thursday)
         with Session(self.engine) as db:
             supervisor, agent, _other = self.create_people(db)
             old_shift = self.add_shift(db, agent, work_date)

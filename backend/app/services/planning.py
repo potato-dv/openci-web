@@ -4,7 +4,7 @@ import hashlib
 import json
 import logging
 from collections import Counter
-from math import cos, isfinite, radians, sqrt
+from math import ceil, cos, isfinite, radians, sqrt
 from datetime import date, datetime, timedelta, timezone
 from time import monotonic
 from zoneinfo import ZoneInfo
@@ -24,7 +24,12 @@ from app.models.agent_revisit import AgentRevisitRequest
 from app.models.route_event import InvestigationRouteEvent
 from app.models.user import User
 from app.schemas.planning import LockedAssignment, PlanningRunCreate
-from app.services.geospatial import cells_for_point
+from app.services.geospatial import (
+    DEFAULT_SERVICE_RADIUS_METRES,
+    cells_for_point,
+    distance_metres,
+    validate_coordinates,
+)
 from app.services.locations import catalog
 from app.services.agent_schedules import ALL_REGIONS, materialize_work_date
 from app.services.routing import OSRMClient, RoutingUnavailable, VROOMClient, valid_route_geometry
@@ -34,7 +39,7 @@ OPEN_STATUSES = ("assigned", "in_progress", "under_review", "returned_for_correc
 PRIORITY_VALUES = {"normal": 10, "high": 50, "urgent": 100}
 ROUTE_RECOVERY_MAX_ATTEMPTS = 3
 ROUTE_RECOVERY_BASE_DELAY_SECONDS = 300
-PLANNER_LOGIC_VERSION = 6
+PLANNER_LOGIC_VERSION = 10
 PRIORITY_SEARCH_LIMIT_SECONDS = 2
 ROUTE_RECOVERY_RETRYABLE_ERRORS = {
     # Unknown optimizer exceptions may be transient (for example, a response
@@ -84,6 +89,11 @@ def _database_now(db: Session) -> datetime:
 
 def _epoch(value: datetime) -> int:
     return int(_as_utc(value).timestamp())
+
+
+def _epoch_ceil(value: datetime) -> int:
+    """Round lower time-window bounds up to VROOM's whole-second precision."""
+    return ceil(_as_utc(value).timestamp())
 
 
 def _iso_utc(value: datetime | None) -> str | None:
@@ -323,10 +333,24 @@ def planning_map_data(db: Session, work_date: date, region_code: str | None = No
         AgentShift.agent_id == User.id,
         AgentShift.work_date == work_date,
     )
+    agent_query = db.query(User, AgentShift).outerjoin(AgentShift, shift_join).filter(User.role == "agent")
     if region_code:
-        shift_join = and_(shift_join, or_(AgentShift.region_code == region_code, AgentShift.region_code == ALL_REGIONS))
-    agent_query = db.query(User, AgentShift).filter(User.role == "agent")
-    agent_query = agent_query.join(AgentShift, shift_join) if region_code else agent_query.outerjoin(AgentShift, shift_join)
+        manual_agent_ids = db.query(InvestigationAssignment.agent_id).join(
+            Investigation,
+            Investigation.id == InvestigationAssignment.investigation_id,
+        ).filter(
+            InvestigationAssignment.is_active.is_(True),
+            InvestigationAssignment.assignment_source == "manual",
+            Investigation.assigned_agent_id == InvestigationAssignment.agent_id,
+            Investigation.region_code == region_code,
+            Investigation.deleted_at.is_(None),
+            Investigation.status.in_(("pending", "assigned", "in_progress")),
+        )
+        agent_query = agent_query.filter(or_(
+            AgentShift.region_code == region_code,
+            AgentShift.region_code == ALL_REGIONS,
+            User.id.in_(manual_agent_ids),
+        ))
     agent_rows = agent_query.order_by(User.name, User.id).all()
     agents = []
     unlocated_agents = []
@@ -673,14 +697,77 @@ def _route_geometry_ready(route: PlanningRoute) -> bool:
     )
 
 
-def _route_assignment_blocker(case: Investigation, region_code: str) -> str | None:
-    if region_code != ALL_REGIONS and case.region_code != region_code:
+def _active_manual_assignment_owners(db: Session, investigation_ids: list[int] | set[int]) -> dict[int, int]:
+    if not investigation_ids:
+        return {}
+    rows = db.query(
+        InvestigationAssignment.investigation_id,
+        InvestigationAssignment.agent_id,
+    ).filter(
+        InvestigationAssignment.investigation_id.in_(investigation_ids),
+        InvestigationAssignment.is_active.is_(True),
+        InvestigationAssignment.assignment_source == "manual",
+    ).all()
+    return {investigation_id: agent_id for investigation_id, agent_id in rows}
+
+
+def _active_automatic_assignment_owners(db: Session, investigation_ids: list[int] | set[int]) -> dict[int, int]:
+    if not investigation_ids:
+        return {}
+    rows = db.query(
+        InvestigationAssignment.investigation_id,
+        InvestigationAssignment.agent_id,
+    ).filter(
+        InvestigationAssignment.investigation_id.in_(investigation_ids),
+        InvestigationAssignment.is_active.is_(True),
+        InvestigationAssignment.assignment_source == "automatic",
+    ).all()
+    return {investigation_id: agent_id for investigation_id, agent_id in rows}
+
+
+def _route_assignment_blocker(
+    case: Investigation,
+    region_code: str,
+    manual_owner_agent_id: int | None = None,
+) -> str | None:
+    if (
+        region_code != ALL_REGIONS
+        and case.region_code != region_code
+        and manual_owner_agent_id != case.assigned_agent_id
+    ):
         return "region_mismatch"
     if case.location_confirmed_at is None:
         return "location_unconfirmed"
     if case.latitude is None or case.longitude is None:
         return "location_coordinates_missing"
     return None
+
+
+def _case_within_service_radius(case: Investigation, shift: AgentShift) -> bool:
+    if (
+        case.latitude is None or case.longitude is None
+        or shift.start_latitude is None or shift.start_longitude is None
+    ):
+        return False
+    try:
+        return distance_metres(
+            shift.start_latitude,
+            shift.start_longitude,
+            case.latitude,
+            case.longitude,
+        ) <= DEFAULT_SERVICE_RADIUS_METRES
+    except ValueError:
+        return False
+
+
+def _shift_has_valid_depot(shift: AgentShift) -> bool:
+    if shift.start_latitude is None or shift.start_longitude is None:
+        return False
+    try:
+        validate_coordinates(shift.start_latitude, shift.start_longitude)
+        return True
+    except ValueError:
+        return False
 
 
 def planning_route_overview(db: Session, work_date: date, region_code: str | None = None) -> dict:
@@ -694,7 +781,22 @@ def planning_route_overview(db: Session, work_date: date, region_code: str | Non
         and_(AgentShift.agent_id == User.id, AgentShift.work_date == work_date),
     ).filter(User.role == "agent")
     if region_code:
-        query = query.filter(or_(AgentShift.region_code == region_code, AgentShift.region_code == ALL_REGIONS))
+        manual_agent_ids = db.query(InvestigationAssignment.agent_id).join(
+            Investigation,
+            Investigation.id == InvestigationAssignment.investigation_id,
+        ).filter(
+            InvestigationAssignment.is_active.is_(True),
+            InvestigationAssignment.assignment_source == "manual",
+            Investigation.assigned_agent_id == InvestigationAssignment.agent_id,
+            Investigation.region_code == region_code,
+            Investigation.deleted_at.is_(None),
+            Investigation.status.in_(("pending", "assigned", "in_progress")),
+        )
+        query = query.filter(or_(
+            AgentShift.region_code == region_code,
+            AgentShift.region_code == ALL_REGIONS,
+            User.id.in_(manual_agent_ids),
+        ))
     agent_rows = query.order_by(User.name, User.id).all()
     agents = [agent for agent, _shift in agent_rows]
     agent_ids = [agent.id for agent in agents]
@@ -723,6 +825,8 @@ def planning_route_overview(db: Session, work_date: date, region_code: str | Non
         Investigation.deleted_at.is_(None),
         Investigation.status.in_(("pending", "assigned", "in_progress")),
     ).order_by(Investigation.id).all() if agent_ids else []
+    manual_owners = _active_manual_assignment_owners(db, {case.id for case in cases})
+    automatic_owners = _active_automatic_assignment_owners(db, {case.id for case in cases})
     current_ids_by_agent: dict[int, set[int]] = {agent_id: set() for agent_id in agent_ids}
     route_warnings_by_agent: dict[int, list[dict]] = {agent_id: [] for agent_id in agent_ids}
     for case in cases:
@@ -736,14 +840,36 @@ def planning_route_overview(db: Session, work_date: date, region_code: str | Non
                 else "agent_shift_unavailable_today",
             })
             continue
-        blocker = _route_assignment_blocker(case, shift.region_code)
+        blocker = _route_assignment_blocker(case, shift.region_code, manual_owners.get(case.id))
         if blocker:
             route_warnings_by_agent[case.assigned_agent_id].append({
                 "investigation_id": case.id,
                 "reference_number": case.reference_number,
                 "reason": blocker,
             })
+        elif (
+            automatic_owners.get(case.id) == case.assigned_agent_id
+            and not _case_within_service_radius(case, shift)
+        ):
+            route_warnings_by_agent[case.assigned_agent_id].append({
+                "investigation_id": case.id,
+                "reference_number": case.reference_number,
+                "reason": "outside_service_radius",
+            })
         else:
+            if shift.current_planning_run_id is not None:
+                unscheduled_item = db.query(PlanningItem).filter(
+                    PlanningItem.planning_run_id == shift.current_planning_run_id,
+                    PlanningItem.investigation_id == case.id,
+                    PlanningItem.outcome == "unassigned",
+                ).first()
+                if unscheduled_item is not None:
+                    route_warnings_by_agent[case.assigned_agent_id].append({
+                        "investigation_id": case.id,
+                        "reference_number": case.reference_number,
+                        "reason": unscheduled_item.reason or "no_feasible_route_under_constraints",
+                    })
+                    continue
             current_ids_by_agent[case.assigned_agent_id].add(case.id)
 
     active_assignments = db.query(InvestigationAssignment).filter(
@@ -863,7 +989,7 @@ def planning_route_overview(db: Session, work_date: date, region_code: str | Non
         elif route is not None:
             route_status = "failed"
         elif refresh is not None and refresh.auto_route_status in {
-            "queued", "running", "failed", "partially_published",
+            "queued", "running", "failed", "partially_published", "unscheduled",
         }:
             route_status = refresh.auto_route_status
         elif planning_run and planning_run.status in {"queued", "running", "ready"}:
@@ -918,6 +1044,15 @@ def planning_dashboard(db: Session, work_date: date, region_code: str | None = N
         cases_query = cases_query.filter(Investigation.region_code == region_code)
     cases = cases_query.order_by(Investigation.id).all()
     case_ids = [case.id for case in cases]
+    available_shifts = db.query(AgentShift).join(
+        User, User.id == AgentShift.agent_id,
+    ).filter(
+        AgentShift.work_date == work_date,
+        AgentShift.is_available.is_(True),
+        AgentShift.shift_ends_at > _database_now(db),
+        User.role == "agent",
+        User.is_active.is_(True),
+    ).all()
     active_assignments = db.query(InvestigationAssignment).filter(
         InvestigationAssignment.investigation_id.in_(case_ids),
         InvestigationAssignment.is_active.is_(True),
@@ -928,8 +1063,6 @@ def planning_dashboard(db: Session, work_date: date, region_code: str | None = N
         PlanningRun.work_date == work_date,
         PlanningRun.auto_publish.is_(True),
     )
-    if region_code:
-        runs_query = runs_query.filter(PlanningRun.region_code == region_code)
     runs = runs_query.order_by(PlanningRun.created_at.desc(), PlanningRun.id.desc()).all()
     run_by_id = {run.id: run for run in runs}
     latest_run_by_case = {}
@@ -952,6 +1085,8 @@ def planning_dashboard(db: Session, work_date: date, region_code: str | None = N
         item = item_by_run_case.get((run.id, case.id)) if run else None
         if case.assigned_agent_id is not None:
             state, reason = "assigned", None
+        elif case.manual_assignment_required:
+            state, reason = "unassigned", "manual_assignment_required"
         elif not case.location_confirmed:
             state, reason = "pending", "location_unconfirmed"
         elif run and run.status in {"queued", "running", "ready"}:
@@ -960,14 +1095,57 @@ def planning_dashboard(db: Session, work_date: date, region_code: str | None = N
             state, reason = "failed", run.error_code or "optimization_failed"
         elif run and run.status == "applied" and item and item.outcome == "unassigned":
             state, reason = "unassigned", item.reason
+        elif case.assigned_agent_id is None and case.location_confirmed and case.latitude is not None and case.longitude is not None:
+            region_shifts = [
+                shift for shift in available_shifts
+                if shift.region_code in {case.region_code, ALL_REGIONS}
+            ]
+            if not region_shifts:
+                state, reason = "unassigned", "no_available_agents"
+            elif not any(_shift_has_valid_depot(shift) for shift in region_shifts):
+                state, reason = "unassigned", "no_routable_agent_start"
+            elif not any(_case_within_service_radius(case, shift) for shift in region_shifts):
+                state, reason = "unassigned", "outside_service_radius"
+            else:
+                state, reason = "pending", None
         else:
             state, reason = "pending", None
+        routing_status = "pending"
+        routing_reason = None
+        if assignment and run and run.status == "applied" and item:
+            if (
+                item.outcome == "unassigned"
+                and item.agent_id is None
+            ):
+                routing_status = "unscheduled"
+                routing_reason = item.reason or "no_feasible_route_under_constraints"
+            elif (
+                item.outcome == "assigned"
+                and item.agent_id == assignment.agent_id
+                and db.query(PlanningRoute.id).filter(
+                    PlanningRoute.planning_run_id == run.id,
+                    PlanningRoute.agent_id == assignment.agent_id,
+                    PlanningRoute.geometry_status == "ready",
+                ).first() is not None
+            ):
+                routing_status = "scheduled"
+            else:
+                routing_reason = item.reason or "route_not_published"
+        if assignment and assignment.auto_route_work_date == work_date:
+            if assignment.auto_route_status == "unscheduled":
+                routing_status = "unscheduled"
+                routing_reason = next(iter(assignment.auto_route_errors or []), None)
+            elif assignment.auto_route_status in {"queued", "running"}:
+                routing_status = "pending"
+                routing_reason = "route_refresh_pending"
         investigation_states.append({
             "investigation_id": case.id,
             "planning_status": state,
             "reason": reason,
             "planning_run_id": run.id if run else None,
             "assignment_source": assignment.assignment_source if assignment else None,
+            "routing_status": routing_status,
+            "routing_reason": routing_reason,
         })
 
     active_agents_query = db.query(User, AgentShift).outerjoin(
@@ -1045,6 +1223,7 @@ def create_run(
             raise PlanningConflict("agent_region_mismatch")
     case_ids = set(request.investigation_ids)
     locked = {item.investigation_id: item.agent_id for item in request.locked_assignments}
+    movable_case_ids = set(getattr(request, "movable_investigation_ids", []))
     if any(agent_id not in request.agent_ids for agent_id in locked.values()):
         raise PlanningConflict("locked_agent_not_selected")
 
@@ -1066,22 +1245,27 @@ def create_run(
         )
         for item, _status in old_items:
             case_ids.add(item.investigation_id)
-            locked[item.investigation_id] = shift.agent_id
+            if item.investigation_id not in movable_case_ids:
+                locked[item.investigation_id] = shift.agent_id
 
     if len(case_ids) > 80:
         raise PlanningConflict("run_too_large")
     cases = db.query(Investigation).filter(Investigation.id.in_(sorted(case_ids))).order_by(Investigation.id).all()
     if len(cases) != len(case_ids):
         raise PlanningConflict("investigation_not_found")
+    manual_owners = _active_manual_assignment_owners(db, {case.id for case in cases})
     case_coordinates = set()
     for case in cases:
         if case.deleted_at is not None or case.status not in {"pending", "assigned"}:
             raise PlanningConflict("investigation_not_assignable")
-        if request.region_code != ALL_REGIONS and case.region_code != request.region_code:
+        if case.manual_assignment_required and case.assigned_agent_id is None:
+            raise PlanningConflict("manual_assignment_required")
+        fixed_agent = locked.get(case.id) or (None if case.id in set(getattr(request, "movable_investigation_ids", [])) else case.assigned_agent_id)
+        manual_override = manual_owners.get(case.id) == fixed_agent == case.assigned_agent_id
+        if request.region_code != ALL_REGIONS and case.region_code != request.region_code and not manual_override:
             raise PlanningConflict("investigation_region_mismatch")
         if not case.location_confirmed:
             raise PlanningConflict("location_unconfirmed")
-        fixed_agent = locked.get(case.id) or (None if case.id in set(getattr(request, "movable_investigation_ids", [])) else case.assigned_agent_id)
         if fixed_agent is not None and fixed_agent not in request.agent_ids:
             raise PlanningConflict("locked_agent_not_selected")
         case_coordinates.add((round(case.latitude, 6), round(case.longitude, 6)))
@@ -1159,12 +1343,15 @@ def _link_auto_route_run(db: Session, run: PlanningRun) -> None:
             assignment.auto_route_status = "running" if run.status in {"running", "ready"} else "queued"
 
 
-def _automatic_assignments_outside_roster(
+def _automatic_assignments_requiring_replan(
     db: Session,
     region_code: str,
     available_agent_ids: set[int],
+    work_date: date,
+    *,
+    include_outside_roster: bool,
 ) -> list[tuple[InvestigationAssignment, Investigation]]:
-    """Return active automatic work whose owner cannot serve this route scope."""
+    """Return automatic work that violates today's radius or roster constraints."""
     assignments = (
         db.query(InvestigationAssignment, Investigation)
         .join(Investigation, Investigation.id == InvestigationAssignment.investigation_id)
@@ -1182,10 +1369,24 @@ def _automatic_assignments_outside_roster(
         .order_by(InvestigationAssignment.assigned_at, Investigation.id)
         .all()
     )
+    owner_ids = {assignment.agent_id for assignment, _case in assignments}
+    owner_shifts = {
+        shift.agent_id: shift
+        for shift in db.query(AgentShift).filter(
+            AgentShift.work_date == work_date,
+            AgentShift.agent_id.in_(owner_ids),
+        ).all()
+    } if owner_ids else {}
     return [
         (assignment, case)
         for assignment, case in assignments
-        if case.assigned_agent_id not in available_agent_ids
+        if (
+            (owner_shift := owner_shifts.get(assignment.agent_id)) is not None
+            and not _case_within_service_radius(case, owner_shift)
+        ) or (
+            include_outside_roster
+            and case.assigned_agent_id not in available_agent_ids
+        )
     ]
 
 
@@ -1265,10 +1466,12 @@ def queue_automatic_planning(
     shifts_by_agent = {shift.agent_id: shift for shift, _agent in shift_rows}
     agents_by_id = {agent.id: agent for _shift, agent in shift_rows}
     requested_agent_ids = sorted(shifts_by_agent)
-    movable_auto_assignments = (
-        _automatic_assignments_outside_roster(db, region_code, set(requested_agent_ids))
-        if require_missing_route
-        else []
+    movable_auto_assignments = _automatic_assignments_requiring_replan(
+        db,
+        region_code,
+        set(requested_agent_ids),
+        work_date,
+        include_outside_roster=require_missing_route and bool(requested_agent_ids),
     )
     movable_auto_cases = [case for _assignment, case in movable_auto_assignments]
     movable_ids = {case.id for case in movable_auto_cases}
@@ -1282,6 +1485,7 @@ def queue_automatic_planning(
         Investigation.deleted_at.is_(None),
         Investigation.status.in_(("pending", "assigned")),
     ).order_by(Investigation.id).all() if requested_agent_ids else []
+    manual_owners = _active_manual_assignment_owners(db, {case.id for case in all_open_assigned})
     assigned_by_agent: dict[int, list[Investigation]] = {}
     for case in all_open_assigned:
         assigned_by_agent.setdefault(case.assigned_agent_id, []).append(case)
@@ -1302,13 +1506,14 @@ def queue_automatic_planning(
         }
         for agent_id in requested_agent_ids
         for case in assigned_by_agent.get(agent_id, [])
-        if (blocker := _route_assignment_blocker(case, region_code)) is not None
+        if (blocker := _route_assignment_blocker(case, region_code, manual_owners.get(case.id))) is not None
     ]
     locked_cases = [
         case
         for agent_id in eligible_agent_ids
         for case in assigned_by_agent.get(agent_id, [])
-        if _route_assignment_blocker(case, region_code) is None
+        if case.id not in movable_ids
+        and _route_assignment_blocker(case, region_code, manual_owners.get(case.id)) is None
     ]
     scope_cases = db.query(Investigation)
     if region_code != ALL_REGIONS:
@@ -1319,16 +1524,25 @@ def queue_automatic_planning(
         Investigation.deleted_at.is_(None),
         Investigation.status == "pending",
         Investigation.assigned_agent_id.is_(None),
+        Investigation.manual_assignment_required.is_(False),
         Investigation.location_confirmed_at.is_not(None),
         Investigation.latitude.is_not(None),
         Investigation.longitude.is_not(None),
     ).order_by(Investigation.h3_r7, Investigation.h3_r8, Investigation.id).all()
     excluded_ids = exclude_investigation_ids or set()
     candidates = [case for case in candidates if case.id not in excluded_ids]
+    candidates = [
+        case for case in candidates
+        if any(
+            shift.region_code in {case.region_code, ALL_REGIONS}
+            and _case_within_service_radius(case, shift)
+            for shift in eligible_shifts
+        )
+    ]
 
-    # Manual work stays with its assigned agent. Automatic assignments without
-    # an eligible shift re-enter the planning pool and may be assigned to a
-    # working agent when route recovery runs.
+    # Manual work stays with its assigned agent. Existing automatic work that
+    # exceeds the depot radius re-enters planning; recovery can also move work
+    # from an owner who has no eligible shift.
     if require_missing_route:
         missing_route_ids = _missing_route_assigned_case_ids(db, work_date, region_code)
         if not missing_route_ids:
@@ -1388,43 +1602,6 @@ def queue_automatic_planning(
         selected_cases.append(case)
         selected_ids.add(case.id)
         coordinates.add(point)
-
-    if overflow:
-        superseded_runs = db.query(PlanningRun).filter(
-            PlanningRun.work_date == work_date,
-            PlanningRun.region_code == region_code,
-            PlanningRun.auto_publish.is_(True),
-            PlanningRun.status.in_(("queued", "running", "ready")),
-        ).order_by(PlanningRun.id).with_for_update().all()
-        if superseded_runs:
-            superseded_ids = [item.id for item in superseded_runs]
-            for active_run in superseded_runs:
-                active_run.status = "stale"
-                active_run.error_code = "planning_scope_capacity_exceeded"
-                active_run.finished_at = datetime.now(timezone.utc)
-            clear_published_routes(db, superseded_ids)
-        failed = PlanningRun(
-            requested_by_id=requester.id,
-            work_date=work_date,
-            region_code=region_code,
-            investigation_ids=sorted(selected_ids | set(overflow)),
-            agent_ids=eligible_agent_ids,
-            locked_assignments=locked_assignment_payload,
-            movable_investigation_ids=sorted(movable_ids),
-            auto_publish=True,
-            auto_assignment_id=auto_assignment_id,
-            auto_assignment_ids=tracking_assignment_ids,
-            status="failed",
-            error_code="planning_scope_capacity_exceeded",
-            warnings=assignment_warnings + [{"type": "capacity_exceeded", "overflow_count": len(overflow)}],
-            finished_at=datetime.now(timezone.utc),
-        )
-        db.add(failed)
-        db.commit()
-        db.refresh(failed)
-        _link_auto_route_run(db, failed)
-        db.commit()
-        return failed
 
     if not selected_cases:
         db.commit()
@@ -1573,8 +1750,6 @@ def _missing_route_assigned_case_ids(db: Session, work_date: date, region_code: 
         .order_by(AgentShift.agent_id)
         .all()
     ]
-    if not agent_ids:
-        return set()
     eligible_cases = db.query(Investigation).filter(
         Investigation.assigned_agent_id.in_(agent_ids),
         Investigation.region_code.in_(catalog()["region_codes"]) if region_code == ALL_REGIONS else Investigation.region_code == region_code,
@@ -1584,12 +1759,29 @@ def _missing_route_assigned_case_ids(db: Session, work_date: date, region_code: 
         Investigation.latitude.is_not(None),
         Investigation.longitude.is_not(None),
     ).order_by(Investigation.id).all()
-    movable_auto_assignments = _automatic_assignments_outside_roster(
-        db, region_code, set(agent_ids),
+    manual_cases = db.query(Investigation).join(
+        InvestigationAssignment,
+        and_(
+            InvestigationAssignment.investigation_id == Investigation.id,
+            InvestigationAssignment.agent_id == Investigation.assigned_agent_id,
+        ),
+    ).filter(
+        Investigation.assigned_agent_id.in_(agent_ids),
+        InvestigationAssignment.is_active.is_(True),
+        InvestigationAssignment.assignment_source == "manual",
+        Investigation.deleted_at.is_(None),
+        Investigation.status.in_(("pending", "assigned")),
+        Investigation.location_confirmed_at.is_not(None),
+        Investigation.latitude.is_not(None),
+        Investigation.longitude.is_not(None),
+    ).order_by(Investigation.id).all()
+    movable_auto_assignments = _automatic_assignments_requiring_replan(
+        db, region_code, set(agent_ids), work_date, include_outside_roster=bool(agent_ids),
     )
     movable_auto_cases = [case for _assignment, case in movable_auto_assignments]
     movable_auto_ids = {case.id for case in movable_auto_cases}
     eligible_cases_by_id = {case.id: case for case in eligible_cases}
+    eligible_cases_by_id.update({case.id: case for case in manual_cases})
     eligible_cases_by_id.update({case.id: case for case in movable_auto_cases})
     eligible_cases = list(eligible_cases_by_id.values())
     if not eligible_cases:
@@ -1597,12 +1789,28 @@ def _missing_route_assigned_case_ids(db: Session, work_date: date, region_code: 
 
     overview = planning_route_overview(db, work_date, None if region_code == ALL_REGIONS else region_code)
     overview_by_agent = {item["id"]: item for item in overview["agents"]}
+    shifts_by_agent = {
+        shift.agent_id: shift
+        for shift in db.query(AgentShift).filter(
+            AgentShift.agent_id.in_(agent_ids),
+            AgentShift.work_date == work_date,
+        ).all()
+    } if agent_ids else {}
     missing_case_ids: set[int] = set()
     for case in eligible_cases:
         if case.id in movable_auto_ids:
             missing_case_ids.add(case.id)
             continue
         item = overview_by_agent.get(case.assigned_agent_id)
+        shift = shifts_by_agent.get(case.assigned_agent_id)
+        current_item = db.query(PlanningItem).filter(
+            PlanningItem.planning_run_id == shift.current_planning_run_id if shift and shift.current_planning_run_id else PlanningItem.id == -1,
+            PlanningItem.investigation_id == case.id,
+            PlanningItem.outcome == "unassigned",
+            PlanningItem.reason.in_(("manual_stop_exceeds_shift", "no_feasible_route_under_constraints")),
+        ).first()
+        if current_item is not None:
+            continue
         route = item.get("route") if item else None
         routed_ids = {
             stop["investigation_id"] for stop in (item.get("stops", []) if item else [])
@@ -1695,6 +1903,37 @@ def reconcile_missing_route_scopes(db: Session, work_date: date | None = None) -
         for region_code, agent_id in shift_rows:
             agent_ids_by_region.setdefault(region_code, []).append(agent_id)
 
+    if ALL_REGIONS not in agent_ids_by_region:
+        automatic_assignment_regions = {
+            region_code
+            for (region_code,) in db.query(Investigation.region_code).join(
+                InvestigationAssignment,
+                and_(
+                    InvestigationAssignment.investigation_id == Investigation.id,
+                    InvestigationAssignment.agent_id == Investigation.assigned_agent_id,
+                ),
+            ).filter(
+                InvestigationAssignment.is_active.is_(True),
+                InvestigationAssignment.assignment_source == "automatic",
+                Investigation.deleted_at.is_(None),
+                Investigation.status.in_(("pending", "assigned")),
+                Investigation.location_confirmed_at.is_not(None),
+                Investigation.latitude.is_not(None),
+                Investigation.longitude.is_not(None),
+            ).distinct().all()
+        }
+        for assignment_region in automatic_assignment_regions:
+            if assignment_region in agent_ids_by_region:
+                continue
+            if _automatic_assignments_requiring_replan(
+                db,
+                assignment_region,
+                set(),
+                work_date,
+                include_outside_roster=False,
+            ):
+                agent_ids_by_region[assignment_region] = []
+
     attempted = 0
     skipped_no_eligible_work = 0
     skipped_retry_limit = 0
@@ -1717,10 +1956,27 @@ def reconcile_missing_route_scopes(db: Session, work_date: date | None = None) -
             .order_by(Investigation.id)
             .all()
         )
-        movable_auto_assignments = _automatic_assignments_outside_roster(
-            db, region_code, set(agent_ids),
+        manual_cases = db.query(Investigation).join(
+            InvestigationAssignment,
+            and_(
+                InvestigationAssignment.investigation_id == Investigation.id,
+                InvestigationAssignment.agent_id == Investigation.assigned_agent_id,
+            ),
+        ).filter(
+            Investigation.assigned_agent_id.in_(agent_ids),
+            InvestigationAssignment.is_active.is_(True),
+            InvestigationAssignment.assignment_source == "manual",
+            Investigation.deleted_at.is_(None),
+            Investigation.status.in_(("pending", "assigned")),
+            Investigation.location_confirmed_at.is_not(None),
+            Investigation.latitude.is_not(None),
+            Investigation.longitude.is_not(None),
+        ).order_by(Investigation.id).all()
+        movable_auto_assignments = _automatic_assignments_requiring_replan(
+            db, region_code, set(agent_ids), work_date, include_outside_roster=bool(agent_ids),
         )
         eligible_cases_by_id = {case.id: case for case in eligible_cases}
+        eligible_cases_by_id.update({case.id: case for case in manual_cases})
         eligible_cases_by_id.update({case.id: case for _assignment, case in movable_auto_assignments})
         eligible_cases = list(eligible_cases_by_id.values())
         if not eligible_cases:
@@ -1886,8 +2142,9 @@ def queue_assignment_route_refresh(
     shifts = db.query(AgentShift).filter(
         AgentShift.agent_id.in_(impacted_ids), AgentShift.work_date == work_date,
     ).all() if impacted_ids else []
-    region_codes = {investigation.region_code} if investigation.region_code else set()
-    region_codes.update(shift.region_code for shift in shifts)
+    region_codes = {shift.region_code for shift in shifts}
+    if not region_codes and investigation.region_code:
+        region_codes.add(investigation.region_code)
     assignment.auto_route_work_date = work_date
     assignment.auto_route_agent_ids = impacted_ids
     assignment.auto_route_run_ids = []
@@ -1897,13 +2154,20 @@ def queue_assignment_route_refresh(
 
     run_ids: list[int] = []
     errors: list[str] = []
+    assignment_regions = {
+        shift.region_code for shift in shifts if shift.agent_id == assignment.agent_id
+    }
     for region_code in sorted(region_codes):
         run = queue_automatic_planning(
             db,
             region_code,
             requester,
             work_date,
-            auto_assignment_id=assignment.id,
+            auto_assignment_id=(
+                assignment.id
+                if not assignment_regions or region_code in assignment_regions
+                else None
+            ),
         )
         if run is not None:
             run_ids.append(run.id)
@@ -1962,6 +2226,15 @@ def sync_assignment_route_refresh(
             ]))
     runs = db.query(PlanningRun).filter(PlanningRun.id.in_(run_ids)).all() if run_ids else []
     by_id = {run.id: run for run in runs}
+    relevant_run_ids = [
+        run.id for run in runs
+        if assignment.investigation_id in set(run.investigation_ids or [])
+    ]
+    if relevant_run_ids:
+        # Older failed attempts should not keep a successfully refreshed
+        # assignment in a failed or partially published state.
+        run_ids = [max(relevant_run_ids)]
+        runs = [by_id[run_id] for run_id in run_ids if run_id in by_id]
     active_statuses = {"queued", "running", "ready"}
     has_active = any(run.status in active_statuses for run in runs)
     if has_active:
@@ -1970,19 +2243,35 @@ def sync_assignment_route_refresh(
         )
     else:
         errors = []
+        assignment_unscheduled = False
+        route_failed = False
         for run_id in run_ids:
             run = by_id.get(run_id)
             if run is None:
                 errors.append("planning_run_missing")
-            elif run.status in {"failed", "stale"} and run.error_code:
+            elif assignment.investigation_id not in set(run.investigation_ids or []):
+                continue
+            elif run.status == "failed":
+                errors.append(run.error_code or "optimization_failed")
+                route_failed = True
+            elif run.status == "stale" and run.error_code:
                 errors.append(run.error_code)
             elif run.status == "applied":
                 item = db.query(PlanningItem).filter(
                     PlanningItem.planning_run_id == run.id,
                     PlanningItem.investigation_id == assignment.investigation_id,
                 ).first()
-                if item is None or item.outcome != "assigned" or item.agent_id != assignment.agent_id:
+                if item is None:
+                    errors.append("route_not_published")
+                    route_failed = True
+                elif item.outcome == "unassigned":
                     errors.append(item.reason if item and item.reason else "route_not_published")
+                    assignment_unscheduled = assignment_unscheduled or bool(
+                        item.investigation_id == assignment.investigation_id
+                    )
+                elif item.outcome != "assigned" or item.agent_id != assignment.agent_id:
+                    errors.append(item.reason if item.reason else "route_not_published")
+                    route_failed = True
                 else:
                     route = db.query(PlanningRoute).filter(
                         PlanningRoute.planning_run_id == run.id,
@@ -1994,6 +2283,7 @@ def sync_assignment_route_refresh(
                             else "route_geometry_invalid" if route
                             else "route_not_published"
                         )
+                        route_failed = True
 
         current_route = None
         current_route_status = None
@@ -2013,21 +2303,34 @@ def sync_assignment_route_refresh(
                 route_agent is not None
                 and route_agent["route"] is not None
                 and route_agent["route"]["geometry_status"] == "ready"
-                and any(stop["investigation_id"] == assignment.investigation_id for stop in route_agent["stops"])
+                and (
+                    assignment_unscheduled
+                    or any(stop["investigation_id"] == assignment.investigation_id for stop in route_agent["stops"])
+                )
             ):
                 current_route = route_agent
             if current_route is not None:
                 current_route_status = current_route["route_status"]
 
         errors = list(dict.fromkeys(errors))
-        if current_route is not None:
+        if assignment_unscheduled:
+            assignment.auto_route_status = "unscheduled"
+        elif route_failed and current_route is None:
+            assignment.auto_route_status = "failed"
+        elif current_route is not None:
             assignment.auto_route_status = (
                 "partially_published"
                 if errors or current_route_status == "partially_published"
                 else "published"
             )
         else:
-            assignment.auto_route_status = "failed"
+            assignment.auto_route_status = (
+                "unscheduled"
+                if assignment.is_active and (
+                    assignment_unscheduled or assignment.assignment_source == "manual"
+                )
+                else "failed"
+            )
             if not errors:
                 errors.append("route_not_published" if runs else "no_routeable_assigned_work")
         assignment.auto_route_errors = errors
@@ -2065,6 +2368,7 @@ def _snapshot(db: Session, run: PlanningRun, cases: list[Investigation], shifts:
             {
                 "id": case.id,
                 "status": case.status,
+                "manual_assignment_required": case.manual_assignment_required,
                 "reopen_on": case.reopen_on.isoformat() if case.reopen_on else None,
                 "deleted": _iso_utc(case.deleted_at),
                 "region": case.region_code,
@@ -2408,6 +2712,8 @@ def _run_component(
     open_case_counts: dict[int, int],
     solver: VROOMClient,
     now: datetime | None = None,
+    radius_eligible_agent_ids_by_case: dict[int, set[int]] | None = None,
+    manual_locked_case_ids: set[int] | None = None,
 ) -> list[dict]:
     # Keep optimizer input and schedule validation on the same clock snapshot.
     # VROOM commonly starts at the exact lower bound sent in the vehicle
@@ -2420,18 +2726,28 @@ def _run_component(
     component_distances = [[int(distances[source][target]) for target in component] for source in component]
     jobs = []
     case_by_id = {case.id: case for case in cases}
+    case_radius_skill = {
+        case.id: 10_000_000 + index
+        for index, case in enumerate(sorted(cases, key=lambda item: item.id), start=1)
+    }
+    radius_eligible_agent_ids_by_case = radius_eligible_agent_ids_by_case or {}
+    manual_locked_case_ids = manual_locked_case_ids or set()
     for case in cases:
         coordinate = (round(case.latitude, 6), round(case.longitude, 6))
         index = point_indexes[coordinate]
         if index not in component_set:
             continue
+        is_manual_override = case.id in manual_locked_case_ids and locked.get(case.id) == case.assigned_agent_id
         job = {
             "id": case.id,
             "location": [case.longitude, case.latitude],
             "location_index": local_index[index],
             "service": case.service_duration_seconds,
             "priority": 1 if getattr(case, "_route_retry_pending", False) else PRIORITY_VALUES.get(case.priority, 10),
-            "skills": [_region_skill(case.region_code)],
+            "skills": [] if is_manual_override else [
+                _region_skill(case.region_code),
+                case_radius_skill[case.id],
+            ],
         }
         windows = []
         contact_from = getattr(case, "_route_contact_available_from", None)
@@ -2440,7 +2756,7 @@ def _run_component(
             earliest_start_candidates = [
                 value for value in (case.visit_not_before_at, contact_from) if value is not None
             ]
-            earliest_start = max((_epoch(value) for value in earliest_start_candidates), default=None)
+            earliest_start = max((_epoch_ceil(value) for value in earliest_start_candidates), default=None)
             latest_end_candidates = [
                 value for value in (case.visit_due_at, contact_until) if value is not None
             ]
@@ -2485,6 +2801,12 @@ def _run_component(
             continue
         vehicle_skills = [_region_skill(code) for code in sorted(catalog()["region_codes"])] if shift.region_code == ALL_REGIONS else [_region_skill(shift.region_code)]
         vehicle_skills.append(1_000_000 + shift.agent_id)
+        vehicle_skills.extend(
+            case_radius_skill[case.id]
+            for case in cases
+            if case.id not in manual_locked_case_ids
+            and shift.agent_id in radius_eligible_agent_ids_by_case.get(case.id, set())
+        )
         vehicle = {
             "id": shift.agent_id,
             "profile": "car",
@@ -2849,8 +3171,8 @@ def _run_component(
                     "job_service_after_shift_end",
                     service_start + case.service_duration_seconds - shift_end_epoch,
                 )
-            if case.visit_not_before_at and service_start < _epoch(case.visit_not_before_at):
-                _reject_vroom_schedule("job_service_before_visit_window", _epoch(case.visit_not_before_at) - service_start)
+            if case.visit_not_before_at and service_start < _epoch_ceil(case.visit_not_before_at):
+                _reject_vroom_schedule("job_service_before_visit_window", _epoch_ceil(case.visit_not_before_at) - service_start)
             if case.visit_due_at and service_start + case.service_duration_seconds > _epoch(case.visit_due_at):
                 _reject_vroom_schedule(
                     "job_service_after_visit_window",
@@ -3146,6 +3468,16 @@ def execute_run(db: Session, run_id: int) -> None:
             .all()
         ) if run.investigation_ids else []
         assignment_by_case = {item.investigation_id: item for item in active_assignments}
+        manual_owners = {
+            item.investigation_id: item.agent_id
+            for item in active_assignments
+            if item.assignment_source == "manual"
+        }
+        automatic_owners = {
+            item.investigation_id: item.agent_id
+            for item in active_assignments
+            if item.assignment_source == "automatic"
+        }
         movable_ids = set(run.movable_investigation_ids or [])
         current_now = _database_now(db)
         in_progress_agent_ids = set(
@@ -3192,7 +3524,19 @@ def execute_run(db: Session, run_id: int) -> None:
             for case in case_rows:
                 if case.deleted_at is None and case.status in {"pending", "assigned"} and case.location_confirmed:
                     if case.id in movable_ids:
-                        reason = "waiting_for_reassignment"
+                        owner_id = automatic_owners.get(case.id)
+                        owner_shift = (
+                            shift_by_agent.get(owner_id)
+                            or db.query(AgentShift).filter(
+                                AgentShift.agent_id == owner_id,
+                                AgentShift.work_date == run.work_date,
+                            ).first()
+                        ) if owner_id is not None else None
+                        reason = (
+                            "outside_service_radius"
+                            if owner_shift and not _case_within_service_radius(case, owner_shift)
+                            else "waiting_for_reassignment"
+                        )
                     else:
                         fixed_agent = locked.get(case.id) or case.assigned_agent_id
                         reason = agent_blockers.get(fixed_agent) if fixed_agent is not None else None
@@ -3220,7 +3564,9 @@ def execute_run(db: Session, run_id: int) -> None:
             if case is None or case.deleted_at is not None:
                 preflight[case_id] = ("unassigned", "investigation_unavailable")
                 continue
-            if run.region_code != ALL_REGIONS and case.region_code != run.region_code:
+            fixed_agent = locked.get(case.id) or (None if case.id in movable_ids else case.assigned_agent_id)
+            manual_override = manual_owners.get(case.id) == fixed_agent == case.assigned_agent_id
+            if run.region_code != ALL_REGIONS and case.region_code != run.region_code and not manual_override:
                 preflight[case_id] = ("unassigned", "region_mismatch")
                 continue
             if case.status not in {"pending", "assigned"}:
@@ -3230,7 +3576,6 @@ def execute_run(db: Session, run_id: int) -> None:
                 preflight[case_id] = ("unassigned", "location_unconfirmed")
                 continue
             current = assignment_by_case.get(case.id)
-            fixed_agent = locked.get(case.id) or (None if case.id in movable_ids else case.assigned_agent_id)
             if current and fixed_agent != current.agent_id and case.id not in movable_ids:
                 raise PlanningConflict("assignment_lock_conflict")
             if fixed_agent and fixed_agent not in {shift.agent_id for shift in eligible_agents}:
@@ -3263,6 +3608,31 @@ def execute_run(db: Session, run_id: int) -> None:
             )
             return
 
+        radius_eligible_agent_ids_by_case: dict[int, set[int]] = {}
+        manual_locked_case_ids: set[int] = set()
+        for case in cases:
+            fixed_agent = locked.get(case.id) or (None if case.id in movable_ids else case.assigned_agent_id)
+            if manual_owners.get(case.id) == fixed_agent == case.assigned_agent_id and fixed_agent is not None:
+                manual_locked_case_ids.add(case.id)
+                radius_eligible_agent_ids_by_case[case.id] = {fixed_agent}
+                continue
+            eligible_for_case = {
+                shift.agent_id
+                for shift in eligible_agents
+                if shift.region_code in {case.region_code, ALL_REGIONS}
+                and _case_within_service_radius(case, shift)
+            }
+            radius_eligible_agent_ids_by_case[case.id] = eligible_for_case
+            if not eligible_for_case:
+                preflight[case.id] = ("unassigned", "outside_service_radius")
+        cases = [case for case in cases if radius_eligible_agent_ids_by_case.get(case.id)]
+        if not cases:
+            _record_ready_run(
+                db, run, expected_input_digest, case_rows, shifts, agents,
+                assignment_by_case, preflight, {},
+            )
+            return
+
         earliest_shift_start = min(_epoch(_planning_floor(shift, current_now)) for shift in used_shifts)
         latest_shift_end = max(_epoch(shift.shift_ends_at) for shift in used_shifts)
         impossible_windows = set()
@@ -3271,7 +3641,7 @@ def execute_run(db: Session, run_id: int) -> None:
                 preflight[case.id] = ("unassigned", "expired_visit_window")
                 impossible_windows.add(case.id)
                 continue
-            earliest_start = _epoch(case.visit_not_before_at) if case.visit_not_before_at else earliest_shift_start
+            earliest_start = _epoch_ceil(case.visit_not_before_at) if case.visit_not_before_at else earliest_shift_start
             latest_start = _epoch(case.visit_due_at) - case.service_duration_seconds if case.visit_due_at else latest_shift_end
             if earliest_start > latest_start:
                 preflight[case.id] = ("unassigned", "deadline_before_service_window")
@@ -3366,6 +3736,50 @@ def execute_run(db: Session, run_id: int) -> None:
         if not _valid_cost_matrix(durations, len(coordinates)) or not _valid_cost_matrix(distances, len(coordinates)):
             raise RoutingUnavailable("osrm_matrix_shape_invalid")
 
+        # A manual assignment may intentionally exceed the normal depot-radius
+        # rule, but an impossible same-day stop must not make the optimizer
+        # discard every other locked stop on that vehicle. If even the shortest
+        # required path from the current origin through the stop and back to an
+        # explicit shift end (plus service) exceeds the remaining shift, retain
+        # the manual assignment as unscheduled and optimize the feasible work.
+        shift_by_agent = {shift.agent_id: shift for shift in used_shifts}
+        manual_stops_beyond_shift: set[int] = set()
+        for case in cases:
+            if case.id not in manual_locked_case_ids:
+                continue
+            agent_id = locked.get(case.id) or case.assigned_agent_id
+            shift = shift_by_agent.get(agent_id)
+            if shift is None:
+                continue
+            origin_latitude, origin_longitude, _origin_label = _route_origin(shift, current_now)
+            origin = point_indexes[(round(origin_latitude, 6), round(origin_longitude, 6))]
+            case_point = point_indexes[(round(case.latitude, 6), round(case.longitude, 6))]
+            travel_to_case = durations[origin][case_point]
+            if travel_to_case is None or not isfinite(travel_to_case):
+                continue
+            minimum_required_seconds = travel_to_case + case.service_duration_seconds
+            destination = _route_destination(shift)
+            if destination is not None:
+                end_latitude, end_longitude, _end_label = destination
+                end = point_indexes[(round(end_latitude, 6), round(end_longitude, 6))]
+                travel_to_end = durations[case_point][end]
+                if travel_to_end is None or not isfinite(travel_to_end):
+                    continue
+                minimum_required_seconds += travel_to_end
+            remaining_shift_seconds = _epoch(shift.shift_ends_at) - _epoch(
+                _planning_floor(shift, current_now)
+            )
+            if minimum_required_seconds > remaining_shift_seconds:
+                manual_stops_beyond_shift.add(case.id)
+                preflight[case.id] = ("unassigned", "manual_stop_exceeds_shift")
+        cases = [case for case in cases if case.id not in manual_stops_beyond_shift]
+        if not cases:
+            _record_ready_run(
+                db, run, expected_input_digest, case_rows, shifts, agents,
+                assignment_by_case, preflight, {},
+            )
+            return
+
         components = _connected_components(durations, distances)
         outcomes: list[dict] = []
         covered_case_ids: set[int] = set()
@@ -3390,6 +3804,8 @@ def execute_run(db: Session, run_id: int) -> None:
                 component, point_indexes, coordinates, durations, distances,
                 component_cases, component_shifts, locked, open_counts, solver,
                 now=current_now,
+                radius_eligible_agent_ids_by_case=radius_eligible_agent_ids_by_case,
+                manual_locked_case_ids=manual_locked_case_ids,
             )
             outcomes.extend(result)
             covered_case_ids.update(component_case_ids)
@@ -3402,7 +3818,13 @@ def execute_run(db: Session, run_id: int) -> None:
         for case_id, agent_id in locked.items():
             result = outcome_by_case.get(case_id)
             if result is None or result.get("agent_id") != agent_id:
-                raise PlanningConflict("locked_case_not_feasible")
+                is_unscheduled_for_constraints = bool(
+                    result
+                    and result.get("outcome") == "unassigned"
+                    and result.get("reason") == "no_feasible_route_under_constraints"
+                )
+                if case_id not in manual_locked_case_ids and not is_unscheduled_for_constraints:
+                    raise PlanningConflict("locked_case_not_feasible")
         for case_id in run.investigation_ids:
             item = outcome_by_case.get(case_id)
             if item:
@@ -3602,6 +4024,31 @@ def apply_run(
         raise PlanningConflict("route_geometry_incomplete")
 
     locked = {item["investigation_id"]: item["agent_id"] for item in run.locked_assignments}
+    assignments = {
+        assignment.investigation_id: assignment
+        for assignment in db.query(InvestigationAssignment)
+        .filter(InvestigationAssignment.investigation_id.in_(case_ids), InvestigationAssignment.is_active.is_(True))
+        .with_for_update()
+        .all()
+    }
+    manual_locked_case_ids = {
+        investigation_id
+        for investigation_id, assignment in assignments.items()
+        if assignment.assignment_source == "manual"
+        and locked.get(investigation_id) == assignment.agent_id
+    }
+    movable_case_ids = set(run.movable_investigation_ids or [])
+    assignment_owner_ids = {
+        assignment.agent_id for assignment in assignments.values()
+        if assignment.investigation_id in movable_case_ids
+    }
+    assignment_owner_shifts = {
+        shift.agent_id: shift
+        for shift in db.query(AgentShift).filter(
+            AgentShift.agent_id.in_(assignment_owner_ids),
+            AgentShift.work_date == run.work_date,
+        ).all()
+    } if assignment_owner_ids else {}
     sequence_keys: set[tuple[int, int]] = set()
 
     # Apply is all-or-nothing. Every proposed stop is rechecked under the locks above.
@@ -3610,8 +4057,11 @@ def apply_run(
             preserved_assignment = item.reason in {
                 "no_available_agents", "locked_agent_unavailable", "unsafe_agent_origin", "waiting_for_reassignment",
                 "agent_in_progress", "shift_ended", "agent_not_eligible", "agent_shift_unavailable",
-                "agent_region_mismatch", "no_routable_agent_start",
+                "agent_region_mismatch", "no_routable_agent_start", "no_feasible_route_under_constraints",
             }
+            preserved_assignment = preserved_assignment or (
+                item.investigation_id in manual_locked_case_ids and item.reason is not None
+            )
             if item.agent_id is not None or item.sequence is not None or (item.investigation_id in locked and not preserved_assignment):
                 raise PlanningConflict("planning_result_invalid")
             continue
@@ -3653,8 +4103,47 @@ def apply_run(
             raise PlanningConflict("visit_window_changed")
         if case.visit_due_at and service_start.timestamp() + case.service_duration_seconds > _as_utc(case.visit_due_at).timestamp():
             raise PlanningConflict("visit_window_changed")
+        current_assignment = assignments.get(case.id)
+        manual_override = bool(
+            current_assignment
+            and current_assignment.assignment_source == "manual"
+            and current_assignment.agent_id == item.agent_id
+            and case.assigned_agent_id == item.agent_id
+        )
+        if not manual_override and not _case_within_service_radius(case, shift):
+            raise PlanningConflict("service_radius_changed")
 
     for item in items:
+        if item.outcome == "unassigned":
+            current = assignments.get(item.investigation_id)
+            case = case_by_id.get(item.investigation_id)
+            owner_shift = assignment_owner_shifts.get(current.agent_id) if current else None
+            if (
+                case is not None
+                and current is not None
+                and current.assignment_source == "automatic"
+                and item.investigation_id in movable_case_ids
+                and case.assigned_agent_id == current.agent_id
+                and owner_shift is not None
+                and not _case_within_service_radius(case, owner_shift)
+            ):
+                current.is_active = False
+                current.unassigned_at = datetime.now(timezone.utc)
+                case.assigned_agent_id = None
+                if case.status == "assigned":
+                    case.status = "pending"
+                db.add(ActivityLog(
+                    actor_id=actor.id,
+                    action="investigation.automatic_assignment_removed_outside_service_radius",
+                    object_type="investigation",
+                    object_id=case.id,
+                    details={
+                        "planning_run_id": run.id,
+                        "previous_agent_id": current.agent_id,
+                        "service_radius_metres": DEFAULT_SERVICE_RADIUS_METRES,
+                    },
+                ))
+            continue
         if item.outcome != "assigned" or item.agent_id is None:
             continue
         case = case_by_id[item.investigation_id]
@@ -3664,7 +4153,13 @@ def apply_run(
             raise PlanningConflict("case_no_longer_assignable")
         if not agent or agent.role != "agent" or not agent.is_active or not shift or not shift.is_available:
             raise PlanningConflict("agent_no_longer_eligible")
-        if (run.region_code != ALL_REGIONS and shift.region_code not in {run.region_code, ALL_REGIONS}) or (run.region_code != ALL_REGIONS and case.region_code != run.region_code):
+        manual_override = bool(
+            assignments.get(case.id)
+            and assignments[case.id].assignment_source == "manual"
+            and assignments[case.id].agent_id == item.agent_id
+            and case.assigned_agent_id == item.agent_id
+        )
+        if (run.region_code != ALL_REGIONS and shift.region_code not in {run.region_code, ALL_REGIONS}) or (run.region_code != ALL_REGIONS and case.region_code != run.region_code and not manual_override):
             raise PlanningConflict("region_changed")
         if not case.location_confirmed:
             raise PlanningConflict("location_changed")
@@ -3691,13 +4186,6 @@ def apply_run(
         if shift is None or count > shift.max_visits or projected > shift.max_open_cases:
             raise PlanningConflict("agent_capacity_changed")
 
-    assignments = {
-        assignment.investigation_id: assignment
-        for assignment in db.query(InvestigationAssignment)
-        .filter(InvestigationAssignment.investigation_id.in_(case_ids), InvestigationAssignment.is_active.is_(True))
-        .with_for_update()
-        .all()
-    }
     for item in items:
         if item.outcome != "assigned" or item.agent_id is None:
             continue
@@ -3706,8 +4194,7 @@ def apply_run(
         current = assignments.get(case.id)
         if current and current.agent_id != agent.id:
             if (
-                run.auto_publish
-                or case.id not in set(run.movable_investigation_ids or [])
+                case.id not in movable_case_ids
                 or current.assignment_source != "automatic"
             ):
                 raise PlanningConflict("assignment_changed")

@@ -58,6 +58,11 @@ const UsersPage = lazy(() =>
     default: module.UsersPage,
   })),
 );
+const AccessControlPage = lazy(() =>
+  import("@/features/agent-permissions/pages/AccessControlPage").then((module) => ({
+    default: module.AccessControlPage,
+  })),
+);
 const ActivityLogPage = lazy(() =>
   import("@/features/activity-logs/pages/ActivityLogPage").then((module) => ({
     default: module.ActivityLogPage,
@@ -150,6 +155,14 @@ export function AppRoutes() {
           element={
             <ProtectedRoute roles={["admin"]}>
               <UsersPage />
+            </ProtectedRoute>
+          }
+        />
+        <Route
+          path="access-control"
+          element={
+            <ProtectedRoute roles={["admin"]}>
+              <AccessControlPage />
             </ProtectedRoute>
           }
         />

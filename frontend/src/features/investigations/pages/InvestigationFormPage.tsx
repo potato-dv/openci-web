@@ -255,8 +255,8 @@ function Editor({
         actions={
           investigation ? (
             <div className="flex w-full flex-wrap items-center gap-2 sm:w-auto sm:justify-end">
-              <span className="inline-flex min-w-0 max-w-full items-center gap-2 rounded-lg border border-openci-border bg-openci-surface px-3 py-2 text-openci-text shadow-sm">
-                <span className="shrink-0 text-[10px] font-semibold uppercase tracking-[0.08em] text-openci-text-subtle">
+              <span className="inline-flex min-w-0 max-w-full items-center gap-2 rounded-lg border border-openci-border bg-openci-surface px-3 py-2 text-openci-text">
+                <span className="shrink-0 text-xs font-medium text-openci-text-muted">
                   Reference
                 </span>
                 <code
@@ -302,14 +302,11 @@ function Editor({
         >
           {investigation ? (
             <>
-              <div className="investigation-edit-heading flex items-center gap-3 rounded-xl border border-openci-border bg-gradient-to-r from-openci-surface-selected to-openci-surface p-4 shadow-sm md:p-5">
-                <span className="grid size-11 shrink-0 place-items-center rounded-xl bg-openci-accent text-white shadow-sm">
+              <div className="investigation-edit-heading flex items-center gap-3 rounded-xl border border-openci-border bg-openci-surface p-4 md:p-5">
+                <span className="grid size-10 shrink-0 place-items-center rounded-lg bg-openci-surface-selected text-openci-accent-strong">
                   <FilePenLine size={20} strokeWidth={1.9} aria-hidden="true" />
                 </span>
                 <div className="min-w-0">
-                  <p className="mb-1 text-[11px] font-bold uppercase tracking-[0.08em] text-openci-accent-strong">
-                    Record editor
-                  </p>
                   <h2
                     ref={headingRef}
                     tabIndex={-1}

@@ -47,7 +47,7 @@ const routePlanningClasses = {
   header: [
     "route-planning-header z-[1400] flex flex-col gap-3 border-b border-openci-border bg-white px-4 py-3",
     "xl:flex-row xl:flex-wrap xl:items-end xl:justify-between xl:gap-4",
-    "min-[1440px]:absolute! min-[1440px]:left-3! min-[1440px]:right-auto! min-[1440px]:top-3! min-[1440px]:w-max! min-[1440px]:max-w-[calc(100%-1.5rem)]! min-[1440px]:min-h-14! min-[1440px]:flex-nowrap! min-[1440px]:items-center! min-[1440px]:justify-start! min-[1440px]:rounded-xl! min-[1440px]:border-0! min-[1440px]:px-3! min-[1440px]:py-2! min-[1440px]:shadow-lg!",
+    "min-[1440px]:absolute! min-[1440px]:left-3! min-[1440px]:right-auto! min-[1440px]:top-3! min-[1440px]:w-max! min-[1440px]:max-w-[calc(100%-1.5rem)]! min-[1440px]:min-h-14! min-[1440px]:flex-nowrap! min-[1440px]:items-center! min-[1440px]:justify-start! min-[1440px]:rounded-xl! min-[1440px]:border-0! min-[1440px]:px-3! min-[1440px]:py-2! min-[1440px]:shadow-md!",
   ].join(" "),
   toolbar: [
     "route-planning-toolbar-controls flex w-full min-w-0 flex-wrap items-end gap-2 md:flex-none xl:flex-[2_1_480px]",
@@ -68,7 +68,7 @@ const routePlanningClasses = {
     "relative min-[1440px]:absolute! min-[1440px]:inset-0! min-[1440px]:z-[1]! min-[1440px]:block! min-[1440px]:h-auto! min-[1440px]:min-h-0! min-[1440px]:w-full! min-[1440px]:overflow-hidden! min-[1440px]:bg-transparent!",
   ].join(" "),
   widePanel: [
-    "min-[1440px]:absolute! min-[1440px]:top-[208px]! min-[1440px]:bottom-[76px]! min-[1440px]:z-[1200]! min-[1440px]:block! min-[1440px]:overflow-x-hidden! min-[1440px]:overflow-y-auto! min-[1440px]:rounded-xl! min-[1440px]:border-0! min-[1440px]:bg-white! min-[1440px]:shadow-lg!",
+    "min-[1440px]:absolute! min-[1440px]:top-[208px]! min-[1440px]:bottom-[76px]! min-[1440px]:z-[1200]! min-[1440px]:block! min-[1440px]:overflow-x-hidden! min-[1440px]:overflow-y-auto! min-[1440px]:rounded-xl! min-[1440px]:border-0! min-[1440px]:bg-white! min-[1440px]:shadow-md!",
   ].join(" "),
   map: [
     "planning-map-region relative isolate min-[1440px]:absolute! min-[1440px]:inset-0! min-[1440px]:z-0! min-[1440px]:block! min-[1440px]:h-full! min-[1440px]:w-full! min-[1440px]:min-w-0!",
@@ -480,12 +480,12 @@ export function RoutePlanningPage() {
             <ChevronRight size={14} aria-hidden="true" />
             <span aria-current="page">Route Planning</span>
           </nav>
-          <h1 className="m-0! text-xl! font-semibold! leading-tight! tracking-[-0.025em]!">
+          <h1 className="m-0! text-[24px]! font-semibold! leading-tight! tracking-[-0.025em]!">
             Route Planning
           </h1>
         </div>
         <div className={routePlanningClasses.toolbar}>
-          <label className="route-scope-field flex min-w-[150px] flex-1 flex-col gap-1 text-xs font-medium text-openci-text-muted min-[1440px]:flex-none!">
+          <label className="route-scope-field flex min-w-[150px] flex-1 flex-col gap-1 text-[13px] font-medium text-openci-text-muted min-[1440px]:flex-none!">
             <span className="inline-flex items-center gap-1.5">
               <CalendarDays size={15} aria-hidden="true" /> Work date
             </span>
@@ -497,7 +497,7 @@ export function RoutePlanningPage() {
               onChange={(event) => updateScope("date", event.target.value)}
             />
           </label>
-          <label className="route-scope-field region-scope-field flex min-w-[180px] flex-[1.25] flex-col gap-1 text-xs font-medium text-openci-text-muted min-[1440px]:flex-none!">
+          <label className="route-scope-field region-scope-field flex min-w-[180px] flex-[1.25] flex-col gap-1 text-[13px] font-medium text-openci-text-muted min-[1440px]:flex-none!">
             <span className="inline-flex items-center gap-1.5">
               <MapPinned size={15} aria-hidden="true" /> Service region{" "}
               <em className="font-normal not-italic text-openci-text-subtle">

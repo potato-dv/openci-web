@@ -99,6 +99,23 @@ export function assignInvestigation(
   });
 }
 
+export function unassignInvestigation(token: string, investigationId: number) {
+  return requestJson<Investigation>(
+    `/investigations/${investigationId}/assignment`,
+    { method: "DELETE", token },
+  );
+}
+
+export function submitAutomaticAssignment(
+  token: string,
+  investigationId: number,
+) {
+  return requestJson<Investigation>(
+    `/investigations/${investigationId}/automatic-assignment`,
+    { method: "POST", token },
+  );
+}
+
 export function retryInvestigationRoute(token: string, investigationId: number) {
   return requestJson<Assignment>(
     `/investigations/${investigationId}/route-refresh`,

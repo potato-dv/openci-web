@@ -61,6 +61,46 @@ def get_agent_revisit_request(
     )
 
 
+def can_request_agent_revisit(
+    db: Session,
+    investigation: Investigation,
+    agent: User,
+) -> bool:
+    if (
+        agent.role != "agent"
+        or not agent.is_active
+        or investigation.assigned_agent_id != agent.id
+        or not investigation.location_confirmed
+        or not investigation.region_code
+        or investigation.status not in {"returned_for_correction", "in_progress"}
+    ):
+        return False
+    latest_report = (
+        db.query(InvestigationReport)
+        .filter(InvestigationReport.investigation_id == investigation.id)
+        .order_by(InvestigationReport.version.desc(), InvestigationReport.id.desc())
+        .first()
+    )
+    returned_report = (
+        db.query(InvestigationReport)
+        .filter(
+            InvestigationReport.investigation_id == investigation.id,
+            InvestigationReport.status == "returned_for_correction",
+        )
+        .order_by(InvestigationReport.version.desc(), InvestigationReport.id.desc())
+        .first()
+    )
+    if returned_report is None or latest_report is None:
+        return False
+    if latest_report.status not in {"returned_for_correction", "draft"}:
+        return False
+    active_request = db.query(AgentRevisitRequest.id).filter(
+        AgentRevisitRequest.report_id == returned_report.id,
+        AgentRevisitRequest.status.in_(ACTIVE_REVISIT_STATUSES),
+    ).first()
+    return active_request is None
+
+
 def request_agent_revisit(
     db: Session,
     investigation: Investigation,

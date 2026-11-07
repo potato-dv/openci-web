@@ -1,10 +1,14 @@
+import { Table, TableHeader, TableBody, TableRow, TableHead, TableCell } from "@/components/ui/table";
 import { useEffect, useState } from "react";
+import { RefreshCw } from "lucide-react";
 
 import { getActivityLogs } from "@/features/activity-logs/api";
 import type { ActivityLog } from "@/types/api";
-import { Notice } from "@/components/ui/Notice";
-import { SectionToolbar } from "@/components/layout/SectionToolbar";
+import { PageHeader } from "@/components/layout/PageHeader";
+import { Card } from "@/components/ui/card";
+import { Button, EmptyState, InlineAlert, Skeleton } from "@/components/ui/Primitives";
 import { formatUserName } from "@/utils/userName";
+import { date, time } from "@/utils/format";
 
 function humanize(value: string) {
   return value.replaceAll("_", " ").replace(/\b\w/g, (character) => character.toUpperCase());
@@ -52,6 +56,12 @@ export function ActivityLogPage({ token }: { token: string }) {
   const [error, setError] = useState("");
   const [refresh, setRefresh] = useState(0);
 
+  function reload() {
+    setLoading(true);
+    setError("");
+    setRefresh((value) => value + 1);
+  }
+
   useEffect(() => {
     let cancelled = false;
     getActivityLogs(token)
@@ -62,25 +72,86 @@ export function ActivityLogPage({ token }: { token: string }) {
   }, [refresh, token]);
 
   return (
-    <section className="content-card">
-      <SectionToolbar title="System activity" description="Recent account and investigation changes." actions={<button className="secondary-button toolbar-button" onClick={() => { setLoading(true); setError(""); setRefresh((value) => value + 1); }} disabled={loading}>Refresh</button>} />
-      {error && <Notice message={error} actionLabel="Retry" onAction={() => { setLoading(true); setError(""); setRefresh((value) => value + 1); }} />}
-      {loading ? <p className="muted">Loading activity…</p> : items.length === 0 ? <p className="empty-state">No activity recorded yet.</p> : (
-        <div className="table-wrap"><table><thead><tr><th>When</th><th>Actor</th><th>Action</th><th>Record</th><th>Details</th></tr></thead><tbody>
-          {items.map((item) => {
-            const details = formatActivityDetails(item);
-            return (
-              <tr key={item.id}>
-                <td>{new Date(item.created_at).toLocaleString()}</td>
-                <td>{item.actor_name ? formatUserName(item.actor_name) : "System"}</td>
-                <td>{item.action.replaceAll(".", " ")}</td>
-                <td>{item.object_type}{item.object_id ? ` #${item.object_id}` : ""}</td>
-                <td><span className="activity-details-text" title={details}>{details}</span></td>
-              </tr>
-            );
-          })}
-        </tbody></table></div>
-      )}
-    </section>
+    <>
+      <PageHeader
+        title="Activity Logs"
+        description="Recent account and investigation changes. Times are shown in Philippine time."
+        actions={
+          <Button onClick={reload} disabled={loading}>
+            <RefreshCw size={16} aria-hidden="true" />
+            Refresh
+          </Button>
+        }
+      />
+      <Card className="content-card">
+        {error && <InlineAlert onRetry={reload}>{error}</InlineAlert>}
+        {loading ? (
+          <Skeleton rows={5} />
+        ) : items.length === 0 ? (
+          <EmptyState title="No activity recorded yet">
+            Account and investigation changes will appear here.
+          </EmptyState>
+        ) : (
+          <>
+          <div className="table-wrap desktop-data">
+            <Table className="min-w-[850px] table-fixed">
+              <colgroup>
+                <col className="w-[17%]" />
+                <col className="w-[17%]" />
+                <col className="w-[21%]" />
+                <col className="w-[15%]" />
+                <col className="w-[30%]" />
+              </colgroup>
+              <TableHeader>
+                <TableRow>
+                  <TableHead scope="col">When · PHT</TableHead>
+                  <TableHead scope="col">Actor</TableHead>
+                  <TableHead scope="col">Action</TableHead>
+                  <TableHead scope="col">Record</TableHead>
+                  <TableHead scope="col">Details</TableHead>
+                </TableRow>
+              </TableHeader>
+              <TableBody>
+                {items.map((item) => {
+                  const details = formatActivityDetails(item);
+                  return (
+                    <TableRow key={item.id}>
+                      <TableCell>
+                        <time dateTime={item.created_at} className="grid gap-0.5 whitespace-nowrap">
+                          <span>{date(item.created_at)}</span>
+                          <span className="text-xs text-openci-text-muted">{time(item.created_at)}</span>
+                        </time>
+                      </TableCell>
+                      <TableCell className="font-medium">{item.actor_name ? formatUserName(item.actor_name) : "System"}</TableCell>
+                      <TableCell className="capitalize">{item.action.replaceAll(".", " ")}</TableCell>
+                      <TableCell className="truncate" title={`${item.object_type}${item.object_id ? ` #${item.object_id}` : ""}`}>
+                        {humanize(item.object_type)}{item.object_id ? ` #${item.object_id}` : ""}
+                      </TableCell>
+                      <TableCell><span className="activity-details-text line-clamp-2" title={details}>{details}</span></TableCell>
+                    </TableRow>
+                  );
+                })}
+              </TableBody>
+            </Table>
+          </div>
+          <ul className="workspace-mobile-list" aria-label="Activity log entries">
+            {items.map((item) => {
+              const details = formatActivityDetails(item);
+              return (
+                <li key={item.id}>
+                  <div className="mobile-row-heading">
+                    <strong className="capitalize">{item.action.replaceAll(".", " ")}</strong>
+                    <time className="text-xs text-openci-text-muted" dateTime={item.created_at}>{date(item.created_at)}</time>
+                  </div>
+                  <span className="mobile-row-meta">{item.actor_name ? formatUserName(item.actor_name) : "System"} · {humanize(item.object_type)}{item.object_id ? ` #${item.object_id}` : ""}</span>
+                  <p className="mb-0 text-[13px] text-openci-text">{details}</p>
+                </li>
+              );
+            })}
+          </ul>
+          </>
+        )}
+      </Card>
+    </>
   );
 }

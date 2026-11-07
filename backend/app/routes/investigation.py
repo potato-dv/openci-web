@@ -1,9 +1,9 @@
-from datetime import datetime, timezone
+from datetime import date, datetime, timezone
 from typing import Literal
 from zoneinfo import ZoneInfo
 
 from sqlalchemy import select, func, case, and_, or_
-from fastapi import APIRouter, Depends, HTTPException, status, Query, Header
+from fastapi import APIRouter, Depends, HTTPException, status, Query, Header, Response
 from sqlalchemy.orm import Session, joinedload
 
 from app.controllers.investigation import (
@@ -14,13 +14,15 @@ from app.controllers.investigation import (
     get_trash,
     get_investigation_report,
     get_investigation_report_versions,
-    read_revisit_request,
+    read_revisit_request_state,
     get_one,
     review_report,
     permanently_delete,
     restore,
     save_investigation_report,
     submit_investigation_report,
+    submit_automatic_assignment,
+    unassign,
     update,
 )
 from app.database.session import get_db
@@ -31,6 +33,7 @@ from app.models.planning import PlanningItem, PlanningRun
 from app.models.review import InvestigationReview
 from app.models.user import User
 from app.models.route_event import InvestigationRouteEvent
+from app.schemas.agent_permissions import InvestigationActivityResponse, RevisitRequestState
 from app.schemas.investigation import InvestigationCreate, InvestigationResponse, InvestigationUpdate, InvestigationPageResponse
 from app.schemas.assignment import AssignmentCreate, AssignmentResponse
 from app.schemas.report import ReportResponse, ReportUpsert, RevisitRequestResponse
@@ -54,6 +57,7 @@ from app.services.route_workflow import (
 from app.services.search import investigation_search, subject_expression
 from app.services.geocoding import suggest_locations
 from app.services.geospatial import cells_for_point
+from app.services.agent_permissions import is_agent_feature_allowed, require_agent_feature
 from app.utils.auth import get_current_user, require_roles
 from app.utils.features import require_planning_enabled
 
@@ -246,7 +250,7 @@ def get_report_for_investigation(
 
 @router.get(
     "/{investigation_id}/revisit-request",
-    response_model=RevisitRequestResponse | None,
+    response_model=RevisitRequestState,
     dependencies=[Depends(require_planning_enabled)],
 )
 def get_revisit_request_for_investigation(
@@ -254,16 +258,17 @@ def get_revisit_request_for_investigation(
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
-    request = read_revisit_request(db, investigation_id, current_user)
+    state_data = read_revisit_request_state(db, investigation_id, current_user)
+    request = state_data["request"]
     if request is None:
-        return None
-    return {
+        return {"request": None, "can_request": state_data["can_request"]}
+    return {"request": {
         **{field: getattr(request, field) for field in (
             "id", "investigation_id", "report_id", "agent_id", "target_work_date",
             "status", "planning_run_id", "created_at", "completed_at",
         )},
         "reference_number": db.query(Investigation.reference_number).filter(Investigation.id == request.investigation_id).scalar(),
-    }
+    }, "can_request": state_data["can_request"]}
 
 
 @router.post(
@@ -276,6 +281,7 @@ def request_revisit_for_investigation(
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
+    require_agent_feature(db, current_user, "investigation.request_revisit")
     request = create_revisit_request(db, investigation_id, current_user)
     return {
         **{field: getattr(request, field) for field in (
@@ -292,9 +298,11 @@ def request_revisit_for_investigation(
 )
 def list_report_versions_for_investigation(
     investigation_id: int,
+    response: Response,
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
+    response.headers["Cache-Control"] = "private, no-store"
     return get_investigation_report_versions(db, investigation_id, current_user)
 
 
@@ -460,6 +468,31 @@ def assign_investigation_to_agent(
     return assign(db, investigation_id, data, current_user)
 
 
+@router.delete(
+    "/{investigation_id}/assignment",
+    response_model=InvestigationResponse,
+)
+def unassign_investigation_from_agent(
+    investigation_id: int,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(require_roles("admin", "supervisor")),
+):
+    return unassign(db, investigation_id, current_user)
+
+
+@router.post(
+    "/{investigation_id}/automatic-assignment",
+    response_model=InvestigationResponse,
+    dependencies=[Depends(require_planning_enabled)],
+)
+def submit_investigation_for_automatic_assignment(
+    investigation_id: int,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(require_roles("admin", "supervisor")),
+):
+    return submit_automatic_assignment(db, investigation_id, current_user)
+
+
 @router.get(
     "/{investigation_id}/assignments",
     response_model=list[AssignmentResponse],
@@ -506,7 +539,7 @@ def retry_investigation_route_refresh(
         raise HTTPException(status_code=409, detail="No active assignment is available to refresh")
     if assignment.auto_route_status in {"queued", "running"}:
         raise HTTPException(status_code=409, detail="The route refresh is already in progress")
-    if assignment.auto_route_status not in {"failed", "partially_published"}:
+    if assignment.auto_route_status not in {"failed", "partially_published", "unscheduled"}:
         raise HTTPException(status_code=409, detail="Only a failed route refresh can be retried")
 
     from app.services.planning import queue_assignment_route_refresh
@@ -530,6 +563,8 @@ def get_investigations(
     base = db.query(Investigation).filter(Investigation.deleted_at.is_(None))
     if current_user.role == "agent":
         base = base.filter(Investigation.assigned_agent_id == current_user.id)
+        if not is_agent_feature_allowed(db, current_user, "investigation.view_own_history"):
+            base = base.filter(Investigation.status != "completed")
     status_counts = dict(base.with_entities(Investigation.status, func.count(Investigation.id)).group_by(Investigation.status).all())
     priority_counts = dict(base.with_entities(Investigation.priority, func.count(Investigation.id)).group_by(Investigation.priority).all())
     confirmed = (Investigation.latitude.is_not(None) & Investigation.longitude.is_not(None) & Investigation.location_confirmed_at.is_not(None))
@@ -674,6 +709,45 @@ def get_investigation(
     current_user: User = Depends(get_current_user),
 ):
     return get_one(db, investigation_id, current_user)
+
+
+@router.get("/{investigation_id}/activity-history", response_model=InvestigationActivityResponse)
+def get_investigation_activity_history(
+    investigation_id: int,
+    response: Response,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(require_roles("agent")),
+):
+    require_agent_feature(db, current_user, "investigation.view_own_history")
+    get_one(db, investigation_id, current_user)
+    safe_actions = {
+        "investigation.created": "Investigation created",
+        "investigation.assigned": "Investigation assigned",
+        "investigation.unassigned": "Investigation unassigned",
+        "investigation.updated": "Investigation details updated",
+        "investigation.revisit_requested": "Revisit requested",
+        "investigation.route_stop_started": "Visit started",
+        "investigation.no_contact_deferred": "Visit deferred",
+        "investigation.cancelled_no_contact_finalized": "No-contact report submitted",
+        "report.saved": "Report draft saved",
+        "report.submitted": "Report submitted",
+        "report.reviewed": "Report reviewed",
+    }
+    rows = db.query(ActivityLog).options(joinedload(ActivityLog.actor)).filter(
+        ActivityLog.object_type == "investigation",
+        ActivityLog.object_id == investigation_id,
+        ActivityLog.action.in_(tuple(safe_actions)),
+    ).order_by(ActivityLog.created_at.desc(), ActivityLog.id.desc()).limit(100).all()
+    response.headers["Cache-Control"] = "private, no-store"
+    return {"items": [
+        {
+            "id": row.id,
+            "label": safe_actions[row.action],
+            "actor_name": row.actor.name if row.actor else None,
+            "created_at": row.created_at,
+        }
+        for row in rows
+    ]}
 
 @router.patch("/{investigation_id}", response_model=InvestigationResponse)
 def update_investigation(

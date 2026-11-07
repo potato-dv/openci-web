@@ -6,6 +6,7 @@ import {
 } from "react";
 import { AlertCircle, Inbox, X } from "lucide-react";
 import { Modal } from "./Modal";
+import { Button as ShadcnButton } from "./button";
 import { friendlyError } from "../../utils/format";
 export function Button({
   variant = "secondary",
@@ -15,8 +16,10 @@ export function Button({
   variant?: "primary" | "secondary" | "danger";
 }) {
   return (
-    <button
+    <ShadcnButton
       type="button"
+      variant={variant === "primary" ? "default" : variant === "danger" ? "destructive" : "outline"}
+      size="lg"
       className={`${variant}-button ${className}`}
       {...props}
     />

@@ -13,15 +13,19 @@ export function Pagination({
   onSizeChange: (size: number) => void;
 }) {
   return (
-    <nav className="pagination" aria-label="Pagination">
-      <span>
+    <nav
+      className="flex flex-wrap items-center justify-end gap-3 pt-5 text-xs text-openci-text-muted max-[767px]:justify-start max-[767px]:gap-2"
+      aria-label="Pagination"
+    >
+      <span className="mr-auto max-[767px]:basis-full">
         {total
           ? `${(page - 1) * pageSize + 1}–${Math.min(page * pageSize, total)} of ${total}`
           : "0 records"}
       </span>
-      <label>
+      <label className="flex items-center gap-2">
         Rows per page
         <select
+          className="!min-h-9 !text-[13px] w-[68px]"
           value={pageSize}
           onChange={(event) => onSizeChange(Number(event.target.value))}
         >

@@ -16,6 +16,7 @@ class AssignmentRouteRefresh(BaseModel):
         "published",
         "failed",
         "partially_published",
+        "unscheduled",
     ]
     work_date: date
     agent_ids: list[int] = Field(default_factory=list)

@@ -262,16 +262,6 @@ def assign_investigation(
 
     database_now = _as_utc(db.execute(text("SELECT CURRENT_TIMESTAMP")).scalar_one())
     work_date = database_now.astimezone(ZoneInfo("Asia/Manila")).date()
-    shift = db.query(AgentShift).filter(
-        AgentShift.agent_id == agent.id,
-        AgentShift.work_date == work_date,
-    ).with_for_update().first()
-    if shift is None or not shift.is_available:
-        raise ValueError("The agent has no available shift today")
-    if database_now >= _as_utc(shift.shift_ends_at):
-        raise ValueError("The agent's shift has ended; no new investigations can be assigned")
-    if shift.region_code not in {investigation.region_code, "ALL"}:
-        raise ValueError("The agent shift must match the investigation region")
 
     affected_runs = select(PlanningItem.planning_run_id).where(
         PlanningItem.investigation_id == investigation.id,
@@ -284,45 +274,14 @@ def assign_investigation(
         )
         .first()
     )
-
-    if not (active_assignment and active_assignment.agent_id == agent.id):
-        open_count = int(db.query(func.count(Investigation.id)).filter(
-            Investigation.assigned_agent_id == agent.id,
-            Investigation.id != investigation.id,
-            Investigation.deleted_at.is_(None),
-            Investigation.status.in_(("assigned", "in_progress", "under_review", "returned_for_correction")),
-        ).scalar() or 0)
-        if open_count >= shift.max_open_cases:
-            raise ValueError("The agent has reached the maximum open investigation capacity")
-        visit_count = int(db.query(func.count(Investigation.id)).filter(
-            Investigation.assigned_agent_id == agent.id,
-            Investigation.id != investigation.id,
-            Investigation.region_code == investigation.region_code,
-            Investigation.deleted_at.is_(None),
-            Investigation.status.in_(("pending", "assigned")),
-        ).scalar() or 0)
-        if visit_count >= shift.max_visits:
-            raise ValueError("The agent has reached the maximum visits for today's shift")
-        def as_utc(value):
-            if value.tzinfo is None:
-                return value.replace(tzinfo=timezone.utc)
-            return value.astimezone(timezone.utc)
-
-        shift_start = as_utc(shift.shift_starts_at)
-        shift_end = as_utc(shift.shift_ends_at)
-        earliest = max(
-            shift_start,
-            as_utc(investigation.visit_not_before_at) if investigation.visit_not_before_at else shift_start,
-        )
-        latest = min(
-            shift_end,
-            as_utc(investigation.visit_due_at) if investigation.visit_due_at else shift_end,
-        )
-        if earliest.timestamp() + investigation.service_duration_seconds > latest.timestamp():
-            raise ValueError("The investigation service window does not fit this agent's shift")
+    investigation.manual_assignment_required = False
 
     if active_assignment and active_assignment.agent_id == agent.id:
         active_assignment.note = note
+        if active_assignment.assignment_source != "manual":
+            active_assignment.assignment_source = "manual"
+            active_assignment.assigned_by_id = assigned_by.id
+            active_assignment.assigned_at = datetime.now(timezone.utc)
         # Note changes alter pending plan inputs, but do not invalidate a
         # route already published for the same agent.
         db.query(PlanningRun).filter(
@@ -374,6 +333,7 @@ def assign_investigation(
     )
     investigation.assigned_agent_id = agent.id
     investigation.status = "assigned"
+    investigation.manual_assignment_required = False
 
     db.add(assignment)
     from app.services.agent_schedules import enqueue_planning_trigger
@@ -384,6 +344,125 @@ def assign_investigation(
         db.refresh(assignment)
 
     return assignment
+
+
+def unassign_investigation(
+    db: Session,
+    investigation: Investigation,
+    unassigned_by: User,
+    commit: bool = True,
+) -> Investigation:
+    if unassigned_by.role not in {"admin", "supervisor"}:
+        raise ValueError("Only administrators and supervisors can unassign investigations")
+
+    investigation = (
+        db.query(Investigation)
+        .filter(Investigation.id == investigation.id)
+        .with_for_update()
+        .one()
+    )
+    if investigation.status not in {"pending", "assigned"}:
+        raise ValueError("Only pending or assigned investigations can be unassigned")
+    if investigation.assigned_agent_id is None:
+        raise ValueError("Investigation is not assigned to an agent")
+
+    from app.models.planning import PlanningItem, PlanningRun
+    from app.services.planning import clear_published_routes, planned_agent_ids_for_investigation
+
+    old_agent_id = investigation.assigned_agent_id
+    active_assignment = (
+        db.query(InvestigationAssignment)
+        .filter(
+            InvestigationAssignment.investigation_id == investigation.id,
+            InvestigationAssignment.is_active.is_(True),
+        )
+        .with_for_update()
+        .first()
+    )
+    affected_runs = select(PlanningItem.planning_run_id).where(
+        PlanningItem.investigation_id == investigation.id,
+    )
+    affected_agent_ids = set(planned_agent_ids_for_investigation(db, investigation.id)) | {old_agent_id}
+    if active_assignment is not None:
+        affected_agent_ids.add(active_assignment.agent_id)
+        active_assignment.is_active = False
+        active_assignment.unassigned_at = _as_utc(
+            db.execute(text("SELECT CURRENT_TIMESTAMP")).scalar_one()
+        )
+
+    clear_published_routes(db, affected_runs, affected_agent_ids)
+    db.query(PlanningRun).filter(
+        PlanningRun.id.in_(affected_runs),
+        PlanningRun.status.in_(("queued", "running", "ready")),
+    ).update(
+        {PlanningRun.status: "stale", PlanningRun.error_code: "assignment_changed"},
+        synchronize_session=False,
+    )
+
+    database_now = _as_utc(db.execute(text("SELECT CURRENT_TIMESTAMP")).scalar_one())
+    work_date = database_now.astimezone(ZoneInfo("Asia/Manila")).date()
+    investigation.assigned_agent_id = None
+    investigation.status = "pending"
+    investigation.manual_assignment_required = True
+
+    from app.services.agent_schedules import enqueue_planning_trigger
+
+    trigger_scopes = {investigation.region_code} if investigation.region_code else set()
+    if affected_agent_ids:
+        trigger_scopes.update(
+            region_code
+            for (region_code,) in db.query(AgentShift.region_code).filter(
+                AgentShift.work_date == work_date,
+                AgentShift.agent_id.in_(affected_agent_ids),
+            ).distinct().all()
+            if region_code
+        )
+    for region_code in sorted(trigger_scopes):
+        enqueue_planning_trigger(db, work_date, region_code, "manual_unassignment")
+    if commit:
+        db.commit()
+        db.refresh(investigation)
+    return investigation
+
+
+def resume_automatic_assignment(
+    db: Session,
+    investigation: Investigation,
+    requested_by: User,
+    commit: bool = True,
+) -> Investigation:
+    if requested_by.role not in {"admin", "supervisor"}:
+        raise ValueError("Only administrators and supervisors can submit automatic assignments")
+
+    investigation = (
+        db.query(Investigation)
+        .filter(Investigation.id == investigation.id)
+        .with_for_update()
+        .one()
+    )
+    if investigation.status != "pending" or investigation.assigned_agent_id is not None:
+        raise ValueError("Only unassigned pending investigations can be submitted for automatic assignment")
+    if not investigation.manual_assignment_required:
+        raise ValueError("Investigation is not waiting for automatic assignment")
+    if not investigation.location_confirmed:
+        raise ValueError("Confirm the investigation location before submitting automatic assignment")
+
+    database_now = _as_utc(db.execute(text("SELECT CURRENT_TIMESTAMP")).scalar_one())
+    work_date = database_now.astimezone(ZoneInfo("Asia/Manila")).date()
+    investigation.manual_assignment_required = False
+
+    from app.services.agent_schedules import enqueue_planning_trigger
+
+    enqueue_planning_trigger(
+        db,
+        work_date,
+        investigation.region_code,
+        "manual_auto_assignment_requested",
+    )
+    if commit:
+        db.commit()
+        db.refresh(investigation)
+    return investigation
 
 
 def get_report(
