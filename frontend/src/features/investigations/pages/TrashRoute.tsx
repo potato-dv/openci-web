@@ -7,7 +7,12 @@ import { TrashPage } from "./TrashPage";
 export function TrashRoute() {
   const { token, user } = useSession();
   const resource = useResource(
-    useCallback(() => getTrashedInvestigations(token), [token]),
+    useCallback((signal) => getTrashedInvestigations(token, signal), [token]),
+    {
+      refetchOnFocus: true,
+      refetchOnReconnect: true,
+      staleTimeMs: 60_000,
+    },
   );
   return (
     <>

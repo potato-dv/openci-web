@@ -18,6 +18,11 @@ export function InvestigationDetailRoute() {
       (signal) => getInvestigation(token, Number(id), signal),
       [token, id],
     ),
+    {
+      refetchOnFocus: true,
+      refetchOnReconnect: true,
+      staleTimeMs: 30_000,
+    },
   );
   const [retrying, setRetrying] = useState(false);
   const [retryError, setRetryError] = useState("");
@@ -62,13 +67,16 @@ export function InvestigationDetailRoute() {
         </InlineAlert>
       )}
       {retryError && <InlineAlert>{retryError}</InlineAlert>}
-      {resource.loading ? (
+      {resource.loading && !resource.data ? (
         <Skeleton rows={6} />
-      ) : resource.error ? (
+      ) : resource.error && !resource.data ? (
         <InlineAlert onRetry={resource.refresh}>{resource.error}</InlineAlert>
       ) : (
         resource.data && (
           <>
+            {resource.error && (
+              <InlineAlert onRetry={resource.refresh}>{resource.error}</InlineAlert>
+            )}
             <nav className="detail-breadcrumb" aria-label="Breadcrumb">
               <Link to="/investigations">Investigations</Link>
               <span> / {resource.data.reference_number}</span>

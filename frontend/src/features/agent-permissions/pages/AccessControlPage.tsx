@@ -1,14 +1,12 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { PageHeader } from "@/components/layout/PageHeader";
+import { WorkspacePanel } from "@/components/layout/WorkspacePanel";
+import { WorkspaceSelect } from "@/components/ui/WorkspaceSelect";
 import { Button, InlineAlert, Skeleton } from "@/components/ui/Primitives";
 import { getUsers } from "@/features/users/api";
-import { HistoryAccessSection } from "@/features/agent-permissions/components/HistoryAccessSection";
 import { PermissionFeatureRow } from "@/features/agent-permissions/components/PermissionFeatureRow";
-import { PermissionHistoryPanel } from "@/features/agent-permissions/components/PermissionHistoryPanel";
-import { RequiredWorkflowsPanel } from "@/features/agent-permissions/components/RequiredWorkflowsPanel";
 import {
   getAgentPermissionCatalog,
-  getAgentPermissionHistory,
   getAgentPermissionState,
   saveAgentPermissionState,
 } from "@/features/agent-permissions/api";
@@ -17,30 +15,55 @@ import type {
   AgentFeatureCode,
   AgentPermissionEffect,
   AgentPermissionFeature,
-  AgentPermissionHistoryItem,
   AgentPermissionState,
   User,
 } from "@/types/api";
 
 type PermissionCatalog = {
   features: Omit<AgentPermissionFeature, "override" | "effective_allowed">[];
-  mandatory_workflows: { name: string; description: string }[];
 };
-
-const HISTORY_PERMISSION_CODE: AgentFeatureCode =
-  "investigation.view_own_history";
 
 function emptyOverrides(features: PermissionCatalog["features"]) {
   return Object.fromEntries(
     features.map((feature) => [
       feature.code,
-      feature.code === HISTORY_PERMISSION_CODE
-        ? feature.default_allowed
-          ? "allow"
-          : "deny"
-        : "inherit",
+      "inherit",
     ]),
   ) as Record<AgentFeatureCode, AgentPermissionEffect>;
+}
+
+function permissionDraftFromState(
+  state: AgentPermissionState,
+  features: PermissionCatalog["features"],
+) {
+  return {
+    ...emptyOverrides(features),
+    ...Object.fromEntries(
+      state.features.map((feature) => [
+        feature.code,
+        feature.override ?? "inherit",
+      ]),
+    ),
+  } as Record<AgentFeatureCode, AgentPermissionEffect>;
+}
+
+function permissionStateSignature(state: AgentPermissionState | null) {
+  return JSON.stringify(
+    state?.features
+      .map(({ code, override, effective_allowed }) => ({ code, override, effective_allowed }))
+      .sort((left, right) => left.code.localeCompare(right.code)) ?? [],
+  );
+}
+
+function draftMatchesState(
+  draft: Record<AgentFeatureCode, AgentPermissionEffect>,
+  state: AgentPermissionState,
+  features: PermissionCatalog["features"],
+) {
+  const latest = permissionDraftFromState(state, features);
+  return Object.entries(latest).every(
+    ([code, effect]) => draft[code as AgentFeatureCode] === effect,
+  );
 }
 
 export function AccessControlPage() {
@@ -49,7 +72,6 @@ export function AccessControlPage() {
   const [catalog, setCatalog] = useState<PermissionCatalog | null>(null);
   const [selectedId, setSelectedId] = useState<number | null>(null);
   const [state, setState] = useState<AgentPermissionState | null>(null);
-  const [history, setHistory] = useState<AgentPermissionHistoryItem[]>([]);
   const [draft, setDraft] = useState<
     Record<AgentFeatureCode, AgentPermissionEffect>
   >({} as Record<AgentFeatureCode, AgentPermissionEffect>);
@@ -57,6 +79,9 @@ export function AccessControlPage() {
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState("");
   const [message, setMessage] = useState("");
+  const [externalChanges, setExternalChanges] = useState(false);
+  const lastFreshAtRef = useRef(0);
+  const revalidationInFlightRef = useRef(false);
 
   useEffect(() => {
     let cancelled = false;
@@ -101,26 +126,13 @@ export function AccessControlPage() {
     let cancelled = false;
     async function loadSelectedAgent() {
       try {
-        const [nextState, nextHistory] = await Promise.all([
-          getAgentPermissionState(token, agentId),
-          getAgentPermissionHistory(token, agentId),
-        ]);
+        const nextState = await getAgentPermissionState(token, agentId);
         if (cancelled) return;
         setError("");
         setState(nextState);
-        setDraft({
-          ...emptyOverrides(selectedCatalog.features),
-          ...Object.fromEntries(
-            nextState.features.map((feature) => [
-              feature.code,
-              feature.code === HISTORY_PERMISSION_CODE
-                ? (feature.override ??
-                  (feature.effective_allowed ? "allow" : "deny"))
-                : (feature.override ?? "inherit"),
-            ]),
-          ),
-        } as Record<AgentFeatureCode, AgentPermissionEffect>);
-        setHistory(nextHistory.items);
+        setDraft(permissionDraftFromState(nextState, selectedCatalog.features));
+        setExternalChanges(false);
+        lastFreshAtRef.current = Date.now();
       } catch (loadError) {
         if (!cancelled)
           setError(
@@ -138,24 +150,78 @@ export function AccessControlPage() {
     };
   }, [catalog, selectedId, token]);
 
+  const hasUnsavedChanges = Boolean(
+    state && catalog &&
+      Object.entries(permissionDraftFromState(state, catalog.features)).some(
+        ([code, effect]) => draft[code as AgentFeatureCode] !== effect,
+      ),
+  );
+
+  useEffect(() => {
+    if (!catalog || selectedId == null) return;
+    let cancelled = false;
+
+    const refreshIfStale = () => {
+      if (
+        cancelled ||
+        document.visibilityState !== "visible" ||
+        revalidationInFlightRef.current ||
+        saving ||
+        Date.now() - lastFreshAtRef.current < 60_000
+      ) return;
+      revalidationInFlightRef.current = true;
+      const agentId = selectedId;
+      void Promise.all([getUsers(token), getAgentPermissionState(token, agentId)])
+        .then(([allUsers, nextState]) => {
+          if (cancelled) return;
+          setAgents(allUsers.filter((item) => item.role === "agent"));
+          if (permissionStateSignature(nextState) !== permissionStateSignature(state)) {
+            if (hasUnsavedChanges) {
+              if (draftMatchesState(draft, nextState, catalog.features)) {
+                setState(nextState);
+                setDraft(permissionDraftFromState(nextState, catalog.features));
+                setExternalChanges(false);
+              } else {
+                setExternalChanges(true);
+              }
+            } else {
+              setState(nextState);
+              setDraft(permissionDraftFromState(nextState, catalog.features));
+              setExternalChanges(false);
+            }
+          }
+          setError("");
+          lastFreshAtRef.current = Date.now();
+        })
+        .catch((loadError: unknown) => {
+          if (!cancelled) {
+            setError(
+              loadError instanceof Error
+                ? loadError.message
+                : "Could not refresh this Agent’s permissions.",
+            );
+          }
+        })
+        .finally(() => {
+          revalidationInFlightRef.current = false;
+        });
+    };
+
+    window.addEventListener("focus", refreshIfStale);
+    document.addEventListener("visibilitychange", refreshIfStale);
+    window.addEventListener("online", refreshIfStale);
+    return () => {
+      cancelled = true;
+      window.removeEventListener("focus", refreshIfStale);
+      document.removeEventListener("visibilitychange", refreshIfStale);
+      window.removeEventListener("online", refreshIfStale);
+    };
+  }, [catalog, draft, hasUnsavedChanges, saving, selectedId, state, token]);
+
   const selectedAgent = useMemo(
     () => agents.find((agent) => agent.id === selectedId),
     [agents, selectedId],
   );
-  const historyFeature = state?.features.find(
-    (feature) => feature.code === HISTORY_PERMISSION_CODE,
-  );
-  const historySelection =
-    draft[HISTORY_PERMISSION_CODE] === "allow" ? "allow" : "deny";
-  const historySavedSelection = historyFeature?.effective_allowed
-    ? "allow"
-    : "deny";
-  const historyHasPendingChange = Boolean(
-    historyFeature && historySelection !== historySavedSelection,
-  );
-  const historyAgentName =
-    state?.agent.name ?? selectedAgent?.name ?? "Selected Agent";
-
   async function save() {
     if (selectedId == null || !catalog) return;
     setSaving(true);
@@ -168,10 +234,9 @@ export function AccessControlPage() {
         draft,
       );
       setState(nextState);
-      const [nextHistory] = await Promise.all([
-        getAgentPermissionHistory(token, selectedId),
-      ]);
-      setHistory(nextHistory.items);
+      setDraft(permissionDraftFromState(nextState, catalog.features));
+      setExternalChanges(false);
+      lastFreshAtRef.current = Date.now();
       setMessage(
         "Agent permissions saved. Changes apply on the next protected request.",
       );
@@ -187,12 +252,34 @@ export function AccessControlPage() {
   }
 
   return (
-    <div className="mx-auto max-w-[1120px]">
-      <PageHeader
-        title="Access Control"
-        description="Set optional Agent features individually. Investigation ownership and required visit workflows remain enforced for every Agent."
-      />
+    <div className="mx-auto w-full max-w-[1280px]">
+      <PageHeader title="Access Control" />
       {error && <InlineAlert>{error}</InlineAlert>}
+      {externalChanges && (
+        <InlineAlert variant="warning">
+          This Agent’s permissions changed elsewhere. Your unsaved selections are preserved. Discard this draft and load the latest permissions before saving.
+          <div className="mt-2">
+            <Button
+              onClick={() => {
+                if (selectedId == null || !catalog) return;
+                setLoading(true);
+                setError("");
+                void getAgentPermissionState(token, selectedId)
+                  .then((nextState) => {
+                    setState(nextState);
+                    setDraft(permissionDraftFromState(nextState, catalog.features));
+                    setExternalChanges(false);
+                    lastFreshAtRef.current = Date.now();
+                  })
+                  .catch((loadError: unknown) => setError(loadError instanceof Error ? loadError.message : "Could not load the latest permissions."))
+                  .finally(() => setLoading(false));
+              }}
+            >
+              Discard draft and load latest
+            </Button>
+          </div>
+        </InlineAlert>
+      )}
       {message && (
         <p className="success-message" role="status">
           {message}
@@ -201,137 +288,80 @@ export function AccessControlPage() {
       {loading && !catalog ? (
         <Skeleton rows={5} />
       ) : !catalog ? null : agents.length === 0 ? (
-        <section className="content-card">
+        <WorkspacePanel>
           <h2>No Agent accounts</h2>
           <p className="muted">
             Create an Agent account before configuring feature access.
           </p>
-        </section>
+        </WorkspacePanel>
       ) : (
-        <>
-          <section className="mb-6 flex min-w-0 flex-wrap items-center gap-3 rounded-xl border border-openci-border bg-openci-surface p-5 max-[680px]:items-stretch max-[680px]:p-4">
-            <label
-              className="w-full text-[13px] font-semibold text-openci-text-muted sm:w-auto"
-              htmlFor="access-agent"
-            >
-              Agent
-            </label>
-            <select
-              id="access-agent"
-              className="!text-sm min-h-[38px] w-full sm:w-[min(100%,22rem)]"
-              value={selectedId ?? ""}
-              onChange={(event) => setSelectedId(Number(event.target.value))}
-            >
-              {agents.map((agent) => (
-                <option key={agent.id} value={agent.id}>
-                  {agent.name}
-                  {agent.is_active ? "" : " · inactive"}
-                </option>
-              ))}
-            </select>
-            {selectedAgent && (
-              <span
-                className={`status-badge max-[680px]:self-start account-${selectedAgent.is_active ? "active" : "inactive"}`}
-              >
-                {selectedAgent.is_active
-                  ? "Active account"
-                  : "Inactive account"}
-              </span>
-            )}
-          </section>
-
+        <div className="min-w-0">
           {loading || (state?.agent.id !== selectedId && !error) ? (
             <Skeleton rows={5} />
           ) : (
             state?.agent.id === selectedId && (
               <>
-                <section className="mb-6 min-w-0 rounded-xl border border-openci-border bg-openci-surface p-5 max-[680px]:p-4">
-                  <div className="mb-4 flex items-start justify-between gap-3 max-[680px]:flex-col max-[680px]:items-stretch">
-                    <div>
-                      <h2 className="m-0 text-[15px] font-semibold tracking-[-0.015em]">
-                        Agent permissions
-                      </h2>
-                      <p className="mt-[3px] mb-0 text-[13px] text-openci-text-muted">
-                        Configure each feature for this Agent. Required
-                        workflows remain enforced.
-                      </p>
-                    </div>
+                <WorkspacePanel
+                  title="Agent permissions"
+                  description="Choose whether this Agent can use each optional feature."
+                  className="mb-0"
+                  action={
                     <Button
                       className="max-[680px]:self-start"
                       variant="primary"
                       onClick={() => void save()}
-                      disabled={saving || !state}
+                      disabled={saving || !state || externalChanges || !hasUnsavedChanges}
                     >
                       {saving ? "Saving…" : "Save permissions"}
                     </Button>
+                  }
+                >
+                  <div className="mb-5 grid items-end gap-4 border-b border-[#e5eaf2] pb-5 sm:grid-cols-[minmax(0,24rem)_auto] sm:justify-between">
+                    <WorkspaceSelect
+                      className="w-full"
+                      label="Agent"
+                      value={String(selectedId ?? "")}
+                      onValueChange={(value) => {
+                        setExternalChanges(false);
+                        setMessage("");
+                        setSelectedId(Number(value));
+                      }}
+                      options={agents.map((agent) => ({ value: String(agent.id), label: `${agent.name}${agent.is_active ? "" : " · inactive"}` }))}
+                    />
+                    {selectedAgent && (
+                      <span className={`status-badge mb-1 account-${selectedAgent.is_active ? "active" : "inactive"}`}>
+                        {selectedAgent.is_active ? "Active account" : "Inactive account"}
+                      </span>
+                    )}
                   </div>
 
-                  {historyFeature && (
-                    <HistoryAccessSection
-                      agentId={selectedId ?? 0}
-                      agentName={historyAgentName}
-                      effectiveAllowed={historyFeature.effective_allowed}
-                      selection={historySelection}
-                      hasPendingChange={historyHasPendingChange}
-                      onSelectionChange={(effect) =>
-                        setDraft((current) => ({
-                          ...current,
-                          [HISTORY_PERMISSION_CODE]: effect,
-                        }))
-                      }
-                    />
-                  )}
-
-                  <section
-                    className="mt-[18px] border-t border-openci-border pt-4"
-                    aria-labelledby="optional-features-heading"
-                  >
-                    <div className="mb-2 flex items-start justify-between gap-3">
-                      <div>
-                        <h3 id="optional-features-heading" className="m-0 text-[15px] font-semibold">
-                          Optional features
-                        </h3>
-                        <p className="mt-[3px] mb-0 text-[13px] text-openci-text-muted">
-                          Use default follows the Agent role default shown on
-                          each feature.
-                        </p>
-                      </div>
-                    </div>
-                    <div className="mt-0 grid gap-0">
-                      {state.features
-                        .filter(
-                          (feature) => feature.code !== HISTORY_PERMISSION_CODE,
-                        )
-                        .map((feature) => {
-                          const selectedOverride =
-                            draft[feature.code] ?? "inherit";
-                          return (
-                            <PermissionFeatureRow
-                              key={feature.code}
-                              feature={feature}
-                              selectedOverride={selectedOverride}
-                              onOverrideChange={(effect) =>
-                                setDraft((current) => ({
-                                  ...current,
-                                  [feature.code]: effect,
-                                }))
-                              }
-                            />
-                          );
-                        })}
-                    </div>
-                  </section>
-                </section>
-
-                <RequiredWorkflowsPanel workflows={state.mandatory_workflows} />
-                <PermissionHistoryPanel
-                  history={history}
-                  features={catalog.features}
-                />
+                  <div className="grid gap-0 divide-y divide-[#e5eaf2]">
+                    {state.features.map((feature) => (
+                      <PermissionFeatureRow
+                        key={feature.code}
+                        feature={feature}
+                        selectedOverride={
+                          draft[feature.code] === "inherit"
+                            ? (feature.effective_allowed ? "allow" : "deny")
+                            : (draft[feature.code] === "deny" ? "deny" : "allow")
+                        }
+                        hasPendingChange={
+                          draft[feature.code] !== (feature.override ?? "inherit")
+                        }
+                        onOverrideChange={(effect) =>
+                          setDraft((current) => ({
+                            ...current,
+                            [feature.code]: effect,
+                          }))
+                        }
+                      />
+                    ))}
+                  </div>
+                </WorkspacePanel>
               </>
             )
           )}
-        </>
+        </div>
       )}
     </div>
   );

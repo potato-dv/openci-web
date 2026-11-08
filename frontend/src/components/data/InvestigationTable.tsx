@@ -5,6 +5,7 @@ import type { Investigation } from "../../types/api";
 import { StatusBadge } from "../ui/StatusBadge";
 import { PriorityBadge } from "../ui/PriorityBadge";
 import { RowActions } from "../ui/RowActions";
+import { RecordIdentity } from "./RecordIdentity";
 import { date } from "../../utils/format";
 type Props = {
   items: Investigation[];
@@ -48,7 +49,7 @@ export function InvestigationTable({
       >
         {onSort ? (
           <button
-            className={`sort-button ${className?.includes("text-right") ? "ml-auto" : ""}`}
+            className={`sort-button gap-1.5 rounded-md px-1 py-1 text-[11px] font-semibold text-[#64748b] hover:bg-[#edf3fb] hover:text-[#2857ae] ${className?.includes("text-right") ? "ml-auto" : ""}`}
             type="button"
             onClick={() => onSort(column)}
           >
@@ -71,21 +72,21 @@ export function InvestigationTable({
   }
   return (
     <>
-      <div className="table-wrap investigation-desktop">
-        <Table className="investigation-table min-w-[940px] table-fixed">
+      <div className="hidden max-w-full overflow-x-auto rounded-lg border border-[#e2e8f1] md:block">
+        <Table className="investigation-table min-w-[960px] table-fixed">
           <TableCaption className="sr-only">Investigation records</TableCaption>
           <colgroup>
+            <col className="w-[25%]" />
             <col className="w-[22%]" />
-            <col className="w-[24%]" />
             <col className="w-[9%]" />
             <col className="w-[12%]" />
-            <col className="w-[20%]" />
+            <col className="w-[16%]" />
             <col className="w-[9%]" />
-            <col className="w-[4%]" />
+            <col className="w-[7%]" />
           </colgroup>
           <TableHeader>
             <TableRow>
-              {heading("Reference / subject", "reference_number")}
+              {heading("Investigation", "reference_number")}
               <TableHead scope="col">Location</TableHead>
               {heading("Priority", "priority")}
               {heading("Status", "status")}
@@ -99,15 +100,7 @@ export function InvestigationTable({
           <TableBody>
             {items.map((item) => (
               <TableRow key={item.id}>
-                <TableCell>
-                  <Link
-                    className="record-identity"
-                    to={`/investigations/${item.id}`}
-                  >
-                    <strong>{item.reference_number}</strong>
-                    <span title={item.subject_name}>{item.subject_name}</span>
-                  </Link>
-                </TableCell>
+                <TableCell><RecordIdentity subject={item.subject_name} reference={item.reference_number} to={`/investigations/${item.id}`} /></TableCell>
                 <TableCell className="location-cell">
                   <span title={item.address_display}>
                     {item.address_display || item.legacy_address || "—"}
@@ -123,40 +116,13 @@ export function InvestigationTable({
                   <StatusBadge status={item.status} reopenOn={item.reopen_on} />
                 </TableCell>
                 <TableCell>
-                  <div className="investigation-assigned-agent">
-                    <div className="investigation-assigned-agent-copy">
-                      <span>{item.assigned_agent_name || "Unassigned"}</span>
-                      {item.manual_assignment_required && (
-                        <small>Manual assignment required</small>
-                      )}
-                    </div>
-                    {canManage &&
-                      onSubmitAutomaticAssignment &&
-                      canSubmitAutomaticAssignment(item) &&
-                      automaticAssignmentSubmittedId !== item.id && (
-                        <button
-                          type="button"
-                          className="secondary-button compact-button investigation-unassign-button"
-                          aria-label={`Submit ${item.reference_number} for automatic assignment`}
-                          onClick={() => onSubmitAutomaticAssignment(item)}
-                          disabled={automaticAssignmentBusyId != null}
-                        >
-                          {automaticAssignmentBusyId === item.id
-                            ? "Submitting…"
-                            : "Submit to auto-assign"}
-                        </button>
-                      )}
-                    {canManage && onUnassign && canUnassign(item) && (
-                      <button
-                        type="button"
-                        className="danger-button compact-button investigation-unassign-button"
-                        aria-label={`Unassign ${item.reference_number} from agent`}
-                        onClick={() => onUnassign(item)}
-                      >
-                        Unassign
-                      </button>
-                    )}
-                  </div>
+                  {item.assigned_agent_name ? (
+                    <span className="flex min-w-0 items-center gap-2">
+                      <span className="grid size-7 shrink-0 place-items-center rounded-full bg-[#e9f0fb] text-[10px] font-semibold text-[#3665b2]" aria-hidden="true">{item.assigned_agent_name.split(/\s+/).slice(0, 2).map((part) => part[0]).join("").toUpperCase()}</span>
+                      <span className="min-w-0 truncate" title={item.assigned_agent_name}>{item.assigned_agent_name}</span>
+                    </span>
+                  ) : <span className="text-[#8a98ac]">Unassigned</span>}
+                  {item.manual_assignment_required && <small className="mt-1 block text-[10px] text-[#9a641e]">Manual assignment required</small>}
                 </TableCell>
                 <TableCell className="whitespace-nowrap text-right text-openci-text-muted">{date(item.created_at)}</TableCell>
                 <TableCell className="text-right">
@@ -191,6 +157,19 @@ export function InvestigationTable({
                           {" "}
                           Manual assignment{" "}
                         </button>
+                        {onSubmitAutomaticAssignment && canSubmitAutomaticAssignment(item) && automaticAssignmentSubmittedId !== item.id && (
+                          <button
+                            type="button"
+                            role="menuitem"
+                            disabled={automaticAssignmentBusyId != null}
+                            onClick={() => onSubmitAutomaticAssignment(item)}
+                          >
+                            {automaticAssignmentBusyId === item.id ? "Submitting…" : "Submit to auto-assign"}
+                          </button>
+                        )}
+                        {onUnassign && canUnassign(item) && (
+                          <button type="button" role="menuitem" onClick={() => onUnassign(item)}>Unassign agent</button>
+                        )}
                         {onTrash && (
                           <button
                             type="button"
@@ -210,22 +189,23 @@ export function InvestigationTable({
           </TableBody>
         </Table>
       </div>
-      <ul className="investigation-mobile">
+      <ul className="m-0 grid list-none gap-3 p-0 md:hidden" aria-label="Investigation records">
         {items.map((item) => (
-          <li key={item.id}>
-            <div className="investigation-mobile-row">
-              <Link to={`/investigations/${item.id}`}>
-                <strong>{item.reference_number}</strong>
-                <span>{item.subject_name}</span>
-                <small>{item.address_display || item.legacy_address}</small>
-                <div>
-                  <StatusBadge status={item.status} reopenOn={item.reopen_on} />
-                  <PriorityBadge priority={item.priority} />
-                </div>
-                {item.manual_assignment_required && (
-                  <small>Choose an agent manually</small>
-                )}
+          <li key={item.id} className="rounded-lg border border-[#e2e8f1] bg-white p-4">
+            <div className="flex min-w-0 flex-wrap items-start justify-between gap-3">
+              <Link className="min-w-0 flex-1 no-underline" to={`/investigations/${item.id}`}>
+                <strong className="block truncate text-[14px] font-semibold text-[#1d3558]">{item.subject_name}</strong>
+                <span className="mt-0.5 block truncate font-mono text-[11px] text-[#72829b]" title={item.reference_number}>{item.reference_number}</span>
               </Link>
+              <StatusBadge status={item.status} reopenOn={item.reopen_on} />
+            </div>
+            <p className="mb-3 mt-3 text-[12px] text-[#657792]">{item.address_display || item.legacy_address || "Address unavailable"}</p>
+            <div className="flex flex-wrap items-center justify-between gap-2 border-t border-[#edf1f6] pt-3">
+              <PriorityBadge priority={item.priority} />
+              <span className="text-[11px] text-[#6b7d96]">{item.assigned_agent_name || "Unassigned"}</span>
+            </div>
+            {item.manual_assignment_required && <p className="mb-0 mt-2 text-[11px] text-[#8a580e]">Choose an agent manually</p>}
+            <div className="mt-3 flex flex-wrap gap-2">
               {canManage && onUnassign && canUnassign(item) && (
                 <button
                   type="button"

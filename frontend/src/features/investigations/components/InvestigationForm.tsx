@@ -138,25 +138,28 @@ export function InvestigationFormStepper({
   onStep: (step: number) => void;
   completed: number;
 }) {
+  const labels = [
+    "Subject",
+    "Investigation details",
+    "Philippine address",
+    "Location confirmation",
+    "Review and save",
+  ];
   return (
-    <nav aria-label="Investigation form progress">
-      <ol className="form-stepper">
-        {[
-          "Subject",
-          "Investigation details",
-          "Philippine address",
-          "Location confirmation",
-          "Review and save",
-        ].map((label, index) => (
-          <li key={label}>
+    <nav aria-label="Investigation form progress" className="mb-5 overflow-x-auto rounded-xl border border-[#dfe7f1] bg-white p-2">
+      <p className="mb-1 px-2 text-xs font-semibold text-[#315cb0] md:hidden">Step {step + 1} of {labels.length} · {labels[step]}</p>
+      <ol className="m-0 grid list-none grid-cols-5 gap-1 p-0 md:min-w-[700px]">
+        {labels.map((label, index) => (
+          <li key={label} className="min-w-0">
             <button
               type="button"
               aria-current={index === step ? "step" : undefined}
               disabled={index > completed}
               onClick={() => onStep(index)}
+              className={`flex min-h-[46px] w-full items-center justify-center gap-2 rounded-lg border-0 px-1 text-left text-[12px] font-medium transition-colors disabled:cursor-not-allowed disabled:opacity-45 md:min-h-[54px] md:justify-start md:px-3 ${index === step ? "bg-[#eaf1ff] text-[#2452a4]" : "bg-transparent text-[#697c98] hover:bg-[#f4f7fb]"}`}
             >
-              <span>{index + 1}</span>
-              {label}
+              <span className={`grid size-7 shrink-0 place-items-center rounded-full text-xs font-semibold ${index === step ? "bg-[#3261c5] text-white" : index < completed ? "bg-[#dce9ff] text-[#2859b3]" : "border border-[#cad5e4] text-[#7a8ba5]"}`}>{index + 1}</span>
+              <span className="hidden leading-tight md:inline">{label}</span>
             </button>
           </li>
         ))}

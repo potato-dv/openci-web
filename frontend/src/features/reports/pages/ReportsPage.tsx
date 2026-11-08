@@ -1,11 +1,14 @@
 import { Table, TableHeader, TableBody, TableRow, TableHead, TableCell } from "@/components/ui/table";
 import { useCallback, useState } from "react";
 import { Link, useSearchParams } from "react-router";
+import { ArrowUpRight } from "lucide-react";
 import { useSession } from "@/app/session";
 import { cancelNoContactAttempt, getNoContactReviewQueue, getReportQueue } from "@/features/reports/api";
 import type { NoContactReviewItem } from "@/types/api";
 import { useResource } from "@/hooks/useResource";
 import { PageHeader } from "@/components/layout/PageHeader";
+import { ResourceFreshness } from "@/components/data/ResourceFreshness";
+import { WorkspaceMobileList, WorkspacePanel } from "@/components/layout/WorkspacePanel";
 import {
   DataFilterBar,
   dataFilterFieldClassName,
@@ -15,6 +18,9 @@ import { Pagination } from "@/components/data/Pagination";
 import { Modal } from "@/components/ui/Modal";
 import { PriorityBadge } from "@/components/ui/PriorityBadge";
 import { RowActions } from "@/components/ui/RowActions";
+import { RecordIdentity } from "@/components/data/RecordIdentity";
+import { WorkspaceSearchField } from "@/components/data/WorkspaceSearchField";
+import { WorkspaceSelect } from "@/components/ui/WorkspaceSelect";
 import {
   Button,
   EmptyState,
@@ -42,6 +48,11 @@ export function ReportsPage() {
       (signal) => getReportQueue(token, new URLSearchParams(key), signal),
       [token, key],
     ),
+    {
+      refetchOnFocus: true,
+      refetchOnReconnect: true,
+      staleTimeMs: 60_000,
+    },
   );
   const noContactParams = new URLSearchParams({
     page: params.get("no_contact_page") ?? "1",
@@ -54,9 +65,16 @@ export function ReportsPage() {
   const noContactKey = noContactParams.toString();
   const noContactResource = useResource(
     useCallback(
-      (signal) => getNoContactReviewQueue(token, new URLSearchParams(noContactKey), signal),
-      [token, noContactKey],
+      (signal) => value === "submitted"
+        ? getNoContactReviewQueue(token, new URLSearchParams(noContactKey), signal)
+        : Promise.resolve(null),
+      [token, noContactKey, value],
     ),
+    {
+      refetchOnFocus: true,
+      refetchOnReconnect: true,
+      staleTimeMs: 60_000,
+    },
   );
   function update(name: string, value: string) {
     const next = new URLSearchParams(params);
@@ -95,21 +113,28 @@ export function ReportsPage() {
   }
   return (
     <>
-      <PageHeader
-        title="Reports"
-        description="Review submitted findings and follow correction requests."
-        actions={
-          <Button
-            onClick={() => {
-              resource.refresh();
-              noContactResource.refresh();
-            }}
-          >
-            Refresh
-          </Button>
+      <PageHeader title="Reports" />
+      <WorkspacePanel
+        title="Review queue"
+        description="Filter submissions by review state and open the investigation to act."
+        action={
+          <div className="flex w-full flex-wrap items-center justify-end gap-2 sm:w-auto">
+            <ResourceFreshness
+              loading={resource.refreshing || (value === "submitted" && noContactResource.refreshing)}
+              lastUpdatedAt={resource.lastUpdatedAt}
+            />
+            <Button
+              onClick={() => {
+                resource.refresh();
+                if (value === "submitted") noContactResource.refresh();
+              }}
+              disabled={resource.refreshing || (value === "submitted" && noContactResource.refreshing)}
+            >
+              Refresh
+            </Button>
+          </div>
         }
-      />
-      <section className="content-card">
+      >
         <Tabs
           label="Report status"
           value={value}
@@ -121,46 +146,31 @@ export function ReportsPage() {
           ]}
         />
         <DataFilterBar>
-          <label className={dataFilterSearchClassName}>
-            Search
-            <input
-              type="search"
-              value={params.get("q") ?? ""}
-              placeholder="Reference, subject, or address"
-              onChange={(event) => update("q", event.target.value)}
-            />
-          </label>
-          <label className={dataFilterFieldClassName}>
-            Sort
-            <select
-              value={params.get("sort") ?? "submitted_at"}
-              onChange={(event) => update("sort", event.target.value)}
-            >
-              <option value="submitted_at">Submitted time</option>
-              <option value="updated_at">Updated time</option>
-              <option value="reference_number">Reference</option>
-            </select>
-          </label>
-          <label className={dataFilterFieldClassName}>
-            Order
-            <select
-              value={params.get("direction") ?? "asc"}
-              onChange={(event) => update("direction", event.target.value)}
-            >
-              <option value="asc">Oldest first</option>
-              <option value="desc">Newest first</option>
-            </select>
-          </label>
+          <WorkspaceSearchField className={dataFilterSearchClassName} value={params.get("q") ?? ""} onChange={(value) => update("q", value)} placeholder="Reference, subject, or address" />
+          <WorkspaceSelect
+            className={dataFilterFieldClassName}
+            label="Sort"
+            value={params.get("sort") ?? "submitted_at"}
+            onValueChange={(value) => update("sort", value)}
+            options={[{ value: "submitted_at", label: "Submitted time" }, { value: "updated_at", label: "Updated time" }, { value: "reference_number", label: "Reference" }]}
+          />
+          <WorkspaceSelect
+            className={dataFilterFieldClassName}
+            label="Order"
+            value={params.get("direction") ?? "asc"}
+            onValueChange={(value) => update("direction", value)}
+            options={[{ value: "asc", label: "Oldest first" }, { value: "desc", label: "Newest first" }]}
+          />
         </DataFilterBar>
         {resource.error && (
           <InlineAlert onRetry={resource.refresh}>{resource.error}</InlineAlert>
         )}
-        {resource.loading ? (
+        {resource.loading && !resource.data ? (
           <Skeleton />
         ) : resource.data?.items.length ? (
           <>
-            <div className="table-wrap desktop-data">
-              <Table className="min-w-[1040px] table-fixed">
+            <div className="hidden max-w-full overflow-x-auto rounded-lg border border-[#e2e8f1] md:block">
+              <Table className="min-w-[1000px] table-fixed">
                 <colgroup>
                   <col className="w-[22%]" />
                   <col className="w-[12%]" />
@@ -186,16 +196,8 @@ export function ReportsPage() {
                 <TableBody>
                   {resource.data.items.map((item) => (
                     <TableRow key={item.report_id}>
-                      <TableCell>
-                        <Link
-                          className="record-identity"
-                          to={`/investigations/${item.investigation_id}#report`}
-                        >
-                          <strong>{item.reference_number}</strong>
-                          <span>{item.subject_name}</span>
-                        </Link>
-                      </TableCell>
-                      <TableCell>{item.assigned_agent_name ?? item.author_name}</TableCell>
+                      <TableCell><RecordIdentity subject={item.subject_name} reference={item.reference_number} to={`/investigations/${item.investigation_id}#report`} /></TableCell>
+                      <TableCell className="truncate" title={item.assigned_agent_name ?? item.author_name}>{item.assigned_agent_name ?? item.author_name}</TableCell>
                       <TableCell className="text-right">{item.version}</TableCell>
                       <TableCell className="capitalize">
                         {item.visit_outcome?.replaceAll("_", " ") ?? "Not recorded"}
@@ -219,12 +221,8 @@ export function ReportsPage() {
                       </TableCell>
                       <TableCell><span className={`status-badge status-${item.status.replaceAll("_", "-")}`}>{item.status.replaceAll("_", " ")}</span></TableCell>
                       <TableCell className="text-right">
-                        <Link
-                          to={`/investigations/${item.investigation_id}#report`}
-                        >
-                          {value === "submitted"
-                            ? "Review report"
-                            : "View report"}
+                        <Link className="inline-flex items-center gap-1 whitespace-nowrap rounded-md px-2 py-1.5 text-[11px] font-semibold text-[#315db4] no-underline hover:bg-[#eff4fd]" to={`/investigations/${item.investigation_id}#report`} aria-label={`${value === "submitted" ? "Review" : "View"} report for ${item.reference_number}`}>
+                          {value === "submitted" ? "Review" : "View"}<ArrowUpRight className="size-3.5" aria-hidden="true" />
                         </Link>
                       </TableCell>
                     </TableRow>
@@ -232,7 +230,7 @@ export function ReportsPage() {
                 </TableBody>
               </Table>
             </div>
-            <ul className="workspace-mobile-list" aria-label="Report queue">
+            <WorkspaceMobileList aria-label="Report queue">
               {resource.data.items.map((item) => {
                 const timestamp =
                   value === "submitted" ? item.submitted_at : item.updated_at;
@@ -284,9 +282,9 @@ export function ReportsPage() {
                   </li>
                 );
               })}
-            </ul>
+            </WorkspaceMobileList>
           </>
-        ) : (
+        ) : resource.error && !resource.data ? null : (
           <EmptyState title={value === "submitted" ? "No submitted reports in this queue" : "No reports in this queue"}>
             {value === "submitted"
               ? "Submitted reports matching this search will appear here."
@@ -302,23 +300,18 @@ export function ReportsPage() {
             onSizeChange={(size) => update("page_size", String(size))}
           />
         )}
-
+      </WorkspacePanel>
         {value === "submitted" && (
-          <section className="report-no-contact-queue" aria-labelledby="no-contact-queue-title">
-            <div className="section-title">
-              <div>
-                <h2 id="no-contact-queue-title">No-contact reports and attempts</h2>
-                <p className="report-no-contact-note">
-                  Open attempts and finalized no-contact reports scheduled for the next workday appear here.
-                </p>
-              </div>
-              {noContactResource.data && <span>{noContactResource.data.total} items</span>}
-            </div>
-            {noContactResource.error ? (
+          <WorkspacePanel
+            title="No-contact reports and attempts"
+            description="Open attempts and finalized no-contact reports scheduled for the next workday appear here."
+            action={noContactResource.data && <span className="text-xs text-[#65758f]">{noContactResource.data.total} items</span>}
+          >
+            {noContactResource.error && !noContactResource.data ? (
               <InlineAlert onRetry={noContactResource.refresh}>
                 {noContactResource.error}
               </InlineAlert>
-            ) : noContactResource.loading ? (
+            ) : noContactResource.loading && !noContactResource.data ? (
               <Skeleton rows={3} />
             ) : noContactResource.data?.items.length ? (
               <>
@@ -327,8 +320,8 @@ export function ReportsPage() {
                     {noContactActionMessage}
                   </p>
                 )}
-                <div className="table-wrap desktop-data">
-                  <Table className="min-w-[1040px] table-fixed">
+                <div className="hidden max-w-full overflow-x-auto rounded-lg border border-[#e2e8f1] md:block">
+                  <Table className="min-w-[1000px] table-fixed">
                     <colgroup>
                       <col className="w-[20%]" />
                       <col className="w-[13%]" />
@@ -354,15 +347,7 @@ export function ReportsPage() {
                     <TableBody>
                       {noContactResource.data.items.map((item) => (
                         <TableRow key={item.event_id}>
-                          <TableCell>
-                            <Link
-                              className="record-identity"
-                              to={`/investigations/${item.investigation_id}#report`}
-                            >
-                              <strong>{item.reference_number}</strong>
-                              <span>{item.subject_name}</span>
-                            </Link>
-                          </TableCell>
+                          <TableCell><RecordIdentity subject={item.subject_name} reference={item.reference_number} to={`/investigations/${item.investigation_id}#report`} /></TableCell>
                           <TableCell>{item.assigned_agent_name ?? "Unassigned"}</TableCell>
                           <TableCell className="text-right">{item.retry_number + 1}</TableCell>
                           <TableCell>
@@ -404,7 +389,7 @@ export function ReportsPage() {
                     </TableBody>
                   </Table>
                 </div>
-                <ul className="workspace-mobile-list" aria-label="No-contact attempts awaiting review">
+                <WorkspaceMobileList aria-label="No-contact attempts awaiting review">
                   {noContactResource.data.items.map((item) => (
                     <li key={item.event_id}>
                       <div className="mobile-row-heading">
@@ -466,7 +451,7 @@ export function ReportsPage() {
                       </dl>
                     </li>
                   ))}
-                </ul>
+                </WorkspaceMobileList>
                 <Pagination
                   total={noContactResource.data.total}
                   page={noContactResource.data.page}
@@ -487,9 +472,8 @@ export function ReportsPage() {
                 </EmptyState>
               </>
             )}
-          </section>
+          </WorkspacePanel>
         )}
-      </section>
       <Modal
         open={cancelTarget !== null}
         title="Cancel no-contact attempt"

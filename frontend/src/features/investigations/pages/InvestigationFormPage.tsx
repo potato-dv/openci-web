@@ -247,11 +247,6 @@ function Editor({
     <>
       <PageHeader
         title={investigation ? "Edit investigation" : "New investigation"}
-        description={
-          investigation
-            ? "Update subject details, visit timing, address, and map location."
-            : "Confirm the subject, address, and visit requirements before saving."
-        }
         actions={
           investigation ? (
             <div className="flex w-full flex-wrap items-center gap-2 sm:w-auto sm:justify-end">
@@ -282,7 +277,7 @@ function Editor({
         }}
       />
       <div
-        className={`form-workspace${investigation ? " form-workspace-edit" : ""}`}
+        className={`mx-auto ${investigation ? "max-w-[1180px]" : "max-w-[1050px]"}`}
       >
         {!investigation && (
           <InvestigationFormStepper
@@ -297,7 +292,7 @@ function Editor({
         )}
         <form
           ref={formRef}
-          className={`content-card investigation-form${investigation ? " investigation-edit-form" : ""}`}
+          className={`investigation-form min-w-0 rounded-xl border border-[#dce4ef] bg-white shadow-[0_2px_12px_rgba(22,45,86,0.035)] ${investigation ? "investigation-edit-form" : "mb-6"}`}
           onSubmit={save}
         >
           {investigation ? (
@@ -310,7 +305,7 @@ function Editor({
                   <h2
                     ref={headingRef}
                     tabIndex={-1}
-                    className="mb-0 w-fit max-w-full text-base leading-tight font-semibold tracking-[-0.015em] text-openci-text"
+                    className="mb-0 w-fit max-w-full text-base leading-tight font-semibold tracking-[-0.015em] text-openci-text focus:outline-none"
                   >
                     Investigation details
                   </h2>
@@ -346,7 +341,7 @@ function Editor({
             </>
           ) : (
             <>
-              <h2 ref={headingRef} tabIndex={-1}>
+              <h2 ref={headingRef} tabIndex={-1} className="focus:outline-none">
                 {
                   [
                     "Subject information",

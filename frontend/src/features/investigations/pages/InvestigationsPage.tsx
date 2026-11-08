@@ -18,6 +18,10 @@ import {
 } from "@/components/data/DataFilterBar";
 import { Pagination } from "@/components/data/Pagination";
 import { PageHeader } from "@/components/layout/PageHeader";
+import { WorkspacePanel } from "@/components/layout/WorkspacePanel";
+import { ResourceFreshness } from "@/components/data/ResourceFreshness";
+import { WorkspaceSelect } from "@/components/ui/WorkspaceSelect";
+import { WorkspaceSearchField } from "@/components/data/WorkspaceSearchField";
 import {
   Button,
   ConfirmDialog,
@@ -36,15 +40,25 @@ export function InvestigationsPage() {
       (signal) => getInvestigations(token, new URLSearchParams(key), signal),
       [token, key],
     ),
+    {
+      refetchOnFocus: true,
+      refetchOnReconnect: true,
+      staleTimeMs: 60_000,
+    },
   );
   const agents = useResource(
     useCallback(
-      async () =>
+      async (signal) =>
         user.role === "admin" || user.role === "supervisor"
-          ? getAgents(token)
+          ? getAgents(token, signal)
           : [],
       [token, user.role],
     ),
+    {
+      refetchOnFocus: true,
+      refetchOnReconnect: true,
+      staleTimeMs: 5 * 60_000,
+    },
   );
   const [trash, setTrash] = useState<Investigation | null>(null);
   const [unassignTarget, setUnassignTarget] = useState<Investigation | null>(null);
@@ -130,13 +144,29 @@ export function InvestigationsPage() {
   }
   return (
     <>
-      <PageHeader
-        title="Investigations"
-        description="Manage investigation records, assignments, and progress."
-        actions={
-          <>
-            <Button onClick={resource.refresh} disabled={resource.loading}>
-              <RefreshCw size={16} aria-hidden="true" />
+      <PageHeader title="Investigations" />
+      <WorkspacePanel
+        title="Investigation register"
+        description="Search, filter, and update active records."
+        className="data-section"
+        action={
+          <div className="flex w-full flex-wrap items-center justify-end gap-2 sm:w-auto">
+            <ResourceFreshness
+              loading={resource.refreshing || agents.refreshing}
+              lastUpdatedAt={resource.lastUpdatedAt}
+            />
+            <Button
+              onClick={() => {
+                resource.refresh();
+                if (manage) agents.refresh();
+              }}
+              disabled={resource.refreshing || (manage && agents.refreshing)}
+            >
+              <RefreshCw
+                className={resource.refreshing || (manage && agents.refreshing) ? "animate-spin" : ""}
+                size={16}
+                aria-hidden="true"
+              />
               Refresh
             </Button>
             {manage && (
@@ -150,85 +180,45 @@ export function InvestigationsPage() {
                 </Link>
               </>
             )}
-          </>
+          </div>
         }
-      />
-      <section className="content-card data-section">
+      >
         <DataFilterBar>
-          <label className={dataFilterSearchClassName}>
-            Search
-            <input
-              type="search"
-              placeholder="Reference, subject, or address"
-              value={params.get("q") ?? ""}
-              onChange={(event) => update("q", event.target.value)}
-            />
-          </label>
-          <label className={dataFilterFieldClassName}>
-            Status
-            <select
-              value={params.get("status") ?? ""}
-              onChange={(event) => update("status", event.target.value)}
-            >
-              <option value="">All statuses</option>
-              {[
-                "pending",
-                "assigned",
-                "in_progress",
-                "under_review",
-                "returned_for_correction",
-                "completed",
-                "cancelled",
-              ].filter((status) => status !== "completed" || manage || (agentPermissions?.["investigation.view_own_history"] ?? false)).map((status) => (
-                <option key={status} value={status}>
-                  {status.replaceAll("_", " ")}
-                </option>
-              ))}
-            </select>
-          </label>
-          <label className={dataFilterFieldClassName}>
-            Priority
-            <select
-              value={params.get("priority") ?? ""}
-              onChange={(event) => update("priority", event.target.value)}
-            >
-              <option value="">All priorities</option>
-              <option value="normal">Normal</option>
-              <option value="high">High</option>
-              <option value="urgent">Urgent</option>
-            </select>
-          </label>
-          <label className={dataFilterFieldClassName}>
-            Location
-            <select
-              value={params.get("location_confirmed") ?? ""}
-              onChange={(event) =>
-                update("location_confirmed", event.target.value)
-              }
-            >
-              <option value="">All locations</option>
-              <option value="true">Confirmed</option>
-              <option value="false">Unconfirmed</option>
-            </select>
-          </label>
+          <WorkspaceSearchField className={dataFilterSearchClassName} value={params.get("q") ?? ""} onChange={(value) => update("q", value)} placeholder="Reference, subject, or address" />
+          <WorkspaceSelect
+            className={dataFilterFieldClassName}
+            label="Status"
+            value={params.get("status") ?? ""}
+            onValueChange={(value) => update("status", value)}
+            options={[
+              { value: "", label: "All statuses" },
+              ...["pending", "assigned", "in_progress", "under_review", "returned_for_correction", "completed", "cancelled"]
+                .filter((status) => status !== "completed" || manage || (agentPermissions?.["investigation.view_own_history"] ?? false))
+                .map((status) => ({ value: status, label: status.replaceAll("_", " ") })),
+            ]}
+          />
+          <WorkspaceSelect
+            className={dataFilterFieldClassName}
+            label="Priority"
+            value={params.get("priority") ?? ""}
+            onValueChange={(value) => update("priority", value)}
+            options={[{ value: "", label: "All priorities" }, { value: "normal", label: "Normal" }, { value: "high", label: "High" }, { value: "urgent", label: "Urgent" }]}
+          />
+          <WorkspaceSelect
+            className={dataFilterFieldClassName}
+            label="Location"
+            value={params.get("location_confirmed") ?? ""}
+            onValueChange={(value) => update("location_confirmed", value)}
+            options={[{ value: "", label: "All locations" }, { value: "true", label: "Confirmed" }, { value: "false", label: "Unconfirmed" }]}
+          />
           {manage && (
-            <label className={dataFilterFieldClassName}>
-              Agent
-              <select
-                value={params.get("assigned_agent_id") ?? ""}
-                onChange={(event) =>
-                  update("assigned_agent_id", event.target.value)
-                }
-              >
-                <option value="">All agents</option>
-                <option value="0">Unassigned</option>
-                {agents.data?.map((agent) => (
-                  <option value={agent.id} key={agent.id}>
-                    {agent.name}
-                  </option>
-                ))}
-              </select>
-            </label>
+            <WorkspaceSelect
+              className={dataFilterFieldClassName}
+              label="Agent"
+              value={params.get("assigned_agent_id") ?? ""}
+              onValueChange={(value) => update("assigned_agent_id", value)}
+              options={[{ value: "", label: "All agents" }, { value: "0", label: "Unassigned" }, ...(agents.data?.map((agent) => ({ value: String(agent.id), label: agent.name })) ?? [])]}
+            />
           )}
           <Button disabled={!key} onClick={() => setParams({})}>
             Clear
@@ -240,10 +230,9 @@ export function InvestigationsPage() {
         {automaticAssignmentError && (
           <InlineAlert>{automaticAssignmentError}</InlineAlert>
         )}
-        {resource.loading ? (
+        {resource.loading && !resource.data ? (
           <Skeleton />
-        ) : (
-          resource.data && (
+        ) : resource.data ? (
             <>
               {resource.data.items.length ? (
                 <InvestigationTable
@@ -299,9 +288,8 @@ export function InvestigationsPage() {
                 onSizeChange={(size) => update("page_size", String(size))}
               />
             </>
-          )
-        )}
-      </section>
+        ) : null}
+      </WorkspacePanel>
       <ConfirmDialog
         open={Boolean(trash)}
         title="Move investigation to Trash"

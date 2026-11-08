@@ -89,6 +89,6 @@ export function getAgentAvailability(token: string, agentId: number, fromDate: s
   return requestJson<AgentAvailability>(`/planning/agents/${agentId}/availability?${params}`, { token, signal });
 }
 
-export function getAgents(token: string) {
-  return requestJson<User[]>("/users/agents", { token });
+export function getAgents(token: string, signal?: AbortSignal) {
+  return requestJson<User[]>("/users/agents", { token, signal });
 }

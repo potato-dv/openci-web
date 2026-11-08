@@ -124,9 +124,6 @@ async function fixture(
     status: "pending",
     region_code: "1300000000",
   };
-  await page.addInitScript(() =>
-    sessionStorage.setItem("access_token", "fixture-only"),
-  );
   await page.route("**/tile.openstreetmap.org/**", (request) =>
     request.fulfill({
       contentType: "image/png",
@@ -136,13 +133,25 @@ async function fixture(
       ),
     }),
   );
-  await page.route("http://localhost:8000/**", async (request) => {
+  await page.route(
+    /^https?:\/\/[^/]+\/(users|investigations|locations|planning|reports)(\/|$)/,
+    async (request) => {
+    if (request.request().resourceType() === "document") {
+      await request.continue();
+      return;
+    }
     const url = new URL(request.request().url());
     const path = url.pathname;
     const method = request.request().method();
     let body: unknown;
     let status = 200;
-    if (path === "/users/me")
+    if (path === "/users/refresh") {
+      const person = options.role === "agent" ? agent : supervisor;
+      const claims = Buffer.from(
+        JSON.stringify({ sub: String(person.id), sid: "operations-fixture" }),
+      ).toString("base64url");
+      body = { access_token: `eyJhbGciOiJub25lIn0.${claims}.fixture` };
+    } else if (path === "/users/me")
       body = options.role === "agent" ? agent : supervisor;
     else if (path === "/users/agents") body = [agent];
     else if (path === "/locations/regions")
@@ -420,7 +429,8 @@ async function fixture(
       contentType: "application/json",
       body: JSON.stringify(body),
     });
-  });
+    },
+  );
   return counts;
 }
 test("assignment-generated routes fit supported viewports without manual plan actions", async ({
@@ -868,7 +878,7 @@ test("list filters persist in the URL and keyboard navigation opens menus", asyn
   await page.getByRole("button", { name: "Clear", exact: true }).click();
   await expect(
     page
-      .getByRole("link", { name: "INV-2026-0001 Fictional Subject 1" })
+      .getByRole("link", { name: "Fictional Subject 1 INV-2026-0001" })
       .first(),
   ).toBeVisible();
   await page.getByRole("button", { name: "Actions for INV-2026-0001" }).focus();

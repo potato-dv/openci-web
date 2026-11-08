@@ -1,4 +1,4 @@
-import { useRef, useState } from "react";
+import { useCallback, useRef, useState } from "react";
 import { Link } from "react-router";
 import { deleteInvestigation } from "@/features/investigations/api";
 import type { AgentPermissions, Investigation, User } from "@/types/api";
@@ -45,6 +45,11 @@ export function InvestigationDetailsPage({
   const [confirmDelete, setConfirmDelete] = useState(false);
   const deleteInFlight = useRef(false);
   const [deleteError, setDeleteError] = useState("");
+  const [activityRefreshKey, setActivityRefreshKey] = useState(0);
+  const handleChanged = useCallback(() => {
+    onChanged();
+    setActivityRefreshKey((current) => current + 1);
+  }, [onChanged]);
 
   async function handleDelete() {
     if (deleteInFlight.current) return;
@@ -72,7 +77,7 @@ export function InvestigationDetailsPage({
         canManage ? "investigation-manager-details" : "investigation-agent-details"
       }`}
     >
-      <section className="details-summary investigation-overview relative overflow-hidden rounded-xl border border-openci-border bg-white p-6 max-[767px]:p-4">
+      <section id="overview" className="details-summary investigation-overview relative overflow-hidden rounded-xl border border-[#dce4ef] bg-white p-6 shadow-[0_2px_12px_rgba(22,45,86,0.035)] max-[767px]:p-4">
         <div className="details-page-heading flex min-w-0 flex-wrap items-center justify-between gap-6 max-[767px]:items-start max-[767px]:gap-4 max-[520px]:flex-col max-[520px]:items-stretch">
           <div className="details-page-identity flex min-w-0 flex-col items-start">
             <h1 id="investigation-name" className="m-0 break-words text-[25px] font-semibold leading-[1.25] tracking-[-0.02em] text-openci-text max-[767px]:text-[22px]">
@@ -185,6 +190,13 @@ export function InvestigationDetailsPage({
         )}
       </section>
 
+      <nav aria-label="Investigation sections" className="flex flex-wrap gap-2 rounded-xl border border-[#dce4ef] bg-white p-2 text-[12px] font-medium">
+        <a href="#overview" className="rounded-lg bg-[#eaf1ff] px-3 py-2 text-[#2452a4] no-underline hover:bg-[#dce9ff]">Overview</a>
+        {canManage && PLANNING_ENABLED && <a href="#location" className="rounded-lg px-3 py-2 text-[#526784] no-underline hover:bg-[#f2f6fc]">Location</a>}
+        {canManage && <a href="#assignment" className="rounded-lg px-3 py-2 text-[#526784] no-underline hover:bg-[#f2f6fc]">Assignment</a>}
+        <a href="#report" className="rounded-lg px-3 py-2 text-[#526784] no-underline hover:bg-[#f2f6fc]">Report and history</a>
+      </nav>
+
       {canManage && (
         <Modal
           open={confirmDelete}
@@ -232,14 +244,14 @@ export function InvestigationDetailsPage({
               <LocationConfirmationPanel
                 token={token}
                 investigation={investigation}
-                onChanged={onChanged}
+                onChanged={handleChanged}
               />
             )}
             <div id="assignment" className="min-w-0">
               <AssignmentPanel
                 token={token}
                 investigation={investigation}
-                onChanged={onChanged}
+                onChanged={handleChanged}
               />
             </div>
           </div>
@@ -252,20 +264,20 @@ export function InvestigationDetailsPage({
             <ReportEditor
               token={token}
               investigation={investigation}
-              onChanged={onChanged}
+              onChanged={handleChanged}
               canViewEarlierReportVersions={agentPermissions?.["investigation.view_own_history"] ?? false}
               canRequestRevisit={agentPermissions?.["investigation.request_revisit"] ?? true}
             />
           )}
           {user.role === "agent" && agentPermissions?.["investigation.view_own_history"] && (
-            <InvestigationActivityTimeline token={token} investigationId={investigation.id} />
+            <InvestigationActivityTimeline token={token} investigationId={investigation.id} refreshKey={activityRefreshKey} />
           )}
 
           {(user.role === "supervisor" || user.role === "admin") && (
             <ReviewPanel
               token={token}
               investigation={investigation}
-              onChanged={onChanged}
+              onChanged={handleChanged}
             />
           )}
         </div>

@@ -1,4 +1,5 @@
 import { Table, TableHeader, TableBody, TableRow, TableHead, TableCell } from "@/components/ui/table";
+import { Plus } from "lucide-react";
 import { useCallback, useState } from "react";
 import { useSearchParams } from "react-router";
 import { useSession } from "@/app/session";
@@ -9,15 +10,25 @@ import {
 } from "@/features/users/api";
 import { useResource } from "@/hooks/useResource";
 import { PageHeader } from "@/components/layout/PageHeader";
+import { ResourceFreshness } from "@/components/data/ResourceFreshness";
+import { WorkspaceMobileList, WorkspacePanel } from "@/components/layout/WorkspacePanel";
 import { UserCreateForm } from "@/features/users/components/UserCreateForm";
 import { RowActions } from "@/components/ui/RowActions";
+import { PersonIdentity } from "@/components/data/PersonIdentity";
 import { Modal } from "@/components/ui/Modal";
 import { Button, EmptyState, InlineAlert, Skeleton } from "@/components/ui/Primitives";
 import type { User, UserRole } from "@/types/api";
 export function UsersPage() {
   const { token, user } = useSession();
   const [params, setParams] = useSearchParams();
-  const resource = useResource(useCallback(() => getUsers(token), [token]));
+  const resource = useResource(
+    useCallback((signal) => getUsers(token, signal), [token]),
+    {
+      refetchOnFocus: true,
+      refetchOnReconnect: true,
+      staleTimeMs: 60_000,
+    },
+  );
   const [create, setCreate] = useState(params.has("new"));
   const [editing, setEditing] = useState<User | null>(null);
   const [role, setRole] = useState<UserRole>("agent");
@@ -72,41 +83,42 @@ export function UsersPage() {
   }
   return (
     <>
-      <PageHeader
-        title="User Management"
-        description="Manage account access and roles."
-        actions={
-          <Button variant="primary" onClick={() => setCreate(true)}>
-            New account
-          </Button>
-        }
-      />
+      <PageHeader title="User Management" />
       {error && !editing && <InlineAlert>{error}</InlineAlert>}
-      <section className="content-card">
-        <div className="section-title">
-          <h2>Accounts</h2>
-          {resource.data && <span className="text-xs text-openci-text-muted">{resource.data.length} total</span>}
-        </div>
+      <WorkspacePanel
+        title="Accounts"
+        description={resource.data ? `${resource.data.length} total` : undefined}
+        action={
+          <div className="flex w-full flex-wrap items-center justify-end gap-2 sm:w-auto">
+            <ResourceFreshness
+              loading={resource.refreshing}
+              lastUpdatedAt={resource.lastUpdatedAt}
+            />
+            <Button variant="primary" onClick={() => setCreate(true)}>
+              <Plus size={16} aria-hidden="true" />
+              New account
+            </Button>
+          </div>
+        }
+      >
         {resource.error && (
           <InlineAlert onRetry={resource.refresh}>{resource.error}</InlineAlert>
         )}
-        {resource.loading ? (
+        {resource.loading && !resource.data ? (
           <Skeleton />
         ) : resource.data?.length ? (
           <>
-          <div className="table-wrap desktop-data">
+          <div className="hidden max-w-full overflow-x-auto rounded-lg border border-[#e2e8f1] md:block">
             <Table className="min-w-[680px] table-fixed">
               <colgroup>
-                <col className="w-[24%]" />
-                <col className="w-[35%]" />
-                <col className="w-[16%]" />
-                <col className="w-[17%]" />
-                <col className="w-[8%]" />
+                <col className="w-[46%]" />
+                <col className="w-[18%]" />
+                <col className="w-[22%]" />
+                <col className="w-[14%]" />
               </colgroup>
               <TableHeader>
                 <TableRow>
-                  <TableHead scope="col">Name</TableHead>
-                  <TableHead scope="col">Email</TableHead>
+                  <TableHead scope="col">Account</TableHead>
                   <TableHead scope="col">Role</TableHead>
                   <TableHead scope="col">Account status</TableHead>
                   <TableHead scope="col" className="text-right">Actions</TableHead>
@@ -115,8 +127,7 @@ export function UsersPage() {
               <TableBody>
                 {resource.data?.map((item) => (
                   <TableRow key={item.id}>
-                    <TableCell className="font-medium">{item.name}</TableCell>
-                    <TableCell className="truncate text-openci-text-muted" title={item.email}>{item.email}</TableCell>
+                    <TableCell><PersonIdentity name={item.name} detail={item.email} /></TableCell>
                     <TableCell className="capitalize">{item.role}</TableCell>
                     <TableCell>
                       <span
@@ -131,7 +142,7 @@ export function UsersPage() {
               </TableBody>
             </Table>
           </div>
-          <ul className="workspace-mobile-list" aria-label="User accounts">
+          <WorkspaceMobileList aria-label="User accounts">
             {resource.data.map((item) => (
               <li key={item.id}>
                 <div className="mobile-row-heading">
@@ -145,12 +156,12 @@ export function UsersPage() {
                 </dl>
               </li>
             ))}
-          </ul>
+          </WorkspaceMobileList>
           </>
         ) : !resource.error ? (
           <EmptyState title="No accounts yet">Create an account to give your team access to Collector.</EmptyState>
         ) : null}
-      </section>
+      </WorkspacePanel>
       <UserCreateForm
         token={token}
         open={create}

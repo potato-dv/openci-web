@@ -128,6 +128,11 @@ export function RoutePlanningPage() {
           : Promise.resolve(null),
       [token, workDate, regionCode, densityResolution],
     ),
+    {
+      refetchOnFocus: true,
+      refetchOnReconnect: true,
+      staleTimeMs: 30_000,
+    },
   );
   const [mapSearchSlot, setMapSearchSlot] = useState<HTMLDivElement | null>(
     null,
@@ -264,6 +269,7 @@ export function RoutePlanningPage() {
   useEffect(() => {
     const timer = window.setInterval(
       () => {
+        if (document.visibilityState !== "visible") return;
         refreshRouteData();
         if (hasQueuedRefresh || hasStaleRoute) {
           refreshMapData();

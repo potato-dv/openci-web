@@ -3,7 +3,7 @@ export default defineConfig({
   testDir: "./e2e",
   fullyParallel: false,
   workers: 1,
-  webServer: {
+  webServer: process.env.OPENCI_UI_URL ? undefined : {
     command: "npm run dev -- --host 127.0.0.1 --port 5174 --strictPort",
     url: "http://127.0.0.1:5174",
     reuseExistingServer: !process.env.CI,

@@ -1,4 +1,4 @@
-import { useEffect, useId, useRef, type ReactNode } from "react";
+import { useEffect, useId, useRef, type ReactNode, type Ref } from "react";
 import { createPortal } from "react-dom";
 
 type ModalProps = {
@@ -9,6 +9,7 @@ type ModalProps = {
   size?: "default" | "wide";
   className?: string;
   initialFocus?: string;
+  contentRef?: Ref<HTMLDivElement>;
 };
 
 export function Modal({
@@ -19,6 +20,7 @@ export function Modal({
   size = "default",
   className = "",
   initialFocus,
+  contentRef,
 }: ModalProps) {
   const dialogRef = useRef<HTMLDialogElement>(null);
   const titleId = useId();
@@ -71,7 +73,7 @@ export function Modal({
           </svg>
         </button>
       </header>
-      <div className="app-modal-content">{children}</div>
+      <div ref={contentRef} className="app-modal-content">{children}</div>
     </dialog>
   );
 

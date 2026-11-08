@@ -28,7 +28,14 @@ export default defineConfig(({ mode }) => {
       proxy: Object.fromEntries(
         apiPrefixes.map((prefix) => [
           prefix,
-          { target: apiTarget, changeOrigin: true },
+          {
+            target: apiTarget,
+            changeOrigin: true,
+            bypass: (request) =>
+              request.headers.accept?.includes('text/html')
+                ? request.url
+                : undefined,
+          },
         ]),
       ),
     },

@@ -1,71 +1,74 @@
 import { CheckCircle2, CircleX } from "lucide-react";
-import type {
-  AgentPermissionEffect,
-  AgentPermissionFeature,
-} from "@/types/api";
+import type { AgentPermissionFeature } from "@/types/api";
+
+type PermissionChoice = "allow" | "deny";
 
 type PermissionFeatureRowProps = {
   feature: AgentPermissionFeature;
-  selectedOverride: AgentPermissionEffect;
-  onOverrideChange: (effect: AgentPermissionEffect) => void;
+  selectedOverride: PermissionChoice;
+  hasPendingChange: boolean;
+  onOverrideChange: (effect: PermissionChoice) => void;
 };
 
 function displayEffect(value: boolean) {
   return value ? "Allowed" : "Denied";
 }
 
-function displayOverride(value: AgentPermissionEffect) {
-  if (value === "allow") return "Allow";
-  if (value === "deny") return "Deny";
-  return "Use default";
-}
-
 export function PermissionFeatureRow({
   feature,
   selectedOverride,
+  hasPendingChange,
   onOverrideChange,
 }: PermissionFeatureRowProps) {
-  const hasPendingChange = (feature.override ?? "inherit") !== selectedOverride;
+  const selectedAllowed = selectedOverride === "allow";
 
   return (
-    <article className="grid min-w-0 grid-cols-[minmax(0,1fr)_minmax(10rem,14rem)] items-center gap-x-6 gap-y-3 border-t border-openci-border py-4 last:border-b max-[680px]:grid-cols-1">
+    <article className="grid min-w-0 grid-cols-[minmax(0,1fr)_minmax(10rem,14rem)] items-center gap-x-6 gap-y-3 py-4 first:pt-0 last:pb-0 max-[680px]:grid-cols-1">
       <div className="min-w-0">
-        <h3 className="m-0 text-sm font-semibold">{feature.name}</h3>
-        <p className="mt-1 mb-0 text-[13px] leading-[1.45] text-openci-text-muted">
+        <h3 className="m-0 text-sm font-semibold text-[#1a2d4c]">{feature.name}</h3>
+        <p className="mb-0 mt-1 text-[13px] leading-[1.45] text-[#63748e]">
           {feature.description}
         </p>
-        <div className="mt-2 flex flex-wrap items-center gap-x-3 gap-y-1 text-xs text-openci-text-muted">
-          <span>Agent default: {displayEffect(feature.default_allowed)}</span>
-          <span className="inline-flex items-center gap-1.5 font-medium text-openci-text">
-            {feature.effective_allowed ? (
-              <CheckCircle2 size={15} className="text-openci-success" aria-hidden="true" />
+        <div className="mt-2 flex flex-wrap items-center gap-x-4 gap-y-1 text-xs text-[#63748e]">
+          <span className={`inline-flex items-center gap-1.5 font-medium ${selectedAllowed ? "text-emerald-700" : "text-rose-700"}`}>
+            {selectedAllowed ? (
+              <CheckCircle2 size={14} aria-hidden="true" />
             ) : (
-              <CircleX size={15} className="text-openci-danger" aria-hidden="true" />
+              <CircleX size={14} aria-hidden="true" />
             )}
-            Effective: {displayEffect(feature.effective_allowed)}
+            {hasPendingChange ? "Selected access" : "Effective access"}: {displayEffect(selectedAllowed)}
           </span>
         </div>
         {hasPendingChange && (
-          <p className="history-access-pending mt-2">
-            Unsaved selection: {displayOverride(selectedOverride)}
+          <p className="mb-0 mt-1.5 text-xs font-medium text-amber-700">
+            Unsaved selection
           </p>
         )}
       </div>
-      <label className="grid min-w-0 gap-1 text-xs font-semibold text-openci-text-muted">
-        <span>Override</span>
-        <select
-          aria-label={`${feature.name} permission`}
-          className="min-h-[38px] w-full text-[13px] max-[680px]:min-h-11"
-          value={selectedOverride}
-          onChange={(event) =>
-            onOverrideChange(event.target.value as AgentPermissionEffect)
-          }
-        >
-          <option value="inherit">Use default</option>
-          <option value="allow">Allow</option>
-          <option value="deny">Deny</option>
-        </select>
-      </label>
+
+      <fieldset className="m-0 grid min-w-0 grid-cols-2 gap-1 rounded-lg border border-[#dce4ef] bg-[#f5f7fa] p-1 max-[680px]:w-full sm:min-w-[11rem]">
+        <legend className="sr-only">{feature.name} access</legend>
+        {(["allow", "deny"] as const).map((effect) => {
+          const checked = selectedOverride === effect;
+          const label = effect === "allow" ? "Allow" : "Deny";
+          return (
+            <label className="relative flex min-w-0 cursor-pointer" key={effect}>
+              <input
+                className="peer sr-only"
+                type="radio"
+                name={`permission-${feature.code}`}
+                value={effect}
+                aria-label={`${feature.name} permission: ${label}`}
+                checked={checked}
+                onChange={() => onOverrideChange(effect)}
+              />
+              <span className="flex min-h-9 w-full items-center justify-center rounded-md px-3 text-[13px] font-medium text-[#526784] transition-colors peer-checked:bg-white peer-checked:text-[#1a2d4c] peer-checked:shadow-sm peer-focus-visible:outline peer-focus-visible:outline-2 peer-focus-visible:outline-offset-2 peer-focus-visible:outline-[#3261c5]">
+                {label}
+              </span>
+            </label>
+          );
+        })}
+      </fieldset>
     </article>
   );
 }

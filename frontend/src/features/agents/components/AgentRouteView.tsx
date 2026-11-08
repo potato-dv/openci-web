@@ -172,7 +172,7 @@ export function AgentRouteView({
               Upcoming stops stay view-only until this stop is submitted or deferred.
             </InlineAlert>
           )}
-          <dl className="route-metrics">
+          <dl className="mb-5 grid grid-cols-2 gap-3 md:grid-cols-4 xl:grid-cols-7 [&>div]:rounded-lg [&>div]:border [&>div]:border-[#dfe7f1] [&>div]:bg-[#f5f8fc] [&>div]:p-3 [&_dt]:text-[11px] [&_dt]:font-medium [&_dt]:text-[#6d7f9b] [&_dd]:mb-0 [&_dd]:mt-2 [&_dd]:text-base [&_dd]:font-semibold [&_dd]:tabular-nums [&_dd]:text-[#1d3558]">
             <div>
               <dt>{data.route ? "Published stops" : "Assigned investigations"}</dt>
               <dd>{data.stops.length}</dd>

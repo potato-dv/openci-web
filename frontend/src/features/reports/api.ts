@@ -67,16 +67,17 @@ export function cancelNoContactAttempt(
   );
 }
 
-export function getReport(token: string, investigationId: number) {
+export function getReport(token: string, investigationId: number, signal?: AbortSignal) {
   return requestJson<Report | null>(
     `/investigations/${investigationId}/report`,
-    { token },
+    { token, signal },
   );
 }
 
-export function getReportVersions(token: string, investigationId: number) {
+export function getReportVersions(token: string, investigationId: number, signal?: AbortSignal) {
   return requestJson<Report[]>(`/investigations/${investigationId}/reports`, {
     token,
+    signal,
   });
 }
 
@@ -103,17 +104,17 @@ export function submitReport(token: string, investigationId: number, routeAction
   );
 }
 
-export function getRevisitRequest(token: string, investigationId: number) {
+export function getRevisitRequest(token: string, investigationId: number, signal?: AbortSignal) {
   return requestJson<RevisitRequestState>(
     `/investigations/${investigationId}/revisit-request`,
-    { token },
+    { token, signal },
   );
 }
 
-export function getInvestigationActivity(token: string, investigationId: number) {
+export function getInvestigationActivity(token: string, investigationId: number, signal?: AbortSignal) {
   return requestJson<{ items: InvestigationActivityItem[] }>(
     `/investigations/${investigationId}/activity-history`,
-    { token },
+    { token, signal },
   );
 }
 

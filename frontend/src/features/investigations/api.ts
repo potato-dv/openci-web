@@ -28,8 +28,8 @@ export function getInvestigation(
   return requestJson<Investigation>(`/investigations/${id}`, { token, signal });
 }
 
-export function getTrashedInvestigations(token: string) {
-  return requestJson<Investigation[]>("/investigations/trash", { token });
+export function getTrashedInvestigations(token: string, signal?: AbortSignal) {
+  return requestJson<Investigation[]>("/investigations/trash", { token, signal });
 }
 
 export function createInvestigation(
@@ -158,9 +158,9 @@ export function confirmInvestigationLocation(
   );
 }
 
-export function getAssignments(token: string, investigationId: number) {
+export function getAssignments(token: string, investigationId: number, signal?: AbortSignal) {
   return requestJson<Assignment[]>(
     `/investigations/${investigationId}/assignments`,
-    { token },
+    { token, signal },
   );
 }

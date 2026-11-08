@@ -686,6 +686,34 @@ export type ActivityLog = {
   details: Record<string, unknown>;
   created_at: string;
 };
+export type ActivityLogDetail = {
+  key: string;
+  label: string;
+  value: string;
+  redacted: boolean;
+};
+export type ActivityLogItem = {
+  id: number;
+  actor_id: number | null;
+  actor_name: string | null;
+  action: string;
+  object_type: string;
+  object_id: number | null;
+  record_label: string;
+  summary: string;
+  detail_fields: ActivityLogDetail[];
+  created_at: string;
+};
+export type ActivityLogPage = PageResult<ActivityLogItem>;
+export type ActivityLogActorOption = {
+  id: number | null;
+  name: string;
+};
+export type ActivityLogFilterOptions = {
+  actions: string[];
+  object_types: string[];
+  actors: ActivityLogActorOption[];
+};
 
 export type Assignment = {
   id: number;

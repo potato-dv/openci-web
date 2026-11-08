@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { FilePenLine } from "lucide-react";
 
 import {
@@ -51,6 +51,25 @@ const emptyReport: ReportInput = {
   visited_at: null,
 };
 
+function reportInputFromReport(report: Report | null): ReportInput {
+  return report
+    ? {
+        content: report.content,
+        visit_outcome: report.visit_outcome,
+        outcome: report.outcome,
+        verified_address: report.verified_address,
+        occupancy_status: report.occupancy_status,
+        property_condition: report.property_condition,
+        interaction_notes: report.interaction_notes,
+        visited_at: toLocalDateTime(report.visited_at),
+      }
+    : { ...emptyReport };
+}
+
+function reportInputsMatch(left: ReportInput, right: ReportInput) {
+  return JSON.stringify(left) === JSON.stringify(right);
+}
+
 function toPayload(report: ReportInput): ReportInput {
   return {
     ...report,
@@ -80,6 +99,17 @@ export function ReportEditor({
   );
   const [revisitEligible, setRevisitEligible] = useState(false);
   const [form, setForm] = useState<ReportInput>(emptyReport);
+  const formRef = useRef(form);
+  const draftDirtyRef = useRef(false);
+  const draftInvestigationIdRef = useRef<number | null>(null);
+  const routeRefreshInFlightRef = useRef(false);
+  const routeLastUpdatedAtRef = useRef(0);
+  const reportLastUpdatedAtRef = useRef(0);
+  const revisitRefreshInFlightRef = useRef(false);
+  const revisitLastUpdatedAtRef = useRef(0);
+  const [draftDirty, setDraftDirty] = useState(false);
+  const [latestServerForm, setLatestServerForm] = useState<ReportInput | null>(null);
+  const [draftConflict, setDraftConflict] = useState(false);
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState("");
@@ -112,73 +142,137 @@ export function ReportEditor({
     isCurrentStop && routeStop?.can_report && routeAction,
   );
 
-  async function refreshRoute() {
-    const latest = await getAgentRoute(token, workDate);
-    setAgentRoute(latest);
-    return latest;
+  const applyForm = useCallback((next: ReportInput) => {
+    formRef.current = next;
+    setForm(next);
+  }, []);
+
+  function setDraftDirtyState(dirty: boolean) {
+    draftDirtyRef.current = dirty;
+    setDraftDirty(dirty);
   }
+
+  function discardDraft() {
+    if (!latestServerForm) return;
+    applyForm(latestServerForm);
+    setDraftDirtyState(false);
+    setDraftConflict(false);
+    setMessage("The report draft was discarded and the latest saved version was loaded.");
+  }
+
+  const refreshRoute = useCallback(async () => {
+    if (routeRefreshInFlightRef.current) return null;
+    routeRefreshInFlightRef.current = true;
+    try {
+      const latest = await getAgentRoute(token, workDate);
+      routeLastUpdatedAtRef.current = Date.now();
+      setAgentRoute(latest);
+      return latest;
+    } finally {
+      routeRefreshInFlightRef.current = false;
+    }
+  }, [token, workDate]);
 
   useEffect(() => {
     let cancelled = false;
+    if (draftInvestigationIdRef.current !== investigation.id) {
+      draftInvestigationIdRef.current = investigation.id;
+      reportLastUpdatedAtRef.current = 0;
+      draftDirtyRef.current = false;
+      setDraftDirty(false);
+      setDraftConflict(false);
+      setLatestServerForm(null);
+      applyForm({ ...emptyReport });
+    }
+    let inFlight = false;
+    let activeController: AbortController | null = null;
 
-    async function loadReport() {
-      setLoading(true);
-      setError("");
-      setMessage("");
+    async function loadReport(background = false) {
+      if (cancelled || inFlight) return;
+      inFlight = true;
+      const controller = new AbortController();
+      activeController = controller;
+      if (!background) {
+        setLoading(true);
+        setError("");
+        setMessage("");
+      }
       try {
         const [reportData, reportVersions, revisitData, routeData] =
           await Promise.all([
-            getReport(token, investigation.id),
+            getReport(token, investigation.id, controller.signal),
             canViewEarlierReportVersions
-              ? getReportVersions(token, investigation.id).catch(() => [])
+              ? getReportVersions(token, investigation.id, controller.signal).catch(() => [])
               : Promise.resolve([]),
-            PLANNING_ENABLED
-              ? getRevisitRequest(token, investigation.id)
+            PLANNING_ENABLED && !background
+              ? getRevisitRequest(token, investigation.id, controller.signal)
               : Promise.resolve(null),
-            PLANNING_ENABLED
-              ? getAgentRoute(token, workDate).catch(() => null)
+            PLANNING_ENABLED && !background
+              ? getAgentRoute(token, workDate, controller.signal).catch(() => null)
               : Promise.resolve(null),
           ]);
-        if (cancelled) return;
+        if (cancelled || controller.signal.aborted) return;
         setReport(reportData);
         setVersions(reportVersions);
         const revisitState = revisitData as RevisitRequestState | null;
-        setRevisitRequest(revisitState?.request ?? null);
-        setRevisitEligible(revisitState?.can_request ?? false);
-        setAgentRoute(routeData);
-        setForm(
-          reportData
-            ? {
-                content: reportData.content,
-                visit_outcome: reportData.visit_outcome,
-                outcome: reportData.outcome,
-                verified_address: reportData.verified_address,
-                occupancy_status: reportData.occupancy_status,
-                property_condition: reportData.property_condition,
-                interaction_notes: reportData.interaction_notes,
-                visited_at: toLocalDateTime(reportData.visited_at),
-              }
-            : emptyReport,
-        );
+        if (!background) {
+          setRevisitRequest(revisitState?.request ?? null);
+          setRevisitEligible(revisitState?.can_request ?? false);
+          if (PLANNING_ENABLED) revisitLastUpdatedAtRef.current = Date.now();
+          setAgentRoute(routeData);
+          if (routeData) routeLastUpdatedAtRef.current = Date.now();
+        }
+        const nextServerForm = reportInputFromReport(reportData);
+        reportLastUpdatedAtRef.current = Date.now();
+        setLatestServerForm(nextServerForm);
+        if (!draftDirtyRef.current) {
+          applyForm(nextServerForm);
+          setDraftConflict(false);
+        } else {
+          setDraftConflict(!reportInputsMatch(formRef.current, nextServerForm));
+        }
       } catch (err) {
-        if (cancelled) return;
+        if (cancelled || controller.signal.aborted) return;
         if (err instanceof Error && err.message === "Report not found") {
           setReport(null);
           setVersions([]);
-          setForm(emptyReport);
+          const nextServerForm = { ...emptyReport };
+          reportLastUpdatedAtRef.current = Date.now();
+          setLatestServerForm(nextServerForm);
+          if (!draftDirtyRef.current) {
+            applyForm(nextServerForm);
+            setDraftConflict(false);
+          } else {
+            setDraftConflict(!reportInputsMatch(formRef.current, nextServerForm));
+          }
         } else {
           setError(
             err instanceof Error ? err.message : "Could not load report.",
           );
         }
       } finally {
-        if (!cancelled) setLoading(false);
+        inFlight = false;
+        if (activeController === controller) activeController = null;
+        if (!cancelled && !background) setLoading(false);
       }
     }
 
     void loadReport();
+    const refreshIfStale = () => {
+      if (
+        document.visibilityState === "visible" &&
+        Date.now() - reportLastUpdatedAtRef.current >= 30_000
+      ) void loadReport(true);
+    };
+    window.addEventListener("focus", refreshIfStale);
+    document.addEventListener("visibilitychange", refreshIfStale);
+    window.addEventListener("online", refreshIfStale);
     return () => {
       cancelled = true;
+      activeController?.abort();
+      window.removeEventListener("focus", refreshIfStale);
+      document.removeEventListener("visibilitychange", refreshIfStale);
+      window.removeEventListener("online", refreshIfStale);
     };
   }, [
     canViewEarlierReportVersions,
@@ -186,56 +280,108 @@ export function ReportEditor({
     investigation.status,
     token,
     workDate,
+    applyForm,
   ]);
 
   useEffect(() => {
     if (!PLANNING_ENABLED) return;
     let cancelled = false;
     const refresh = async () => {
+      if (
+        cancelled ||
+        document.visibilityState !== "visible" ||
+        routeRefreshInFlightRef.current
+      ) return;
       try {
-        const latest = await getAgentRoute(token, workDate);
-        if (!cancelled) setAgentRoute(latest);
+        await refreshRoute();
       } catch {
-        // Keep the last route snapshot; mutations are checked by the backend.
+        // Keep the last route snapshot; the next visible refresh can recover.
       }
     };
-    const timer = window.setInterval(() => void refresh(), 10_000);
+    const refreshIfStale = () => {
+      if (
+        document.visibilityState === "visible" &&
+        Date.now() - routeLastUpdatedAtRef.current >= 10_000
+      ) {
+        void refresh();
+      }
+    };
+    const timer = window.setInterval(() => {
+      if (
+        agentRoute?.reason === "route_refresh_pending" &&
+        document.visibilityState === "visible"
+      ) {
+        void refresh();
+      }
+    }, 10_000);
+    window.addEventListener("focus", refreshIfStale);
+    document.addEventListener("visibilitychange", refreshIfStale);
+    window.addEventListener("online", refreshIfStale);
     return () => {
       cancelled = true;
       window.clearInterval(timer);
+      window.removeEventListener("focus", refreshIfStale);
+      document.removeEventListener("visibilitychange", refreshIfStale);
+      window.removeEventListener("online", refreshIfStale);
     };
-  }, [token, workDate]);
+  }, [agentRoute?.reason, refreshRoute]);
 
   useEffect(() => {
-    if (
-      !PLANNING_ENABLED ||
-      !revisitRequestStatus ||
-      !["waiting_for_shift", "queued"].includes(revisitRequestStatus)
-    ) {
-      return;
-    }
+    if (!PLANNING_ENABLED) return;
     let cancelled = false;
     const refreshStatus = async () => {
+      if (
+        cancelled ||
+        document.visibilityState !== "visible" ||
+        revisitRefreshInFlightRef.current
+      ) return;
+      revisitRefreshInFlightRef.current = true;
       try {
         const latest = await getRevisitRequest(token, investigation.id);
         if (!cancelled && latest) {
           const revisitState = latest as RevisitRequestState;
           setRevisitRequest(revisitState.request ?? null);
           setRevisitEligible(revisitState.can_request);
+          revisitLastUpdatedAtRef.current = Date.now();
         }
       } catch {
-        // Keep the last known request state; the next poll can recover.
+        // Keep the last known request state; the next visible poll can recover.
+      } finally {
+        revisitRefreshInFlightRef.current = false;
       }
     };
-    const intervalId = window.setInterval(() => void refreshStatus(), 15_000);
+    const hasActiveRevisitJob = Boolean(
+      revisitRequestStatus && ["waiting_for_shift", "queued"].includes(revisitRequestStatus),
+    );
+    const intervalId = hasActiveRevisitJob
+      ? window.setInterval(() => {
+          if (document.visibilityState === "visible") void refreshStatus();
+        }, 15_000)
+      : null;
+    const resumeIfVisible = () => {
+      if (
+        document.visibilityState === "visible" &&
+        Date.now() - revisitLastUpdatedAtRef.current >= 15_000
+      ) {
+        void refreshStatus();
+      }
+    };
+    window.addEventListener("focus", resumeIfVisible);
+    document.addEventListener("visibilitychange", resumeIfVisible);
+    window.addEventListener("online", resumeIfVisible);
     return () => {
       cancelled = true;
-      window.clearInterval(intervalId);
+      if (intervalId !== null) window.clearInterval(intervalId);
+      window.removeEventListener("focus", resumeIfVisible);
+      document.removeEventListener("visibilitychange", resumeIfVisible);
+      window.removeEventListener("online", resumeIfVisible);
     };
   }, [investigation.id, revisitRequestStatus, token]);
 
   function update<K extends keyof ReportInput>(key: K, value: ReportInput[K]) {
-    setForm((current) => ({ ...current, [key]: value }));
+    const next = { ...formRef.current, [key]: value } as ReportInput;
+    applyForm(next);
+    setDraftDirtyState(true);
   }
 
   async function handleSave() {
@@ -252,6 +398,11 @@ export function ReportEditor({
         routeAction,
       );
       setReport(saved);
+      const savedForm = reportInputFromReport(saved);
+      setLatestServerForm(savedForm);
+      applyForm(savedForm);
+      setDraftDirtyState(false);
+      setDraftConflict(false);
       if (canViewEarlierReportVersions) {
         setVersions((current) =>
           [...current.filter((item) => item.id !== saved.id), saved].sort(
@@ -259,10 +410,6 @@ export function ReportEditor({
           ),
         );
       }
-      setForm((current) => ({
-        ...current,
-        visited_at: toLocalDateTime(saved.visited_at),
-      }));
       setMessage(`Version ${saved.version} draft saved.`);
       onChanged();
     } catch (err) {
@@ -333,6 +480,11 @@ export function ReportEditor({
             }
           : current,
       );
+      const submittedForm = reportInputFromReport(submitted);
+      setLatestServerForm(submittedForm);
+      applyForm(submittedForm);
+      setDraftDirtyState(false);
+      setDraftConflict(false);
       setMessage(
         `Version ${submitted.version} submitted for supervisor review.`,
       );
@@ -462,7 +614,7 @@ export function ReportEditor({
 
   const locked =
     report?.status === "submitted" || report?.status === "approved";
-  const reportFieldsDisabled = loading || saving || locked || !canEdit;
+  const reportFieldsDisabled = loading || saving || locked || !canEdit || draftConflict;
   const isReturned =
     report?.status === "returned_for_correction" ||
     investigation.status === "returned_for_correction";
@@ -528,6 +680,24 @@ export function ReportEditor({
         <p className="workflow-meta">
           Report author: <strong>{formatUserName(report.author_name)}</strong>
         </p>
+      )}
+
+      {draftConflict && draftDirty && latestServerForm && (
+        <div className="workflow-meta" role="alert">
+          <p>
+            This report changed elsewhere while you had unsaved edits. Your
+            draft is preserved. Load the latest saved version before continuing
+            if you want to discard your local changes.
+          </p>
+          <button
+            type="button"
+            className="secondary-button compact-button"
+            onClick={discardDraft}
+            disabled={saving}
+          >
+            Discard draft and load latest
+          </button>
+        </div>
       )}
 
       {PLANNING_ENABLED && !routeRevision && (
@@ -660,7 +830,7 @@ export function ReportEditor({
             type="button"
             className="secondary-button"
             onClick={() => void handleSave()}
-            disabled={loading || saving || !form.content.trim()}
+            disabled={loading || saving || draftConflict || !form.content.trim()}
           >
             {saving ? "Saving…" : "Save draft"}
           </button>
@@ -671,6 +841,7 @@ export function ReportEditor({
             disabled={
               loading ||
               saving ||
+              draftConflict ||
               !form.content.trim() ||
               waitingForRevisitRoute
             }

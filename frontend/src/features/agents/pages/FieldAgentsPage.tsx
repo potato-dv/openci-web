@@ -1,12 +1,17 @@
 import { Table, TableHeader, TableBody, TableRow, TableHead, TableCell } from "@/components/ui/table";
 import { useCallback, useState } from "react";
 import { Link, useSearchParams } from "react-router";
+import { RefreshCw, Plus } from "lucide-react";
 import { useSession } from "@/app/session";
 import { getAgentRoster } from "@/features/agents/api";
 import { getRegions } from "@/features/locations/api";
 import { useResource } from "@/hooks/useResource";
 import { PageHeader } from "@/components/layout/PageHeader";
+import { ResourceFreshness } from "@/components/data/ResourceFreshness";
+import { WorkspaceMobileList, WorkspacePanel } from "@/components/layout/WorkspacePanel";
 import { DataFilterBar, dataFilterFieldClassName } from "@/components/data/DataFilterBar";
+import { WorkspaceSelect } from "@/components/ui/WorkspaceSelect";
+import { PersonIdentity } from "@/components/data/PersonIdentity";
 import { AgentShiftDrawer } from "@/features/agents/components/AgentShiftDrawer";
 import {
   Button,
@@ -53,6 +58,11 @@ export function FieldAgentsPage() {
         ),
       [token, date, region, inactive],
     ),
+    {
+      refetchOnFocus: true,
+      refetchOnReconnect: true,
+      staleTimeMs: 60_000,
+    },
   );
   const selectedRow =
     selected && roster.data
@@ -67,21 +77,33 @@ export function FieldAgentsPage() {
   }
   return (
     <>
-      <PageHeader
-        title="Field Agents"
-        description="Set recurring workdays, depot locations, fixed breaks, and dated shift overrides."
-        actions={
-          <>
-            <Button onClick={roster.refresh}>Refresh</Button>
+      <PageHeader title="Field Agents" />
+      <WorkspacePanel
+        title="Daily roster"
+        description="Account status, shift availability, and assigned workload stay separate."
+        action={
+          <div className="flex w-full flex-wrap items-center justify-end gap-2 sm:w-auto">
+            <ResourceFreshness
+              loading={roster.refreshing}
+              lastUpdatedAt={roster.lastUpdatedAt}
+            />
+            <Button onClick={roster.refresh} disabled={roster.refreshing}>
+              <RefreshCw
+                className={roster.refreshing ? "animate-spin" : ""}
+                size={16}
+                aria-hidden="true"
+              />
+              Refresh
+            </Button>
             {user.role === "admin" && (
               <Link className="primary-button" to="/users?new">
+                <Plus size={16} aria-hidden="true" />
                 New account
               </Link>
             )}
-          </>
+          </div>
         }
-      />
-      <section className="content-card">
+      >
         {regions.error && (
           <InlineAlert onRetry={regions.refresh}>{regions.error}</InlineAlert>
         )}
@@ -94,51 +116,41 @@ export function FieldAgentsPage() {
               onChange={(event) => update("date", event.target.value)}
             />
           </label>
-          <label className="min-w-[220px] flex-[1_1_220px] md:flex-[0_1_250px]">
-            Service region
-            <select
-              value={region}
-              onChange={(event) => update("region", event.target.value)}
-            >
-              <option value="">All agents, including no shift</option>
-              {regions.data?.map((item) => (
-                <option value={item.code} key={item.code}>
-                  {item.name}
-                </option>
-              ))}
-            </select>
-          </label>
+          <WorkspaceSelect
+            className="min-w-[220px] flex-[1_1_220px] md:flex-[0_1_250px]"
+            label="Service region"
+            value={region}
+            onValueChange={(value) => update("region", value)}
+            options={[{ value: "", label: "All agents, including no shift" }, ...(regions.data?.map((item) => ({ value: item.code, label: item.name })) ?? [])]}
+          />
           {user.role === "admin" && (
-            <label className={dataFilterFieldClassName}>
-              Accounts
-              <select
-                value={inactive}
-                onChange={(event) => update("inactive", event.target.value)}
-              >
-                <option value="false">Active accounts</option>
-                <option value="true">Include inactive</option>
-              </select>
-            </label>
+            <WorkspaceSelect
+              className={dataFilterFieldClassName}
+              label="Accounts"
+              value={inactive}
+              onValueChange={(value) => update("inactive", value)}
+              options={[{ value: "false", label: "Active accounts" }, { value: "true", label: "Include inactive" }]}
+            />
           )}
         </DataFilterBar>
         {roster.error && (
           <InlineAlert onRetry={roster.refresh}>{roster.error}</InlineAlert>
         )}
-        {roster.loading ? (
+        {roster.loading && !roster.data ? (
           <Skeleton />
         ) : roster.data?.length ? (
           <>
-            <div className="table-wrap desktop-data">
-              <Table className="min-w-[1080px] table-fixed">
+            <div className="hidden max-w-full overflow-x-auto rounded-lg border border-[#e2e8f1] md:block">
+              <Table className="min-w-[980px] table-fixed">
                 <colgroup>
-                  <col className="w-[18%]" />
-                  <col className="w-[10%]" />
-                  <col className="w-[14%]" />
+                  <col className="w-[17%]" />
+                  <col className="w-[9%]" />
                   <col className="w-[13%]" />
-                  <col className="w-[19%]" />
+                  <col className="w-[12%]" />
+                  <col className="w-[18%]" />
+                  <col className="w-[9%]" />
                   <col className="w-[8%]" />
-                  <col className="w-[8%]" />
-                  <col className="w-[10%]" />
+                  <col className="w-[14%]" />
                 </colgroup>
                 <TableHeader>
                   <TableRow>
@@ -155,10 +167,7 @@ export function FieldAgentsPage() {
                 <TableBody>
                   {roster.data.map((row) => (
                     <TableRow key={row.agent.id}>
-                      <TableCell className="min-w-0">
-                        <strong>{row.agent.name}</strong>
-                        <small className="block truncate" title={row.agent.email}>{row.agent.email}</small>
-                      </TableCell>
+                      <TableCell className="min-w-0"><PersonIdentity name={row.agent.name} detail={row.agent.email} /></TableCell>
                       <TableCell>
                         <span
                           className={`status-badge account-${row.agent.is_active ? "active" : "inactive"}`}
@@ -203,8 +212,7 @@ export function FieldAgentsPage() {
                 </TableBody>
               </Table>
             </div>
-            <ul
-              className="workspace-mobile-list"
+            <WorkspaceMobileList
               aria-label="Field agent roster"
             >
               {roster.data.map((row) => (
@@ -264,14 +272,14 @@ export function FieldAgentsPage() {
                   </Button>
                 </li>
               ))}
-            </ul>
+            </WorkspaceMobileList>
           </>
         ) : (
           <EmptyState title="No agents match this view">
             Clear the region filter to include agents without a shift.
           </EmptyState>
         )}
-      </section>
+      </WorkspacePanel>
       {selectedRow && (
         <AgentShiftDrawer
           key={`${selectedRow.agent.id}:${date}`}

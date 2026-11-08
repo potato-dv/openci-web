@@ -52,6 +52,22 @@
   line-height: 1.25;
   letter-spacing: -0.02em;
 }
+.collector-brand--workspace-sidebar {
+  gap: 0;
+}
+.collector-brand--workspace-sidebar strong {
+  font-size: 16px;
+  gap: 2px;
+}
+.collector-brand--workspace-sidebar .collector-brand-mark {
+  width: 20px;
+  height: 20px;
+}
+.collector-brand--workspace-sidebar small {
+  font-size: 12px;
+  line-height: 1.25;
+  padding-left: 22px;
+}
 .collector-brand-mark {
   display: block;
   width: 1.1em;

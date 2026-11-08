@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 
 import {
   getReport,
@@ -9,6 +9,7 @@ import {
 import { CheckCircle2, CircleAlert, CircleHelp, ClipboardCheck } from "lucide-react";
 import type { Investigation, Report, Review } from "@/types/api";
 import { formatUserName } from "@/utils/userName";
+import { InlineAlert } from "@/components/ui/Primitives";
 
 type ReviewPanelProps = {
   token: string;
@@ -119,14 +120,20 @@ export function ReviewPanel({ token, investigation, onChanged }: ReviewPanelProp
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState("");
+  const [refreshError, setRefreshError] = useState("");
   const [message, setMessage] = useState("");
+  const lastFreshAtRef = useRef(0);
+  const loadedRef = useRef(false);
+  const retryLoadRef = useRef<() => void>(() => {});
 
   useEffect(() => {
     let cancelled = false;
+    let inFlight = false;
 
     async function loadReviewData() {
-      setLoading(true);
-      setError("");
+      if (cancelled || inFlight) return;
+      inFlight = true;
+      if (!loadedRef.current) setLoading(true);
       try {
         const [reportData, versionData, reviewData] = await Promise.all([
           getReport(token, investigation.id),
@@ -137,16 +144,40 @@ export function ReviewPanel({ token, investigation, onChanged }: ReviewPanelProp
           setReport(reportData);
           setVersions(versionData);
           setReviews(reviewData);
+          setRefreshError("");
+          loadedRef.current = true;
+          lastFreshAtRef.current = Date.now();
         }
       } catch (err) {
-        if (!cancelled) setError(err instanceof Error ? err.message : "Could not load review data.");
+        if (!cancelled) {
+          const message = err instanceof Error ? err.message : "Could not load review data.";
+          if (loadedRef.current) setRefreshError(message);
+          else setError(message);
+        }
       } finally {
+        inFlight = false;
         if (!cancelled) setLoading(false);
       }
     }
 
+    retryLoadRef.current = () => void loadReviewData();
     void loadReviewData();
-    return () => { cancelled = true; };
+    const refreshIfStale = () => {
+      if (
+        !cancelled &&
+        document.visibilityState === "visible" &&
+        Date.now() - lastFreshAtRef.current >= 30_000
+      ) void loadReviewData();
+    };
+    window.addEventListener("focus", refreshIfStale);
+    document.addEventListener("visibilitychange", refreshIfStale);
+    window.addEventListener("online", refreshIfStale);
+    return () => {
+      cancelled = true;
+      window.removeEventListener("focus", refreshIfStale);
+      document.removeEventListener("visibilitychange", refreshIfStale);
+      window.removeEventListener("online", refreshIfStale);
+    };
   }, [investigation.id, token]);
 
   async function handleReview(decision: Review["decision"]) {
@@ -166,6 +197,7 @@ export function ReviewPanel({ token, investigation, onChanged }: ReviewPanelProp
       setVersions((current) => current.map((item) => item.id === review.report_id ? { ...item, status: nextStatus } : item));
       setComments("");
       setMessage(decision === "approved" ? "Report approved and investigation completed." : "Report returned for correction.");
+      lastFreshAtRef.current = Date.now();
       onChanged();
     } catch (err) {
       setError(err instanceof Error ? err.message : "Could not review report.");
@@ -196,7 +228,12 @@ export function ReviewPanel({ token, investigation, onChanged }: ReviewPanelProp
         )}
       </div>
 
-      {loading && <p className="muted">Loading report and review history…</p>}
+      {refreshError && (
+        <InlineAlert onRetry={() => retryLoadRef.current()}>
+          {refreshError}
+        </InlineAlert>
+      )}
+      {loading && !report && <p className="muted">Loading report and review history…</p>}
       {!loading && !report && <p className="empty-state">No report submitted yet.</p>}
       {investigation.active_no_contact_event && (
         <section className="report-copy mt-4 max-w-[72ch]" aria-label="Open no-contact attempt">

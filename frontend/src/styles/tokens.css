@@ -26,6 +26,9 @@
   --color-openci-info: var(--color-info);
   --color-openci-info-surface: var(--color-info-surface);
   --color-openci-info-border: var(--color-info-border);
+  --color-openci-review: var(--color-review);
+  --color-openci-review-surface: var(--color-review-surface);
+  --color-openci-review-border: var(--color-review-border);
   --radius-openci-sm: var(--radius-sm);
   --radius-openci-md: var(--radius-md);
   --shadow-openci-menu: var(--shadow-menu);
@@ -64,6 +67,9 @@
   --color-info: #1d4ed8;
   --color-info-surface: #eff5ff;
   --color-info-border: #c5d6f5;
+  --color-review: #6d28d9;
+  --color-review-surface: #f5f3ff;
+  --color-review-border: #ddd6fe;
   --space-1: 4px;
   --space-2: 8px;
   --space-3: 12px;

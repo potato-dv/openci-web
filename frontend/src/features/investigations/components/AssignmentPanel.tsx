@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { UsersRound } from "lucide-react";
 
 import {
@@ -39,6 +39,9 @@ export function AssignmentPanel({
   const [confirmUnassign, setConfirmUnassign] = useState(false);
   const [retrying, setRetrying] = useState(false);
   const [error, setError] = useState("");
+  const [assignmentDataRevision, setAssignmentDataRevision] = useState(0);
+  const loadedInvestigationIdRef = useRef<number | null>(null);
+  const activeRouteRefreshRef = useRef(false);
   const activeAssignment = useMemo(
     () => assignments.find((assignment) => assignment.is_active) ?? null,
     [assignments],
@@ -47,45 +50,78 @@ export function AssignmentPanel({
   const isRouteRefreshActive = routeRefresh?.status === "queued" || routeRefresh?.status === "running";
 
   useEffect(() => {
-    let cancelled = false;
+    activeRouteRefreshRef.current = isRouteRefreshActive;
+  }, [isRouteRefreshActive]);
 
-    async function loadAssignmentData() {
-      setLoading(true);
+  useEffect(() => {
+    let cancelled = false;
+    let inFlight = false;
+    let activeController: AbortController | null = null;
+    let lastUpdatedAt = loadedInvestigationIdRef.current === investigation.id ? Date.now() : 0;
+    const initiallyLoaded = loadedInvestigationIdRef.current === investigation.id;
+    setLoading(!initiallyLoaded);
+
+    async function loadAssignmentData(showInitialLoading = false) {
+      if (cancelled || inFlight) return;
+      inFlight = true;
+      if (showInitialLoading && loadedInvestigationIdRef.current !== investigation.id) {
+        setLoading(true);
+      }
       setError("");
+      const controller = new AbortController();
+      activeController = controller;
 
       try {
         const params = new URLSearchParams({ work_date: manilaToday() });
         params.set("investigation_id", String(investigation.id));
         const [rosterData, assignmentData] = await Promise.all([
           canAssign
-            ? getAgentRoster(token, params)
+            ? getAgentRoster(token, params, controller.signal)
             : Promise.resolve([]),
-          getAssignments(token, investigation.id),
+          getAssignments(token, investigation.id, controller.signal),
         ]);
 
         if (!cancelled) {
           setAgents(rosterData.filter((row) => row.agent.is_active));
           setAssignments(assignmentData);
+          loadedInvestigationIdRef.current = investigation.id;
+          lastUpdatedAt = Date.now();
         }
       } catch (err) {
-        if (!cancelled) {
+        if (!cancelled && !controller.signal.aborted) {
           setError(
             err instanceof Error ? err.message : "Could not load assignments.",
           );
         }
       } finally {
-        if (!cancelled) {
-          setLoading(false);
-        }
+        inFlight = false;
+        if (activeController === controller) activeController = null;
+        if (!cancelled && loadedInvestigationIdRef.current === investigation.id) setLoading(false);
       }
     }
 
-    void loadAssignmentData();
+    void loadAssignmentData(!initiallyLoaded);
+    const refreshIfStale = () => {
+      if (
+        document.visibilityState === "visible" &&
+        !activeRouteRefreshRef.current &&
+        Date.now() - lastUpdatedAt >= 60_000
+      ) {
+        void loadAssignmentData(!loadedInvestigationIdRef.current || loadedInvestigationIdRef.current !== investigation.id);
+      }
+    };
+    window.addEventListener("focus", refreshIfStale);
+    document.addEventListener("visibilitychange", refreshIfStale);
+    window.addEventListener("online", refreshIfStale);
 
     return () => {
       cancelled = true;
+      activeController?.abort();
+      window.removeEventListener("focus", refreshIfStale);
+      document.removeEventListener("visibilitychange", refreshIfStale);
+      window.removeEventListener("online", refreshIfStale);
     };
-  }, [canAssign, investigation.id, investigation.region_code, token]);
+  }, [canAssign, investigation.id, investigation.region_code, token, assignmentDataRevision]);
 
   useEffect(() => {
     if (!isRouteRefreshActive) {
@@ -94,24 +130,47 @@ export function AssignmentPanel({
 
     let cancelled = false;
     let timer: number | undefined;
+    let activePollController: AbortController | null = null;
+    const clearTimer = () => {
+      if (timer !== undefined) window.clearTimeout(timer);
+      timer = undefined;
+    };
+    const schedule = (delay: number) => {
+      clearTimer();
+      if (document.visibilityState === "visible") {
+        timer = window.setTimeout(() => void poll(), delay);
+      }
+    };
     const poll = async () => {
+      if (cancelled || document.visibilityState !== "visible") return;
+      const controller = new AbortController();
+      activePollController = controller;
       try {
-        const assignmentData = await getAssignments(token, investigation.id);
+        const assignmentData = await getAssignments(token, investigation.id, controller.signal);
         if (cancelled) return;
         setAssignments(assignmentData);
         const refreshed = assignmentData.find((assignment) => assignment.is_active)?.route_refresh;
         if (refreshed && ["queued", "running"].includes(refreshed.status)) {
-          timer = window.setTimeout(() => void poll(), 1400);
+          schedule(1400);
         }
       } catch {
-        if (!cancelled) timer = window.setTimeout(() => void poll(), 3000);
+        if (!cancelled) schedule(3000);
+      } finally {
+        if (activePollController === controller) activePollController = null;
       }
     };
 
-    timer = window.setTimeout(() => void poll(), 1200);
+    const resumePolling = () => {
+      if (document.visibilityState === "visible") void poll();
+      else clearTimer();
+    };
+    document.addEventListener("visibilitychange", resumePolling);
+    schedule(1200);
     return () => {
       cancelled = true;
-      if (timer !== undefined) window.clearTimeout(timer);
+      document.removeEventListener("visibilitychange", resumePolling);
+      clearTimer();
+      activePollController?.abort();
     };
   }, [activeAssignment?.id, investigation.id, isRouteRefreshActive, token]);
 
@@ -139,6 +198,7 @@ export function AssignmentPanel({
       ]);
       setNote("");
       onChanged();
+      setAssignmentDataRevision((current) => current + 1);
     } catch (err) {
       setError(err instanceof Error ? err.message : "Could not assign case.");
     } finally {
@@ -158,6 +218,7 @@ export function AssignmentPanel({
           .map((item) => item.is_active ? { ...item, is_active: false } : item),
       ]);
       onChanged();
+      setAssignmentDataRevision((current) => current + 1);
     } catch (err) {
       setError(err instanceof Error ? err.message : "Could not retry the route update.");
     } finally {
@@ -181,6 +242,7 @@ export function AssignmentPanel({
       setNote("");
       setConfirmUnassign(false);
       onChanged();
+      setAssignmentDataRevision((current) => current + 1);
     } catch (err) {
       setError(err instanceof Error ? err.message : "Could not unassign case.");
     } finally {
@@ -198,6 +260,7 @@ export function AssignmentPanel({
         "Submitted for automatic assignment. Only an eligible agent within the 10 km depot radius will be considered.",
       );
       onChanged();
+      setAssignmentDataRevision((current) => current + 1);
     } catch (err) {
       setError(
         err instanceof Error

@@ -9,7 +9,7 @@ import { InvestigationSubjectCell } from "@/components/data/InvestigationSubject
 import { formatUserName } from "@/utils/userName";
 import { StatusBadge } from "@/components/ui/StatusBadge";
 import { Modal } from "@/components/ui/Modal";
-import { SectionToolbar } from "@/components/layout/SectionToolbar";
+import { WorkspaceMobileList, WorkspacePanel } from "@/components/layout/WorkspacePanel";
 import { RowActions } from "@/components/ui/RowActions";
 import { EmptyState, InlineAlert, Skeleton } from "@/components/ui/Primitives";
 
@@ -108,22 +108,21 @@ export function TrashPage({
   }
 
   return (
-    <section className="content-card">
-      <SectionToolbar
+    <WorkspacePanel
         title="Deleted investigations"
         description="Restore investigations or permanently delete them. Permanent deletion also removes their reports, reviews, and assignment history."
-        actions={<span className="count-badge">{items.length} in Trash</span>}
-      />
+        action={<span className="count-badge">{items.length} in Trash</span>}
+    >
       {error && <InlineAlert onRetry={onRetry}>{error}</InlineAlert>}
       {actionError && !confirmItem && <InlineAlert>{actionError}</InlineAlert>}
       {successMessage && <p className="success-message" role="status" aria-live="polite">{successMessage}</p>}
-      {loading ? (
+      {loading && items.length === 0 ? (
         <Skeleton rows={4} />
       ) : items.length === 0 ? (
         <EmptyState title="Trash is empty">Deleted investigations will appear here until they are restored or permanently removed.</EmptyState>
       ) : (
         <>
-        <div className="table-wrap desktop-data">
+        <div className="hidden max-w-full overflow-x-auto rounded-lg border border-[#e2e8f1] md:block">
           <Table className="trash-table min-w-[760px] table-fixed">
             <colgroup>
               <col className="w-[24%]" />
@@ -159,7 +158,7 @@ export function TrashPage({
             </TableBody>
           </Table>
         </div>
-        <ul className="workspace-mobile-list" aria-label="Deleted investigations">
+        <WorkspaceMobileList aria-label="Deleted investigations">
           {items.map((item) => (
             <li key={item.id}>
               <div className="mobile-row-heading">
@@ -173,7 +172,7 @@ export function TrashPage({
               </dl>
             </li>
           ))}
-        </ul>
+        </WorkspaceMobileList>
         </>
       )}
 
@@ -208,6 +207,6 @@ export function TrashPage({
           </div>
         </Modal>
       )}
-    </section>
+    </WorkspacePanel>
   );
 }

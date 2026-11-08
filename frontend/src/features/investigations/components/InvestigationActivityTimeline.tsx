@@ -1,85 +1,62 @@
-import { useEffect, useState } from "react";
+import { useCallback, useEffect } from "react";
 import { getInvestigationActivity } from "@/features/reports/api";
-import type { InvestigationActivityItem } from "@/types/api";
+import { useResource } from "@/hooks/useResource";
+import { WorkspacePanel } from "@/components/layout/WorkspacePanel";
+import { InlineAlert, Skeleton } from "@/components/ui/Primitives";
 
 export function InvestigationActivityTimeline({
   token,
   investigationId,
+  refreshKey,
 }: {
   token: string;
   investigationId: number;
+  refreshKey: number;
 }) {
-  const requestKey = `${investigationId}:${token}`;
-  const [result, setResult] = useState<{
-    key: string;
-    items: InvestigationActivityItem[];
-    error: string;
-  } | null>(null);
-
+  const resource = useResource(
+    useCallback(
+      (signal) => getInvestigationActivity(token, investigationId, signal),
+      [investigationId, token],
+    ),
+    {
+      refetchOnFocus: true,
+      refetchOnReconnect: true,
+      staleTimeMs: 30_000,
+    },
+  );
+  const refresh = resource.refresh;
   useEffect(() => {
-    let cancelled = false;
-    void getInvestigationActivity(token, investigationId)
-      .then((response) => {
-        if (!cancelled)
-          setResult({ key: requestKey, items: response.items, error: "" });
-      })
-      .catch((loadError: unknown) => {
-        if (!cancelled)
-          setResult({
-            key: requestKey,
-            items: [],
-            error:
-              loadError instanceof Error
-                ? loadError.message
-                : "Could not load activity.",
-          });
-      });
-    return () => {
-      cancelled = true;
-    };
-  }, [investigationId, requestKey, token]);
+    if (refreshKey > 0) refresh();
+  }, [refreshKey, refresh]);
 
-  const current = result?.key === requestKey ? result : null;
-  const loading = current === null;
-  const items = current?.items ?? [];
-  const error = current?.error ?? "";
+  const items = resource.data?.items ?? [];
 
   return (
-    <section
-      className="content-card"
-      aria-labelledby="investigation-activity-heading"
+    <WorkspacePanel
+      title="Investigation activity"
+      description="A record of work on this investigation. This timeline does not show live location."
+      aria-label="Investigation activity"
     >
-      <h3 className="m-0" id="investigation-activity-heading">
-        Investigation activity
-      </h3>
-      <p className="mt-1.5 mb-3.5 text-[13px] text-openci-text-muted">
-        A record of the work on this investigation. This timeline does not show
-        live location.
-      </p>
-      {loading ? (
-        <p
-          className="mt-1.5 mb-3.5 text-[13px] text-openci-text-muted"
-          role="status"
-        >
-          Loading activity…
-        </p>
-      ) : error ? (
-        <p className="error" role="alert">
-          {error}
-        </p>
+      {resource.error && (
+        <InlineAlert onRetry={resource.refresh}>{resource.error}</InlineAlert>
+      )}
+      {resource.loading && !resource.data ? (
+        <Skeleton rows={3} />
       ) : items.length === 0 ? (
-        <p className="mt-1.5 mb-3.5 text-[13px] text-openci-text-muted">
-          No activity recorded.
-        </p>
+        resource.error ? null : (
+          <p className="mt-1.5 mb-3.5 text-[13px] text-openci-text-muted">
+            No activity recorded.
+          </p>
+        )
       ) : (
-        <ol className="mt-3.5 mb-3.5 grid list-none gap-3 p-0">
+        <ol className="m-0 grid list-none gap-0 border-l border-[#cbd8eb] p-0 pl-5">
           {items.map((item) => (
             <li
-              className="grid gap-1 border-t border-openci-border pt-3"
+              className="relative grid gap-1 border-b border-[#e9eef5] py-4 first:pt-0 last:border-b-0 last:pb-0 before:absolute before:-left-[25px] before:top-5 before:size-2 before:rounded-full before:bg-[#3261c5] first:before:top-1"
               key={item.id}
             >
               <div className="flex flex-wrap justify-between gap-4">
-                <strong>{item.label}</strong>
+                <strong className="text-[13px] font-semibold text-[#253b5d]">{item.label}</strong>
                 <time
                   className="text-[13px] text-openci-text-muted"
                   dateTime={item.created_at}
@@ -100,6 +77,6 @@ export function InvestigationActivityTimeline({
           ))}
         </ol>
       )}
-    </section>
+    </WorkspacePanel>
   );
 }

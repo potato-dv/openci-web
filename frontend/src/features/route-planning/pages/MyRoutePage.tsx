@@ -4,8 +4,10 @@ import { useSession } from "@/app/session";
 import { getAgentRoute } from "@/features/route-planning/api";
 import { useResource } from "@/hooks/useResource";
 import { PageHeader } from "@/components/layout/PageHeader";
+import { ResourceFreshness } from "@/components/data/ResourceFreshness";
+import { WorkspacePanel } from "@/components/layout/WorkspacePanel";
 import { AgentRouteView } from "@/features/agents/components/AgentRouteView";
-import { Button, InlineAlert, Skeleton } from "@/components/ui/Primitives";
+import { InlineAlert, Skeleton } from "@/components/ui/Primitives";
 import { manilaToday } from "@/utils/format";
 export function MyRoutePage() {
   const { token, user, agentPermissions } = useSession();
@@ -15,28 +17,25 @@ export function MyRoutePage() {
   const date = canViewHistory ? params.get("date") ?? today : today;
   const resource = useResource(
     useCallback((signal) => getAgentRoute(token, date, signal), [token, date]),
+    {
+      refetchOnFocus: true,
+      refetchOnReconnect: true,
+      staleTimeMs: 15_000,
+      refetchInterval: (data) => {
+        if (date !== today) return false;
+        if (!data) return 10_000;
+        if (data.reason === "route_refresh_pending") return 4_000;
+        return false;
+      },
+    },
   );
-  const refreshRoute = resource.refresh;
-  const routeRefreshPending =
-    resource.data?.reason === "route_refresh_pending";
   useEffect(() => {
     if (!canViewHistory && params.has("date")) setParams({}, { replace: true });
   }, [canViewHistory, params, setParams]);
-  useEffect(() => {
-    const refresh = () => {
-      if (document.visibilityState === "visible") refreshRoute();
-    };
-    const timer = window.setInterval(
-      refresh,
-      routeRefreshPending ? 4000 : 10000,
-    );
-    return () => window.clearInterval(timer);
-  }, [refreshRoute, routeRefreshPending]);
   return (
     <>
       <PageHeader
         title="My Route"
-        description="Your route uses the latest reported visit when available, then your shift starting point. Reported locations are estimates, not live GPS."
         actions={
           <>
             {canViewHistory && <label>
@@ -47,17 +46,22 @@ export function MyRoutePage() {
                 onChange={(event) => setParams({ date: event.target.value })}
               />
             </label>}
-            <Button onClick={refreshRoute}>Refresh</Button>
+            <ResourceFreshness
+              loading={resource.refreshing}
+              lastUpdatedAt={resource.lastUpdatedAt}
+            />
           </>
         }
       />
-      <section className="content-card">
+      <WorkspacePanel title="Published route" description="Ordered visits and route information for the selected work date." bodyClassName="p-4 md:p-5">
         {resource.loading && !resource.data ? (
           <Skeleton rows={6} />
-        ) : resource.error ? (
+        ) : resource.error && !resource.data ? (
           <InlineAlert onRetry={resource.refresh}>{resource.error}</InlineAlert>
         ) : (
           resource.data && (
+            <>
+            {resource.error && <InlineAlert onRetry={resource.refresh}>{resource.error}</InlineAlert>}
             <AgentRouteView
               data={resource.data}
               agentId={user.id}
@@ -66,9 +70,10 @@ export function MyRoutePage() {
               canAct
               onRefresh={resource.refresh}
             />
+            </>
           )
         )}
-      </section>
+      </WorkspacePanel>
     </>
   );
 }

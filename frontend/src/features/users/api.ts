@@ -1,8 +1,8 @@
 import type { NewUser, User } from "@/types/api";
 import { requestJson } from "@/services/http";
 
-export function getUsers(token: string) {
-  return requestJson<User[]>("/users/", { token });
+export function getUsers(token: string, signal?: AbortSignal) {
+  return requestJson<User[]>("/users/", { token, signal });
 }
 
 export function createUser(token: string, user: NewUser) {

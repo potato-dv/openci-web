@@ -1,5 +1,5 @@
 type CollectorBrandProps = {
-  variant: "sidebar" | "auth";
+  variant: "sidebar" | "workspace-sidebar" | "auth";
 };
 
 export function CollectorBrand({ variant }: CollectorBrandProps) {
@@ -15,7 +15,7 @@ export function CollectorBrand({ variant }: CollectorBrandProps) {
         <span aria-hidden="true">ollector</span>
         <span className="collector-brand-accessible">Collector</span>
       </strong>
-      <small>Field operations</small>
+      {variant !== "workspace-sidebar" && <small>Field operations</small>}
     </span>
   );
 }

@@ -1,13 +1,16 @@
 import {
+  useContext,
   useId,
   type ButtonHTMLAttributes,
   type InputHTMLAttributes,
   type ReactNode,
+  type Ref,
 } from "react";
 import { AlertCircle, Inbox, X } from "lucide-react";
 import { Modal } from "./Modal";
 import { Button as ShadcnButton } from "./button";
 import { friendlyError } from "../../utils/format";
+import { WorkspaceVisualContext } from "./WorkspaceVisualContext";
 export function Button({
   variant = "secondary",
   className = "",
@@ -15,12 +18,13 @@ export function Button({
 }: ButtonHTMLAttributes<HTMLButtonElement> & {
   variant?: "primary" | "secondary" | "danger";
 }) {
+  const workspace = useContext(WorkspaceVisualContext);
   return (
     <ShadcnButton
       type="button"
       variant={variant === "primary" ? "default" : variant === "danger" ? "destructive" : "outline"}
       size="lg"
-      className={`${variant}-button ${className}`}
+      className={workspace ? `${variant === "primary" ? "bg-[#3261c5] text-white hover:bg-[#2853ac]" : variant === "danger" ? "border border-[#ecc9c5] bg-[#fff1ef] text-[#a23d34] hover:bg-[#ffe8e5]" : "border border-[#cbd7e7] bg-white text-[#234061] hover:bg-[#f5f8fc]"} min-h-9 rounded-lg px-3 text-[13px] font-medium ${className}` : `${variant}-button ${className}`}
       {...props}
     />
   );
@@ -87,15 +91,16 @@ export function Checkbox({
   );
 }
 export function Skeleton({ rows = 5 }: { rows?: number }) {
+  const workspace = useContext(WorkspaceVisualContext);
   return (
     <div
-      className="skeleton"
+      className={workspace ? "grid gap-3 rounded-xl border border-[#e1e8f1] bg-white p-5" : "skeleton"}
       role="status"
       aria-label="Loading content"
       aria-busy="true"
     >
       {Array.from({ length: rows }, (_, index) => (
-        <span key={index} />
+        <span key={index} className={workspace ? `block h-4 animate-pulse rounded bg-[#eaf0f7] ${index % 3 === 0 ? "w-3/5" : index % 3 === 1 ? "w-full" : "w-4/5"}` : undefined} />
       ))}
     </div>
   );
@@ -109,6 +114,15 @@ export function EmptyState({
   children?: ReactNode;
   action?: ReactNode;
 }) {
+  const workspace = useContext(WorkspaceVisualContext);
+  if (workspace) return (
+    <div className="mx-auto flex max-w-[420px] flex-col items-center px-4 py-10 text-center">
+      <span className="mb-4 grid size-11 place-items-center rounded-xl bg-[#eaf1ff] text-[#3261c5]"><Inbox aria-hidden="true" size={22} /></span>
+      <h2 className="mb-1 text-[15px] font-semibold text-[#203758]">{title}</h2>
+      {children && <p className="mb-0 text-[12px] leading-relaxed text-[#6a7b95]">{children}</p>}
+      {action && <div className="mt-4">{action}</div>}
+    </div>
+  );
   return (
     <div className="empty-content">
       <Inbox aria-hidden="true" size={24} />
@@ -127,9 +141,11 @@ export function InlineAlert({
   variant?: "error" | "warning" | "success" | "info";
   onRetry?: () => void;
 }) {
+  const workspace = useContext(WorkspaceVisualContext);
+  const tones = { error: "border-[#ecc9c5] bg-[#fff5f3] text-[#8e3934]", warning: "border-[#ecd5a6] bg-[#fff9ed] text-[#855b1a]", success: "border-[#bedecb] bg-[#f0faf4] text-[#176947]", info: "border-[#c5d6f5] bg-[#f1f6ff] text-[#2755a8]" };
   return (
     <div
-      className={`inline-alert alert-${variant}`}
+      className={workspace ? `mb-4 flex items-start gap-3 rounded-lg border px-4 py-3 text-[13px] ${tones[variant]}` : `inline-alert alert-${variant}`}
       role={variant === "error" ? "alert" : "status"}
     >
       <AlertCircle size={17} aria-hidden="true" />
@@ -151,14 +167,16 @@ export function Tabs({
   items: { value: string; label: ReactNode }[];
   label: string;
 }) {
+  const workspace = useContext(WorkspaceVisualContext);
   return (
-    <div className="tabs" role="tablist" aria-label={label}>
+    <div className={workspace ? "mb-5 flex w-fit max-w-full gap-1 overflow-x-auto rounded-lg border border-[#dfe6ef] bg-[#f2f5f9] p-1" : "tabs"} role="tablist" aria-label={label}>
       {items.map((item, index) => (
         <button
           key={item.value}
           type="button"
           id={`tab-${label.replaceAll(" ", "-")}-${item.value}`}
           role="tab"
+          className={workspace ? `min-h-9 shrink-0 rounded-md border-0 px-3 text-[12px] font-medium ${value === item.value ? "bg-white text-[#2452a4] shadow-[0_1px_3px_rgba(19,37,68,0.1)]" : "bg-transparent text-[#657791] hover:text-[#254b8e]"}` : undefined}
           aria-selected={value === item.value}
           tabIndex={value === item.value ? 0 : -1}
           onClick={() => onChange(item.value)}
@@ -195,14 +213,22 @@ export function Drawer({
   open,
   onClose,
   children,
+  contentRef,
 }: {
   title: string;
   open: boolean;
   onClose: () => void;
   children: ReactNode;
+  contentRef?: Ref<HTMLDivElement>;
 }) {
   return (
-    <Modal open={open} title={title} onClose={onClose} className="drawer">
+    <Modal
+      open={open}
+      title={title}
+      onClose={onClose}
+      className="drawer"
+      contentRef={contentRef}
+    >
       {children}
     </Modal>
   );

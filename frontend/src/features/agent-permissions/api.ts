@@ -20,17 +20,17 @@ export function getMyAgentPermissions(token: string) {
   );
 }
 
-export function getAgentPermissionCatalog(token: string) {
+export function getAgentPermissionCatalog(token: string, signal?: AbortSignal) {
   return requestJson<{
     features: Omit<AgentPermissionState["features"][number], "override" | "effective_allowed">[];
     mandatory_workflows: AgentPermissionState["mandatory_workflows"];
-  }>("/agent-permissions/catalog", { token });
+  }>("/agent-permissions/catalog", { token, signal });
 }
 
-export function getAgentPermissionState(token: string, agentId: number) {
+export function getAgentPermissionState(token: string, agentId: number, signal?: AbortSignal) {
   return requestJson<AgentPermissionState>(
     `/users/${agentId}/agent-permissions`,
-    { token },
+    { token, signal },
   );
 }
 
@@ -45,11 +45,11 @@ export function saveAgentPermissionState(
   );
 }
 
-export function getAgentPermissionHistory(token: string, agentId: number) {
+export function getAgentPermissionHistory(token: string, agentId: number, signal?: AbortSignal) {
   return requestJson<{
     items: AgentPermissionHistoryItem[];
     total: number;
     limit: number;
     offset: number;
-  }>(`/users/${agentId}/agent-permissions/history?limit=50`, { token });
+  }>(`/users/${agentId}/agent-permissions/history?limit=50`, { token, signal });
 }
