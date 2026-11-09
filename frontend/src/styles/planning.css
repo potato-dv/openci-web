@@ -496,7 +496,7 @@
 }
 
 .planning-route-detail .ordered-stops > li {
-  padding: 10px 16px;
+  padding: 12px 16px;
   border-bottom: 1px solid var(--color-border);
 }
 
@@ -506,17 +506,19 @@
 
 .planning-route-detail .planning-stop-selection {
   width: 100%;
+  min-width: 0;
   min-height: 44px;
   display: grid;
   grid-template-columns: 24px minmax(0, 1fr);
   align-items: start;
-  gap: 10px;
-  padding: 2px 0;
+  gap: 12px;
+  padding: 4px 0;
   color: var(--color-text);
   background: transparent;
   border: 0;
   border-radius: 4px;
   text-align: left;
+  white-space: normal;
 }
 
 .planning-route-detail .planning-stop-selection:hover {
@@ -526,7 +528,7 @@
 .planning-stop-content {
   display: grid;
   min-width: 0;
-  gap: 5px;
+  gap: 7px;
 }
 
 .planning-stop-title {
@@ -552,14 +554,15 @@
   color: var(--color-text-muted);
   font-size: 11px;
   line-height: 1.45;
+  white-space: normal;
   overflow-wrap: anywhere;
 }
 
 .planning-stop-metrics {
   display: grid;
-  grid-template-columns: minmax(66px, 0.7fr) minmax(0, 1.3fr);
-  gap: 8px;
-  margin-top: 3px;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 12px;
+  margin-top: 5px;
 }
 
 .planning-stop-metrics > span {
@@ -571,15 +574,18 @@
 
 .planning-stop-metrics small {
   color: var(--color-text-muted);
-  font-size: 10px;
-  line-height: 1.35;
+  font-size: 11px;
+  line-height: 1.4;
+  white-space: normal;
+  overflow-wrap: anywhere;
 }
 
 .planning-stop-metrics strong {
-  font-size: 11px;
-  font-weight: 500;
+  font-size: 12px;
+  font-weight: 550;
   line-height: 1.4;
   font-variant-numeric: tabular-nums;
+  white-space: normal;
   overflow-wrap: anywhere;
 }
 
@@ -667,6 +673,12 @@
   grid-template-columns: 44px minmax(0, 1fr) 360px;
 }
 
+@media (min-width: 1200px) {
+  .planning-workspace.left-collapsed > .planning-left {
+    display: none !important;
+  }
+}
+
 .right-collapsed {
   grid-template-columns: 304px minmax(0, 1fr) 44px;
 }
@@ -688,6 +700,10 @@
 
   .planning-desktop-drawer {
     display: block;
+  }
+
+  .planning-workspace.left-collapsed {
+    grid-template-columns: minmax(0, 1fr);
   }
 }
 
@@ -840,8 +856,8 @@
   }
 
   .planning-stop-metrics {
-    grid-template-columns: minmax(56px, 0.65fr) minmax(0, 1.35fr);
-    gap: 6px;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 10px 12px;
   }
 }
 

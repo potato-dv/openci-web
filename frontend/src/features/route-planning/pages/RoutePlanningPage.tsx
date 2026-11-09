@@ -341,16 +341,6 @@ export function RoutePlanningPage() {
       routeAgents={routesForScope?.agents ?? []}
       selection={selectionForScope}
       date={workDate}
-      headerAction={
-        <IconButton
-          className="hidden! h-8! w-8! shrink-0 min-[1440px]:grid!"
-          label="Collapse agent and investigation list"
-          aria-expanded="true"
-          onClick={() => setLeftCollapsed(true)}
-        >
-          <PanelLeftClose size={18} />
-        </IconButton>
-      }
       loading={mapInventory.loading}
       onSelect={select}
     />
@@ -435,6 +425,22 @@ export function RoutePlanningPage() {
   return (
     <div className={routePlanningClasses.canvas}>
       <header className={routePlanningClasses.header}>
+        <IconButton
+          className="hidden! h-9! w-9! shrink-0 min-[1200px]:grid!"
+          label={
+            leftCollapsed
+              ? "Expand agent and investigation list"
+              : "Collapse agent and investigation list"
+          }
+          aria-expanded={!leftCollapsed}
+          onClick={() => setLeftCollapsed((value) => !value)}
+        >
+          {leftCollapsed ? (
+            <PanelLeftOpen size={18} />
+          ) : (
+            <PanelLeftClose size={18} />
+          )}
+        </IconButton>
         <div className="route-planning-heading flex min-w-0 flex-col gap-1 md:w-full md:flex-none xl:w-auto xl:min-w-max xl:flex-none min-[1440px]:min-w-[220px]! min-[1440px]:flex-none!">
           <nav
             className="route-planning-breadcrumb flex items-center gap-1.5 whitespace-nowrap text-xs text-openci-text-muted"
@@ -589,18 +595,7 @@ export function RoutePlanningPage() {
         className={`planning-workspace tab-${tab} ${routePlanningClasses.workspace} ${leftCollapsed ? "left-collapsed" : ""} ${rightCollapsed ? "right-collapsed" : ""}`}
       >
         <aside className={leftPanelClass}>
-          {leftCollapsed ? (
-            <IconButton
-              className="z-20!"
-              label="Expand agent and investigation list"
-              aria-expanded="false"
-              onClick={() => setLeftCollapsed(false)}
-            >
-              <PanelLeftOpen size={18} />
-            </IconButton>
-          ) : (
-            recordsPanel
-          )}
+          {!leftCollapsed && recordsPanel}
         </aside>
         <section
           className={routePlanningClasses.map}

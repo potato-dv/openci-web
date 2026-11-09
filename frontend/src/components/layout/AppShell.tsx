@@ -2,7 +2,6 @@ import { Suspense, useEffect, useState } from "react";
 import { Outlet, useLocation } from "react-router";
 import { Menu, PanelLeft } from "lucide-react";
 import { useSession } from "../../app/session";
-import { AccountDropdown } from "./AccountDropdown";
 import { Drawer, Skeleton } from "../ui/Primitives";
 import { WorkspaceSidebar } from "./WorkspaceSidebar";
 import { WorkspaceVisualContext } from "../ui/WorkspaceVisualContext";
@@ -49,6 +48,7 @@ export function AppShell() {
         <a className="skip-link" href="#main-content">Skip to content</a>
         <WorkspaceSidebar
           user={user}
+          onLogout={logout}
           collapsed={sidebarCollapsed}
         />
         <div className={`min-h-dvh overflow-x-hidden bg-white md:min-h-[calc(100dvh-1rem)] md:overflow-hidden md:rounded-2xl md:border-y md:border-r md:border-[#e5e7eb] ${sidebarCollapsed ? "md:ml-[72px]" : "md:ml-[248px]"}`}>
@@ -61,17 +61,13 @@ export function AppShell() {
               <span className="hidden text-[#b4bfd0] sm:inline" aria-hidden="true">/</span>
               <span className="truncate text-[13px] font-semibold text-[#203656]">{section}</span>
             </div>
-            <div className="flex min-w-0 items-center gap-3">
-              <span className="hidden truncate text-right text-xs text-[#667792] sm:block">{user.name}<span className="block text-[11px] capitalize text-[#8a97ab]">{user.role}</span></span>
-              <AccountDropdown user={user} onLogout={logout} />
-            </div>
           </header>
           <main id="main-content" tabIndex={-1} className="mx-auto min-h-[calc(100dvh-64px)] max-w-[1680px] min-w-0 px-4 py-6 outline-none sm:px-6 md:min-h-[calc(100dvh-80px)] md:px-7 md:py-7 lg:px-8">
             <Suspense fallback={<Skeleton rows={6} />}><Outlet /></Suspense>
           </main>
         </div>
         <Drawer title="Navigation" open={navigationOpen} onClose={() => setNavigationOpen(false)}>
-          <WorkspaceSidebar user={user} mobile onNavigate={() => setNavigationOpen(false)} />
+          <WorkspaceSidebar user={user} onLogout={logout} mobile onNavigate={() => setNavigationOpen(false)} />
         </Drawer>
       </div>
       </WorkspaceVisualContext.Provider>
@@ -82,6 +78,7 @@ export function AppShell() {
       <a className="skip-link" href="#main-content">Skip to content</a>
       <WorkspaceSidebar
         user={user}
+        onLogout={logout}
         collapsed={sidebarCollapsed}
       />
       <div className={`[--height-header:80px] min-h-dvh overflow-x-hidden bg-white md:min-h-[calc(100dvh-1rem)] md:overflow-hidden md:rounded-2xl md:border-y md:border-r md:border-[#e5e7eb] ${sidebarCollapsed ? "md:ml-[72px]" : "md:ml-[248px]"}`}>
@@ -93,10 +90,6 @@ export function AppShell() {
             <span className="hidden text-[13px] text-[#7888a0] sm:inline">Collector</span>
             <span className="hidden text-[#b4bfd0] sm:inline" aria-hidden="true">/</span>
             <span className="truncate text-[13px] font-semibold text-[#203656]">{section}</span>
-          </div>
-          <div className="flex min-w-0 items-center gap-3">
-            <span className="hidden truncate text-right text-xs text-[#667792] sm:block">{user.name}<span className="block text-[11px] capitalize text-[#8a97ab]">{user.role}</span></span>
-            <AccountDropdown user={user} onLogout={logout} />
           </div>
         </header>
         <main
@@ -110,7 +103,7 @@ export function AppShell() {
         </main>
       </div>
       <Drawer title="Navigation" open={navigationOpen} onClose={() => setNavigationOpen(false)}>
-        <WorkspaceSidebar user={user} mobile onNavigate={() => setNavigationOpen(false)} />
+        <WorkspaceSidebar user={user} onLogout={logout} mobile onNavigate={() => setNavigationOpen(false)} />
       </Drawer>
     </div>
   );

@@ -6,6 +6,7 @@ import {
 } from "lucide-react";
 import type { User } from "@/types/api";
 import { PLANNING_ENABLED } from "@/config";
+import { AccountDropdown } from "./AccountDropdown";
 import { CollectorBrand } from "./CollectorBrand";
 
 type Item = { to: string; label: string; icon: typeof LayoutDashboard };
@@ -40,9 +41,10 @@ function sectionsFor(user: User): { label: string; items: Item[] }[] {
 }
 
 export function WorkspaceSidebar({
-  user, collapsed = false, mobile = false, planningShell = false, onToggleCollapse, onNavigate,
+  user, onLogout, collapsed = false, mobile = false, planningShell = false, onToggleCollapse, onNavigate,
 }: {
   user: User;
+  onLogout: () => void;
   collapsed?: boolean;
   mobile?: boolean;
   planningShell?: boolean;
@@ -56,7 +58,7 @@ export function WorkspaceSidebar({
 
   return (
     <aside
-      className={`${mobile ? "relative h-full w-full" : `fixed inset-y-0 left-0 z-30 hidden ${desktopWidth} md:flex`} flex-col bg-[#f5f7fb] ${horizontalPadding} py-5 text-[#243854]`}
+      className={`${mobile ? "relative h-full w-full" : `fixed inset-y-0 left-0 z-30 hidden ${desktopWidth} md:flex`} flex flex-col bg-[#f5f7fb] ${horizontalPadding} py-5 text-[#243854]`}
       aria-label="Workspace navigation"
     >
       <div className={`flex items-center ${collapsed ? "justify-between gap-0 px-0" : "justify-between gap-2 px-3"}`}>
@@ -94,7 +96,9 @@ export function WorkspaceSidebar({
           </div>
         ))}
       </nav>
-      {!collapsed && <div className="mt-5 rounded-xl border border-[#e6eaf0] bg-[#f7f8fa] px-3 py-3 text-[11px] leading-5 text-[#7a8799]">Operational workspace <span className="block font-medium text-[#344861]">{user.role === "agent" ? "Field agent" : user.role === "supervisor" ? "Supervisor" : "Administrator"}</span></div>}
+      <div className={`mt-auto pt-3 ${collapsed ? "workspace-sidebar-account is-collapsed" : "workspace-sidebar-account"}`}>
+        <AccountDropdown presentation="sidebar" user={user} onLogout={onLogout} collapsed={collapsed} mobile={mobile} />
+      </div>
     </aside>
   );
 }
