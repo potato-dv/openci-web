@@ -518,6 +518,7 @@ export function InvestigationFormPage() {
       },
       [token, id],
     ),
+    { resourceKeys: id ? [`investigation:${id}`] : [] },
   );
   return resource.loading ? (
     <Skeleton rows={6} />

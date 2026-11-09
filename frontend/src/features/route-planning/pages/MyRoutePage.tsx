@@ -18,15 +18,10 @@ export function MyRoutePage() {
   const resource = useResource(
     useCallback((signal) => getAgentRoute(token, date, signal), [token, date]),
     {
+      resourceKeys: ["route.own", "investigations.list"],
       refetchOnFocus: true,
       refetchOnReconnect: true,
       staleTimeMs: 15_000,
-      refetchInterval: (data) => {
-        if (date !== today) return false;
-        if (!data) return 10_000;
-        if (data.reason === "route_refresh_pending") return 4_000;
-        return false;
-      },
     },
   );
   useEffect(() => {

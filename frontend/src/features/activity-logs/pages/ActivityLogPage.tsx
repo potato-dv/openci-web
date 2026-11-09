@@ -132,6 +132,7 @@ export function ActivityLogPage({ token }: { token: string }) {
       [token, queryKey],
     ),
     {
+      resourceKeys: ["activity.logs"],
       refetchOnFocus: true,
       refetchOnReconnect: true,
       staleTimeMs: 60_000,

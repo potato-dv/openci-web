@@ -7,6 +7,7 @@ import { ReauthenticationOverlay } from "@/features/auth/components/Reauthentica
 import { Skeleton } from "@/components/ui/Primitives";
 import { getMyAgentPermissions } from "@/features/agent-permissions/api";
 import type { AgentPermissions } from "@/types/api";
+import { RealtimeProvider } from "@/realtime/RealtimeProvider";
 import "./App.css";
 
 function App() {
@@ -71,12 +72,20 @@ function App() {
         refreshAgentPermissions,
       }}
     >
-      <div inert={reauthRequired}>
-        <AppRoutes />
-      </div>
-      {reauthRequired && (
-        <ReauthenticationOverlay onReauthenticate={reauthenticate} />
-      )}
+      <RealtimeProvider
+        token={accessToken}
+        userId={user.id}
+        role={user.role}
+        enabled={!reauthRequired}
+        onPermissionsChanged={refreshAgentPermissions}
+      >
+        <div inert={reauthRequired}>
+          <AppRoutes />
+        </div>
+        {reauthRequired && (
+          <ReauthenticationOverlay onReauthenticate={reauthenticate} />
+        )}
+      </RealtimeProvider>
     </SessionContext.Provider>
   );
 }

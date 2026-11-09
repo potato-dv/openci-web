@@ -159,18 +159,21 @@ export function AgentWeeklyScheduleEditor({
       (signal) => getAgentWorkProfile(token, agentId, signal),
       [token, agentId],
     ),
+    { resourceKeys: [`schedules.${agentId}`] },
   );
   const schedule = useResource(
     useCallback(
       (signal) => getAgentWeeklySchedule(token, agentId, date, signal),
       [token, agentId, date],
     ),
+    { resourceKeys: [`schedules.${agentId}`] },
   );
   const availability = useResource(
     useCallback(
       (signal) => getAgentAvailability(token, agentId, date, endDate, signal),
       [token, agentId, date, endDate],
     ),
+    { resourceKeys: [`schedules.${agentId}`] },
   );
   const [scheduleDraft, setScheduleDraft] =
     useState<WeeklyScheduleDraft | null>(null);

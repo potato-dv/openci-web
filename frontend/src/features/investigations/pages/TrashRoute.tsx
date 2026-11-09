@@ -9,6 +9,7 @@ export function TrashRoute() {
   const resource = useResource(
     useCallback((signal) => getTrashedInvestigations(token, signal), [token]),
     {
+      resourceKeys: ["investigations.trash"],
       refetchOnFocus: true,
       refetchOnReconnect: true,
       staleTimeMs: 60_000,

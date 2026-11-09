@@ -49,6 +49,7 @@ export function ReportsPage() {
       [token, key],
     ),
     {
+      resourceKeys: ["reports.queue"],
       refetchOnFocus: true,
       refetchOnReconnect: true,
       staleTimeMs: 60_000,
@@ -71,6 +72,7 @@ export function ReportsPage() {
       [token, noContactKey, value],
     ),
     {
+      resourceKeys: ["reports.queue", "route.planning"],
       refetchOnFocus: true,
       refetchOnReconnect: true,
       staleTimeMs: 60_000,

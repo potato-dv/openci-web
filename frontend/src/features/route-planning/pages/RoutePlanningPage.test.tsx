@@ -9,6 +9,10 @@ import {
 import { MemoryRouter } from "react-router";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { SessionContext } from "@/app/session";
+import {
+  RealtimeContext,
+  type RealtimeContextValue,
+} from "@/realtime/RealtimeContext";
 import type {
   PlanningDashboard,
   PlanningMapData,
@@ -26,6 +30,27 @@ const api = vi.hoisted(() => ({
   retryAutomaticPlanning: vi.fn(),
   retryInvestigationRoute: vi.fn(),
 }));
+
+const realtimeListeners = new Map<string, Set<() => void>>();
+const realtimeTestContext: RealtimeContextValue = {
+  connected: true,
+  subscribeResources(keys, invalidator) {
+    for (const key of keys) {
+      const listeners = realtimeListeners.get(key) ?? new Set();
+      listeners.add(invalidator);
+      realtimeListeners.set(key, listeners);
+    }
+    return () => {
+      for (const key of keys) {
+        realtimeListeners.get(key)?.delete(invalidator);
+      }
+    };
+  },
+};
+
+function publishResource(key: string) {
+  for (const listener of realtimeListeners.get(key) ?? []) listener();
+}
 
 vi.mock("@/features/locations/api", () => ({
   getRegions: api.getRegions,
@@ -277,6 +302,7 @@ const dashboardData: PlanningDashboard = {
 
 describe("RoutePlanningPage", () => {
   beforeEach(() => {
+    realtimeListeners.clear();
     Object.defineProperty(window, "innerWidth", {
       configurable: true,
       value: 1440,
@@ -662,7 +688,7 @@ describe("RoutePlanningPage", () => {
     ).toBeGreaterThan(0);
   });
 
-  it("keeps polling route data until background planning finishes", async () => {
+  it("refreshes route data when a real-time event reports planning finished", async () => {
     api.getPlanningRouteOverview.mockResolvedValue({
       ...routeData,
       agents: routeData.agents.map((agent) => ({
@@ -676,108 +702,95 @@ describe("RoutePlanningPage", () => {
       ...dashboardData,
       optimizing_routes: 1,
     });
-    vi.useFakeTimers({ toFake: ["setInterval", "clearInterval"] });
-
-    try {
-      render(
-        <MemoryRouter initialEntries={["/route-planning?date=2026-10-23"]}>
-          <SessionContext.Provider
-            value={{
-              token: "test-token",
-              user: {
-                id: 1,
-                name: "Supervisor",
-                email: "supervisor@example.test",
-                role: "supervisor",
-                is_active: true,
-              },
-              logout() {},
-            }}
-          >
+    render(
+      <MemoryRouter initialEntries={["/route-planning?date=2026-10-23"]}>
+        <SessionContext.Provider
+          value={{
+            token: "test-token",
+            user: {
+              id: 1,
+              name: "Supervisor",
+              email: "supervisor@example.test",
+              role: "supervisor",
+              is_active: true,
+            },
+            logout() {},
+          }}
+        >
+          <RealtimeContext.Provider value={realtimeTestContext}>
             <RoutePlanningPage />
-          </SessionContext.Provider>
-        </MemoryRouter>,
-      );
+          </RealtimeContext.Provider>
+        </SessionContext.Provider>
+      </MemoryRouter>,
+    );
 
-      await screen.findByRole("region", { name: "Route scope summary" });
-      const initialOverviewCalls =
-        api.getPlanningRouteOverview.mock.calls.length;
-      await act(async () => {
-        await vi.advanceTimersByTimeAsync(2600);
-      });
-      await waitFor(() =>
-        expect(
-          api.getPlanningRouteOverview.mock.calls.length,
-        ).toBeGreaterThanOrEqual(initialOverviewCalls + 1),
-      );
-      await act(async () => {
-        await vi.advanceTimersByTimeAsync(2600);
-      });
+    const initialOverviewCalls = api.getPlanningRouteOverview.mock.calls.length;
+    const initialMapCalls = api.getPlanningMapData.mock.calls.length;
+    const initialDashboardCalls = api.getPlanningDashboard.mock.calls.length;
+    api.getPlanningRouteOverview.mockResolvedValue(routeData);
+    api.getPlanningDashboard.mockResolvedValue(dashboardData);
+    act(() => publishResource("route.planning"));
 
-      expect(
-        api.getPlanningRouteOverview.mock.calls.length,
-      ).toBeGreaterThanOrEqual(initialOverviewCalls + 2);
-    } finally {
-      vi.useRealTimers();
-    }
+    await waitFor(() =>
+      expect(api.getPlanningRouteOverview.mock.calls.length).toBeGreaterThan(
+        initialOverviewCalls,
+      ),
+    );
+    await waitFor(() =>
+      expect(api.getPlanningMapData.mock.calls.length).toBeGreaterThan(
+        initialMapCalls,
+      ),
+    );
+    expect(api.getPlanningDashboard.mock.calls.length).toBeGreaterThan(
+      initialDashboardCalls,
+    );
   });
 
   it("discovers planning that starts while the page is open", async () => {
-    api.getPlanningRouteOverview
-      .mockResolvedValueOnce(routeData)
-      .mockResolvedValue({
-        ...routeData,
-        agents: routeData.agents.map((agent) => ({
-          ...agent,
-          route_status: "running",
-          route: null,
-          stops: [],
-        })),
-      });
-    vi.useFakeTimers({ toFake: ["setInterval", "clearInterval"] });
-
-    try {
-      render(
-        <MemoryRouter initialEntries={["/route-planning?date=2026-10-23"]}>
-          <SessionContext.Provider
-            value={{
-              token: "test-token",
-              user: {
-                id: 1,
-                name: "Supervisor",
-                email: "supervisor@example.test",
-                role: "supervisor",
-                is_active: true,
-              },
-              logout() {},
-            }}
-          >
+    render(
+      <MemoryRouter initialEntries={["/route-planning?date=2026-10-23"]}>
+        <SessionContext.Provider
+          value={{
+            token: "test-token",
+            user: {
+              id: 1,
+              name: "Supervisor",
+              email: "supervisor@example.test",
+              role: "supervisor",
+              is_active: true,
+            },
+            logout() {},
+          }}
+        >
+          <RealtimeContext.Provider value={realtimeTestContext}>
             <RoutePlanningPage />
-          </SessionContext.Provider>
-        </MemoryRouter>,
-      );
+          </RealtimeContext.Provider>
+        </SessionContext.Provider>
+      </MemoryRouter>,
+    );
 
-      await screen.findByRole("region", { name: "Route scope summary" });
-      const initialOverviewCalls =
-        api.getPlanningRouteOverview.mock.calls.length;
-      await act(async () => {
-        await vi.advanceTimersByTimeAsync(10000);
-      });
-      await waitFor(() =>
-        expect(
-          api.getPlanningRouteOverview.mock.calls.length,
-        ).toBeGreaterThanOrEqual(initialOverviewCalls + 1),
-      );
+    await screen.findByRole("region", { name: "Route scope summary" });
+    const initialOverviewCalls = api.getPlanningRouteOverview.mock.calls.length;
+    api.getPlanningRouteOverview.mockResolvedValue({
+      ...routeData,
+      agents: routeData.agents.map((agent) => ({
+        ...agent,
+        route_status: "running",
+        route: null,
+        stops: [],
+      })),
+    });
+    api.getPlanningDashboard.mockResolvedValue({
+      ...dashboardData,
+      optimizing_routes: 1,
+    });
+    act(() => publishResource("route.planning"));
 
-      await act(async () => {
-        await vi.advanceTimersByTimeAsync(2600);
-      });
-      expect(
-        api.getPlanningRouteOverview.mock.calls.length,
-      ).toBeGreaterThanOrEqual(initialOverviewCalls + 2);
-    } finally {
-      vi.useRealTimers();
-    }
+    await waitFor(() =>
+      expect(api.getPlanningRouteOverview.mock.calls.length).toBeGreaterThan(
+        initialOverviewCalls,
+      ),
+    );
   });
 
   it("shows the valid route and explains excluded assigned investigations", async () => {

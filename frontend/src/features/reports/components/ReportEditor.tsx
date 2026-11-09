@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { FilePenLine } from "lucide-react";
+import { useRealtimeContext } from "@/realtime/RealtimeContext";
 
 import {
   finalizeNoContactReport,
@@ -90,6 +91,7 @@ export function ReportEditor({
   canViewEarlierReportVersions = false,
   canRequestRevisit: canRequestRevisitFeature = true,
 }: ReportEditorProps) {
+  const { subscribeResources } = useRealtimeContext();
   const workDate = manilaToday();
   const [report, setReport] = useState<Report | null>(null);
   const [versions, setVersions] = useState<Report[]>([]);
@@ -119,7 +121,6 @@ export function ReportEditor({
   const [attemptNotes, setAttemptNotes] = useState("");
   const [contactFrom, setContactFrom] = useState("");
   const [contactUntil, setContactUntil] = useState("");
-  const revisitRequestStatus = revisitRequest?.status;
   const routeStop = agentRoute?.stops.find(
     (stop) => stop.investigation_id === investigation.id,
   );
@@ -185,10 +186,15 @@ export function ReportEditor({
       applyForm({ ...emptyReport });
     }
     let inFlight = false;
+    let queuedRealtimeRefresh = false;
     let activeController: AbortController | null = null;
 
     async function loadReport(background = false) {
-      if (cancelled || inFlight) return;
+      if (cancelled) return;
+      if (inFlight) {
+        if (background) queuedRealtimeRefresh = true;
+        return;
+      }
       inFlight = true;
       const controller = new AbortController();
       activeController = controller;
@@ -254,10 +260,18 @@ export function ReportEditor({
         inFlight = false;
         if (activeController === controller) activeController = null;
         if (!cancelled && !background) setLoading(false);
+        if (queuedRealtimeRefresh && !cancelled) {
+          queuedRealtimeRefresh = false;
+          void loadReport(true);
+        }
       }
     }
 
     void loadReport();
+    const unsubscribeRealtime = subscribeResources(
+      [`investigation.report:${investigation.id}`],
+      () => void loadReport(true),
+    );
     const refreshIfStale = () => {
       if (
         document.visibilityState === "visible" &&
@@ -269,6 +283,7 @@ export function ReportEditor({
     window.addEventListener("online", refreshIfStale);
     return () => {
       cancelled = true;
+      unsubscribeRealtime();
       activeController?.abort();
       window.removeEventListener("focus", refreshIfStale);
       document.removeEventListener("visibilitychange", refreshIfStale);
@@ -278,6 +293,7 @@ export function ReportEditor({
     canViewEarlierReportVersions,
     investigation.id,
     investigation.status,
+    subscribeResources,
     token,
     workDate,
     applyForm,
@@ -286,16 +302,25 @@ export function ReportEditor({
   useEffect(() => {
     if (!PLANNING_ENABLED) return;
     let cancelled = false;
+    let queuedRealtimeRefresh = false;
     const refresh = async () => {
       if (
         cancelled ||
-        document.visibilityState !== "visible" ||
-        routeRefreshInFlightRef.current
+        document.visibilityState !== "visible"
       ) return;
+      if (routeRefreshInFlightRef.current) {
+        queuedRealtimeRefresh = true;
+        return;
+      }
       try {
         await refreshRoute();
       } catch {
         // Keep the last route snapshot; the next visible refresh can recover.
+      } finally {
+        if (queuedRealtimeRefresh && !cancelled) {
+          queuedRealtimeRefresh = false;
+          void refresh();
+        }
       }
     };
     const refreshIfStale = () => {
@@ -306,35 +331,32 @@ export function ReportEditor({
         void refresh();
       }
     };
-    const timer = window.setInterval(() => {
-      if (
-        agentRoute?.reason === "route_refresh_pending" &&
-        document.visibilityState === "visible"
-      ) {
-        void refresh();
-      }
-    }, 10_000);
+    const unsubscribeRealtime = subscribeResources(["route.own"], () => void refresh());
     window.addEventListener("focus", refreshIfStale);
     document.addEventListener("visibilitychange", refreshIfStale);
     window.addEventListener("online", refreshIfStale);
     return () => {
       cancelled = true;
-      window.clearInterval(timer);
+      unsubscribeRealtime();
       window.removeEventListener("focus", refreshIfStale);
       document.removeEventListener("visibilitychange", refreshIfStale);
       window.removeEventListener("online", refreshIfStale);
     };
-  }, [agentRoute?.reason, refreshRoute]);
+  }, [refreshRoute, subscribeResources]);
 
   useEffect(() => {
     if (!PLANNING_ENABLED) return;
     let cancelled = false;
+    let queuedRealtimeRefresh = false;
     const refreshStatus = async () => {
       if (
         cancelled ||
-        document.visibilityState !== "visible" ||
-        revisitRefreshInFlightRef.current
+        document.visibilityState !== "visible"
       ) return;
+      if (revisitRefreshInFlightRef.current) {
+        queuedRealtimeRefresh = true;
+        return;
+      }
       revisitRefreshInFlightRef.current = true;
       try {
         const latest = await getRevisitRequest(token, investigation.id);
@@ -345,19 +367,19 @@ export function ReportEditor({
           revisitLastUpdatedAtRef.current = Date.now();
         }
       } catch {
-        // Keep the last known request state; the next visible poll can recover.
+        // Keep the last known request state; focus or the next authorized event can recover.
       } finally {
         revisitRefreshInFlightRef.current = false;
+        if (queuedRealtimeRefresh && !cancelled) {
+          queuedRealtimeRefresh = false;
+          void refreshStatus();
+        }
       }
     };
-    const hasActiveRevisitJob = Boolean(
-      revisitRequestStatus && ["waiting_for_shift", "queued"].includes(revisitRequestStatus),
+    const unsubscribeRealtime = subscribeResources(
+      [`investigation.revisit:${investigation.id}`],
+      () => void refreshStatus(),
     );
-    const intervalId = hasActiveRevisitJob
-      ? window.setInterval(() => {
-          if (document.visibilityState === "visible") void refreshStatus();
-        }, 15_000)
-      : null;
     const resumeIfVisible = () => {
       if (
         document.visibilityState === "visible" &&
@@ -371,12 +393,12 @@ export function ReportEditor({
     window.addEventListener("online", resumeIfVisible);
     return () => {
       cancelled = true;
-      if (intervalId !== null) window.clearInterval(intervalId);
+      unsubscribeRealtime();
       window.removeEventListener("focus", resumeIfVisible);
       document.removeEventListener("visibilitychange", resumeIfVisible);
       window.removeEventListener("online", resumeIfVisible);
     };
-  }, [investigation.id, revisitRequestStatus, token]);
+  }, [investigation.id, subscribeResources, token]);
 
   function update<K extends keyof ReportInput>(key: K, value: ReportInput[K]) {
     const next = { ...formRef.current, [key]: value } as ReportInput;

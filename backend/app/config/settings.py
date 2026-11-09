@@ -26,6 +26,10 @@ if AUTH_REFRESH_COOKIE_SAMESITE not in {"lax", "strict", "none"}:
     raise ValueError("AUTH_REFRESH_COOKIE_SAMESITE must be lax, strict, or none")
 if AUTH_REFRESH_COOKIE_SAMESITE == "none" and not AUTH_REFRESH_COOKIE_SECURE:
     raise ValueError("SameSite=None refresh cookies require Secure")
+AUTH_REFRESH_COOKIE_ISOLATE_BY_ORIGIN = (
+    os.getenv("AUTH_REFRESH_COOKIE_ISOLATE_BY_ORIGIN", "false").strip().lower()
+    in {"1", "true", "yes", "on"}
+)
 
 NOMINATIM_URL = os.getenv("NOMINATIM_URL", "http://nominatim:8080")
 OSRM_URL = os.getenv("OSRM_URL", "http://osrm:5000")
@@ -33,6 +37,14 @@ VROOM_URL = os.getenv("VROOM_URL", "http://vroom:3000")
 OSRM_DATASET_VERSION = os.getenv("OSRM_DATASET_VERSION", "unconfigured")
 GEOSPATIAL_HTTP_TIMEOUT_SECONDS = float(os.getenv("GEOSPATIAL_HTTP_TIMEOUT_SECONDS", "15"))
 PLANNING_MAX_LOCATIONS = int(os.getenv("PLANNING_MAX_LOCATIONS", "80"))
+REALTIME_REDIS_CHANNEL = os.getenv("REALTIME_REDIS_CHANNEL", "openci:realtime:v1")
+REALTIME_REDIS_URL = os.getenv("REALTIME_REDIS_URL") or os.getenv("CELERY_BROKER_URL", "redis://localhost:6379/0")
+REALTIME_AUTH_TIMEOUT_SECONDS = float(os.getenv("REALTIME_AUTH_TIMEOUT_SECONDS", "5"))
+REALTIME_IDLE_TIMEOUT_SECONDS = int(os.getenv("REALTIME_IDLE_TIMEOUT_SECONDS", "90"))
+REALTIME_OUTBOX_POLL_SECONDS = float(os.getenv("REALTIME_OUTBOX_POLL_SECONDS", "0.5"))
+REALTIME_OUTBOX_RETENTION_DAYS = int(os.getenv("REALTIME_OUTBOX_RETENTION_DAYS", "14"))
+REALTIME_MAX_CONNECTIONS_PER_USER = int(os.getenv("REALTIME_MAX_CONNECTIONS_PER_USER", "4"))
+REALTIME_MAX_CONNECTIONS_PER_WORKER = int(os.getenv("REALTIME_MAX_CONNECTIONS_PER_WORKER", "2000"))
 CORS_ALLOWED_ORIGINS = [
     origin.strip()
     for origin in os.getenv("CORS_ALLOWED_ORIGINS", "http://localhost:5173").split(",")

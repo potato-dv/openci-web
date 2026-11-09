@@ -138,6 +138,11 @@ _allowed_origins = {
 }
 
 
+def is_allowed_websocket_origin(origin: str | None) -> bool:
+    """Require browser WebSocket upgrades to come from a configured web origin."""
+    return origin is not None and _origin_tuple(origin) in _allowed_origins
+
+
 def require_browser_csrf(request: Request) -> None:
     csrf_header = request.headers.get("X-CSRF-Token", "")
     if not hmac.compare_digest(csrf_header, "1"):

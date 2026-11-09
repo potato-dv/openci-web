@@ -22,6 +22,7 @@ export function LocationConfirmationPanel({
       () => getInvestigationLocation(token, investigation.id),
       [token, investigation.id],
     ),
+    { resourceKeys: [`investigation-location:${investigation.id}`] },
   );
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState("");

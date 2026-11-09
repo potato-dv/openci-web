@@ -18,6 +18,7 @@ from app.models.agent_revisit import AgentRevisitRequest
 from app.models.auth_session import AuthSession, AuthRefreshToken
 from app.models.route_event import InvestigationRouteEvent
 from app.models.user_permission_override import UserPermissionOverride
+from app.models.realtime_outbox import RealtimeOutboxEvent
 
 config = context.config
 config.set_main_option("sqlalchemy.url", DATABASE_URL)

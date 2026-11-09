@@ -40,10 +40,10 @@ export function DashboardPage() {
       [token],
     ),
     {
+      resourceKeys: ["investigations.list", "dashboard.investigations"],
       refetchOnFocus: true,
       refetchOnReconnect: true,
       staleTimeMs: 30_000,
-      refetchInterval: 60_000,
     },
   );
   const queue = useResource(
@@ -59,10 +59,10 @@ export function DashboardPage() {
       [token, user.role],
     ),
     {
+      resourceKeys: user.role === "agent" ? ["dashboard.reports"] : ["reports.queue", "dashboard.reports"],
       refetchOnFocus: true,
       refetchOnReconnect: true,
       staleTimeMs: 30_000,
-      refetchInterval: 60_000,
     },
   );
   const route = useResource(
@@ -74,10 +74,10 @@ export function DashboardPage() {
       [token, user.role],
     ),
     {
+      resourceKeys: user.role === "agent" ? ["route.own", "dashboard.route"] : ["dashboard.route"],
       refetchOnFocus: true,
       refetchOnReconnect: true,
       staleTimeMs: 30_000,
-      refetchInterval: 60_000,
     },
   );
   const corrections = useResource(
@@ -98,10 +98,10 @@ export function DashboardPage() {
       [token, user.role],
     ),
     {
+      resourceKeys: ["investigations.list", "dashboard.investigations"],
       refetchOnFocus: true,
       refetchOnReconnect: true,
       staleTimeMs: 30_000,
-      refetchInterval: 60_000,
     },
   );
   const facets = data.data?.facets;

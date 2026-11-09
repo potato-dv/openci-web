@@ -19,6 +19,7 @@ export function InvestigationActivityTimeline({
       [investigationId, token],
     ),
     {
+      resourceKeys: [`investigation.activity:${investigationId}`],
       refetchOnFocus: true,
       refetchOnReconnect: true,
       staleTimeMs: 30_000,

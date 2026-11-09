@@ -19,6 +19,7 @@ export function InvestigationDetailRoute() {
       [token, id],
     ),
     {
+      resourceKeys: [`investigation:${id}`],
       refetchOnFocus: true,
       refetchOnReconnect: true,
       staleTimeMs: 30_000,

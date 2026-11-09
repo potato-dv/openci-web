@@ -87,14 +87,14 @@ class AuthSessionAPITests(unittest.TestCase):
         self.engine.dispose()
         self.tempdir.cleanup()
 
-    def auth_headers(self):
-        return {"Origin": ORIGIN, "X-CSRF-Token": "1"}
+    def auth_headers(self, origin=ORIGIN):
+        return {"Origin": origin, "X-CSRF-Token": "1"}
 
-    def login(self):
+    def login(self, origin=ORIGIN):
         response = Response()
         payload = login_user(
             UserLogin(email=self.user_email, password="long-test-password"),
-            make_request("/users/login", self.auth_headers()),
+            make_request("/users/login", self.auth_headers(origin)),
             response,
             self.db,
         )
@@ -135,7 +135,7 @@ class AuthSessionAPITests(unittest.TestCase):
     def test_login_issues_short_access_token_and_httponly_secure_refresh_cookie(self):
         with patch("app.routes.user.AUTH_REFRESH_COOKIE_SECURE", True), patch(
             "app.routes.user.REFRESH_COOKIE_NAME", "__Secure-openci_refresh"
-        ):
+        ), patch("app.routes.user.AUTH_REFRESH_COOKIE_ISOLATE_BY_ORIGIN", False):
             response = self.login()
         self.assertEqual(response.json()["token_type"], "bearer")
         claims = jwt.decode(
@@ -158,6 +158,25 @@ class AuthSessionAPITests(unittest.TestCase):
 
         context = get_current_auth_context(response.json()["access_token"], self.db)
         self.assertEqual(context.user.id, self.user_id)
+
+    def test_login_isolates_refresh_cookies_by_development_port(self):
+        allowed_origins = ["http://localhost:5173", "http://localhost:5174"]
+        with patch("app.routes.user.AUTH_REFRESH_COOKIE_SECURE", True), patch(
+            "app.routes.user.REFRESH_COOKIE_NAME", "__Secure-openci_refresh"
+        ), patch("app.routes.user.AUTH_REFRESH_COOKIE_ISOLATE_BY_ORIGIN", True), patch(
+            "app.routes.user.CORS_ALLOWED_ORIGINS", allowed_origins
+        ), patch(
+            "app.utils.auth._allowed_origins",
+            {("http", "localhost", 5173), ("http", "localhost", 5174)},
+        ):
+            first_port = self.login("http://localhost:5173")
+            second_port = self.login("http://localhost:5174")
+
+        first_name, _, _ = self.refresh_cookie(first_port)
+        second_name, _, _ = self.refresh_cookie(second_port)
+        self.assertEqual(first_name, "__Secure-openci_refresh_5173")
+        self.assertEqual(second_name, "__Secure-openci_refresh_5174")
+        self.assertNotEqual(first_name, second_name)
 
     def test_login_rejects_missing_csrf_header_and_unapproved_origin(self):
         payload = UserLogin(email=self.user_email, password="long-test-password")

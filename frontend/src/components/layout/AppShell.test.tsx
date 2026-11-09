@@ -1,4 +1,4 @@
-import { render, waitFor } from "@testing-library/react";
+import { act, render, waitFor } from "@testing-library/react";
 import { MemoryRouter, Route, Routes } from "react-router";
 import { describe, expect, it, vi } from "vitest";
 import { SessionContext } from "../../app/session";
@@ -58,17 +58,19 @@ describe("AppShell browser title", () => {
     await waitFor(() => expect(document.title).toBe("route planning · Collector"));
   });
 
-  it("refreshes Agent permissions while the app remains open", async () => {
+  it("refreshes Agent permissions on focus without polling", async () => {
     vi.useFakeTimers();
     const refreshAgentPermissions = vi.fn().mockResolvedValue(undefined);
 
     try {
       renderAt("/dashboard", agent, refreshAgentPermissions);
-      expect(refreshAgentPermissions).toHaveBeenCalledTimes(1);
+      expect(refreshAgentPermissions).not.toHaveBeenCalled();
 
       await vi.advanceTimersByTimeAsync(15_000);
+      expect(refreshAgentPermissions).not.toHaveBeenCalled();
 
-      expect(refreshAgentPermissions).toHaveBeenCalledTimes(2);
+      act(() => window.dispatchEvent(new Event("focus")));
+      expect(refreshAgentPermissions).toHaveBeenCalledTimes(1);
     } finally {
       vi.useRealTimers();
     }

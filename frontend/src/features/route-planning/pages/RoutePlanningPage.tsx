@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useMemo, useState } from "react";
 import { Link, useLocation, useSearchParams } from "react-router";
 import {
   CalendarDays,
@@ -94,6 +94,7 @@ export function RoutePlanningPage() {
         getPlanningMapData(token, workDate, regionCode || undefined, signal),
       [token, workDate, regionCode],
     ),
+    { resourceKeys: ["route.planning"] },
   );
   const routeOverview = useResource(
     useCallback(
@@ -106,6 +107,7 @@ export function RoutePlanningPage() {
         ),
       [token, workDate, regionCode],
     ),
+    { resourceKeys: ["route.planning"] },
   );
   const dashboard = useResource(
     useCallback(
@@ -113,6 +115,7 @@ export function RoutePlanningPage() {
         getPlanningDashboard(token, workDate, regionCode || undefined, signal),
       [token, workDate, regionCode],
     ),
+    { resourceKeys: ["route.planning", "dashboard.route"] },
   );
   const densityResource = useResource(
     useCallback(
@@ -129,6 +132,7 @@ export function RoutePlanningPage() {
       [token, workDate, regionCode, densityResolution],
     ),
     {
+      resourceKeys: ["route.readiness"],
       refetchOnFocus: true,
       refetchOnReconnect: true,
       staleTimeMs: 30_000,
@@ -239,53 +243,12 @@ export function RoutePlanningPage() {
     ],
   );
   const publishedCount = dashboardForScope?.published_routes ?? 0;
-  const optimizingCount = dashboardForScope?.optimizing_routes ?? 0;
   const mappedCount = investigations.length;
   const availableAgentCount = dashboardForScope?.available_agents ?? 0;
   const activeAgentCount = dashboardForScope?.active_agents ?? 0;
-  const hasQueuedRefresh =
-    optimizingCount > 0 ||
-    (routesForScope?.agents.some(
-      (agent) =>
-        agent.route_status === "queued" ||
-        agent.route_status === "running" ||
-        agent.planning_status === "queued" ||
-        agent.planning_status === "running",
-    ) ??
-      false);
-  const hasStaleRoute =
-    routesForScope?.agents.some(
-      (agent) =>
-        agent.route_status === "needs_refresh" ||
-        agent.route_status === "failed",
-    ) ?? false;
-  const refreshMapData = mapInventory.refresh;
-  const refreshRouteData = routeOverview.refresh;
-  const refreshDashboard = dashboard.refresh;
   const scopeLabel = regionCode
     ? (regionLabels.get(regionCode) ?? "Selected region")
     : "All service regions";
-
-  useEffect(() => {
-    const timer = window.setInterval(
-      () => {
-        if (document.visibilityState !== "visible") return;
-        refreshRouteData();
-        if (hasQueuedRefresh || hasStaleRoute) {
-          refreshMapData();
-          refreshDashboard();
-        }
-      },
-      hasQueuedRefresh ? 2500 : 10000,
-    );
-    return () => window.clearInterval(timer);
-  }, [
-    hasQueuedRefresh,
-    hasStaleRoute,
-    refreshDashboard,
-    refreshMapData,
-    refreshRouteData,
-  ]);
 
   function updateScope(key: "date" | "region", value: string) {
     const next = new URLSearchParams(params);

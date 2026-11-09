@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from "react";
+import { useRealtimeContext } from "@/realtime/RealtimeContext";
 
 export type ResourceOptions<T> = {
   refetchOnFocus?: boolean;
@@ -6,6 +7,7 @@ export type ResourceOptions<T> = {
   staleTimeMs?: number;
   refetchInterval?: number | false | ((data: T | null) => number | false);
   pauseWhenHidden?: boolean;
+  resourceKeys?: readonly string[];
 };
 
 type ResourceState<T> = {
@@ -19,6 +21,7 @@ export function useResource<T>(
   load: (signal: AbortSignal) => Promise<T>,
   options: ResourceOptions<T> = {},
 ) {
+  const { subscribeResources } = useRealtimeContext();
   const [revision, setRevision] = useState(0);
   const [state, setState] = useState<ResourceState<T>>({
     data: null,
@@ -82,7 +85,11 @@ export function useResource<T>(
   }, []);
 
   const refreshAutomatically = useCallback(() => {
-    if (inFlightRef.current) return;
+    if (inFlightRef.current) {
+      // An event may have committed after the current REST read began.
+      queuedRefreshRef.current = true;
+      return;
+    }
     const now = Date.now();
     if (now - lastAutomaticRefreshAtRef.current < 500) return;
     lastAutomaticRefreshAtRef.current = now;
@@ -95,10 +102,17 @@ export function useResource<T>(
     staleTimeMs = 30_000,
     refetchInterval = false,
     pauseWhenHidden = true,
+    resourceKeys = [],
   } = options;
+  const resourceKeySignature = resourceKeys.join("\u001f");
   const intervalMs = typeof refetchInterval === "function"
     ? refetchInterval(state.data)
     : refetchInterval;
+
+  useEffect(() => {
+    if (!resourceKeySignature) return;
+    return subscribeResources(resourceKeySignature.split("\u001f"), refreshAutomatically);
+  }, [refreshAutomatically, resourceKeySignature, subscribeResources]);
 
   useEffect(() => {
     if (!refetchOnFocus && !refetchOnReconnect) return;

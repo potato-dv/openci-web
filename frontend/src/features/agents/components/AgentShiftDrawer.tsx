@@ -94,6 +94,7 @@ export function AgentShiftDrawer({
       (signal) => getManagerAgentRoute(token, row.agent.id, date, signal),
       [token, row.agent.id, date],
     ),
+    { resourceKeys: [`schedules.${row.agent.id}`, "route.planning"] },
   );
   function close() {
     if (!busy && (!dirty || window.confirm("Discard unsaved shift changes?")))

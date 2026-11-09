@@ -1,10 +1,17 @@
+from urllib.parse import urlsplit
+
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response, status
 from fastapi.responses import JSONResponse
-from sqlalchemy.orm import Session
 from sqlalchemy import func
 from sqlalchemy.exc import IntegrityError
+from sqlalchemy.orm import Session
 
-from app.config.settings import AUTH_REFRESH_COOKIE_SAMESITE, AUTH_REFRESH_COOKIE_SECURE
+from app.config.settings import (
+    AUTH_REFRESH_COOKIE_ISOLATE_BY_ORIGIN,
+    AUTH_REFRESH_COOKIE_SAMESITE,
+    AUTH_REFRESH_COOKIE_SECURE,
+    CORS_ALLOWED_ORIGINS,
+)
 from app.controllers.user import (
     create,
     get_all,
@@ -47,9 +54,33 @@ REFRESH_COOKIE_NAME = (
 REFRESH_COOKIE_PATH = "/users"
 
 
-def _set_refresh_cookie(response: Response, token: str, max_age: int) -> None:
+def _refresh_cookie_name(request: Request) -> str:
+    if not AUTH_REFRESH_COOKIE_ISOLATE_BY_ORIGIN:
+        return REFRESH_COOKIE_NAME
+
+    # Browser cookies ignore ports, so give each allowed dev origin its own jar key.
+    origin = request.headers.get("Origin")
+    if origin not in CORS_ALLOWED_ORIGINS:
+        return REFRESH_COOKIE_NAME
+    try:
+        port = urlsplit(origin).port
+    except ValueError:
+        return REFRESH_COOKIE_NAME
+    return (
+        f"{REFRESH_COOKIE_NAME}_{port}"
+        if port is not None
+        else REFRESH_COOKIE_NAME
+    )
+
+
+def _set_refresh_cookie(
+    response: Response,
+    token: str,
+    max_age: int,
+    request: Request,
+) -> None:
     response.set_cookie(
-        key=REFRESH_COOKIE_NAME,
+        key=_refresh_cookie_name(request),
         value=token,
         max_age=max_age,
         path=REFRESH_COOKIE_PATH,
@@ -59,9 +90,9 @@ def _set_refresh_cookie(response: Response, token: str, max_age: int) -> None:
     )
 
 
-def _clear_refresh_cookie(response: Response) -> None:
+def _clear_refresh_cookie(response: Response, request: Request) -> None:
     response.delete_cookie(
-        key=REFRESH_COOKIE_NAME,
+        key=_refresh_cookie_name(request),
         path=REFRESH_COOKIE_PATH,
         secure=AUTH_REFRESH_COOKIE_SECURE,
         httponly=True,
@@ -293,7 +324,9 @@ def login_user(
 ):
     require_browser_csrf(request)
     issued = login(db, data)
-    _set_refresh_cookie(response, issued.refresh_cookie, issued.refresh_max_age)
+    _set_refresh_cookie(
+        response, issued.refresh_cookie, issued.refresh_max_age, request
+    )
     _mark_auth_response_private(response)
     return {"access_token": issued.access_token, "token_type": "bearer"}
 
@@ -306,10 +339,11 @@ def refresh_user_session(
 ):
     require_browser_csrf(request)
     try:
-        issued = rotate_refresh_token(db, request.cookies.get(REFRESH_COOKIE_NAME))
+        cookie_name = _refresh_cookie_name(request)
+        issued = rotate_refresh_token(db, request.cookies.get(cookie_name))
     except HTTPException as error:
         if error.status_code == status.HTTP_401_UNAUTHORIZED:
-            _clear_refresh_cookie(response)
+            _clear_refresh_cookie(response, request)
             headers = dict(response.headers)
             headers["Cache-Control"] = "no-store"
             headers["Pragma"] = "no-cache"
@@ -320,7 +354,9 @@ def refresh_user_session(
                 headers=headers,
             )
         raise
-    _set_refresh_cookie(response, issued.refresh_cookie, issued.refresh_max_age)
+    _set_refresh_cookie(
+        response, issued.refresh_cookie, issued.refresh_max_age, request
+    )
     _mark_auth_response_private(response)
     return {"access_token": issued.access_token, "token_type": "bearer"}
 
@@ -332,8 +368,9 @@ def logout_user(
     db: Session = Depends(get_db),
 ):
     require_browser_csrf(request)
-    revoke_session(db, parse_session_id(request.cookies.get(REFRESH_COOKIE_NAME)))
-    _clear_refresh_cookie(response)
+    cookie_name = _refresh_cookie_name(request)
+    revoke_session(db, parse_session_id(request.cookies.get(cookie_name)))
+    _clear_refresh_cookie(response, request)
     response.status_code = status.HTTP_204_NO_CONTENT
     return response
 

@@ -36,7 +36,7 @@ services:
     restart: unless-stopped
     command: >
       sh -c "alembic upgrade head &&
-         uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload"
+         uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload --ws-max-size 8192 --ws-ping-interval 20 --ws-ping-timeout 20"
     volumes:
       - ./backend:/app
     ports:
@@ -46,8 +46,10 @@ services:
       CELERY_BROKER_URL: redis://redis:6379/0
       JWT_SECRET_KEY: ${JWT_SECRET_KEY:?JWT_SECRET_KEY must be set in .env}
       ACCESS_TOKEN_EXPIRE_MINUTES: ${ACCESS_TOKEN_EXPIRE_MINUTES:-15}
+      CORS_ALLOWED_ORIGINS: http://localhost:5173,http://localhost:5174
       AUTH_REFRESH_COOKIE_SECURE: ${AUTH_REFRESH_COOKIE_SECURE:-false}
       AUTH_REFRESH_COOKIE_SAMESITE: ${AUTH_REFRESH_COOKIE_SAMESITE:-lax}
+      AUTH_REFRESH_COOKIE_ISOLATE_BY_ORIGIN: "true"
       NOMINATIM_URL: http://nominatim:8080
       OSRM_URL: http://osrm:5000
       VROOM_URL: http://vroom:3000
@@ -59,6 +61,12 @@ services:
         condition: service_healthy
       redis:
         condition: service_healthy
+    healthcheck:
+      test: ["CMD", "python", "-c", "from urllib.request import urlopen; urlopen('http://127.0.0.1:8000/', timeout=3)"]
+      interval: 5s
+      timeout: 4s
+      retries: 20
+      start_period: 15s
 
   celery_worker:
     build:
@@ -82,6 +90,8 @@ services:
         condition: service_healthy
       redis:
         condition: service_healthy
+      backend:
+        condition: service_healthy
     mem_limit: ${CELERY_WORKER_MEMORY_LIMIT:-2g}
     cpus: ${CELERY_WORKER_CPUS:-2.0}
 
@@ -102,6 +112,8 @@ services:
       postgres:
         condition: service_healthy
       redis:
+        condition: service_healthy
+      backend:
         condition: service_healthy
 
   nominatim:

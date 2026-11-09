@@ -41,6 +41,7 @@ export function InvestigationsPage() {
       [token, key],
     ),
     {
+      resourceKeys: ["investigations.list"],
       refetchOnFocus: true,
       refetchOnReconnect: true,
       staleTimeMs: 60_000,
@@ -55,6 +56,7 @@ export function InvestigationsPage() {
       [token, user.role],
     ),
     {
+      resourceKeys: user.role === "admin" || user.role === "supervisor" ? ["users.list"] : [],
       refetchOnFocus: true,
       refetchOnReconnect: true,
       staleTimeMs: 5 * 60_000,

@@ -24,6 +24,7 @@ export function UsersPage() {
   const resource = useResource(
     useCallback((signal) => getUsers(token, signal), [token]),
     {
+      resourceKeys: ["users.list"],
       refetchOnFocus: true,
       refetchOnReconnect: true,
       staleTimeMs: 60_000,

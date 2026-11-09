@@ -36,18 +36,12 @@ export function AppShell() {
   const section = sectionName(location.pathname);
   useEffect(() => {
     if (user.role !== "agent" || !refreshAgentPermissions) return;
-    void refreshAgentPermissions();
     const refreshOnFocus = () => void refreshAgentPermissions();
     window.addEventListener("focus", refreshOnFocus);
-    const refreshInterval = window.setInterval(() => {
-      if (document.visibilityState === "visible")
-        void refreshAgentPermissions();
-    }, 15_000);
     return () => {
       window.removeEventListener("focus", refreshOnFocus);
-      window.clearInterval(refreshInterval);
     };
-  }, [location.pathname, refreshAgentPermissions, user.role]);
+  }, [refreshAgentPermissions, user.role]);
   if (!keepPlanningSurface) {
     return (
       <WorkspaceVisualContext.Provider value={true}>

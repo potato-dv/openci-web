@@ -59,6 +59,7 @@ export function FieldAgentsPage() {
       [token, date, region, inactive],
     ),
     {
+      resourceKeys: ["users.list", "schedules.list", "route.planning"],
       refetchOnFocus: true,
       refetchOnReconnect: true,
       staleTimeMs: 60_000,

@@ -6,6 +6,15 @@ const API_URL =
   import.meta.env.VITE_API_URL ??
   (import.meta.env.DEV ? "" : "http://localhost:8000");
 
+export function realtimeWebSocketUrl() {
+  const configured = import.meta.env.VITE_REALTIME_URL;
+  const apiBase = API_URL.replace(/\/$/, "");
+  const address = configured || `${apiBase}/ws`;
+  const url = new URL(address, window.location.href);
+  url.protocol = url.protocol === "https:" || url.protocol === "wss:" ? "wss:" : "ws:";
+  return url.toString();
+}
+
 type RequestOptions = RequestInit & {
   token?: string;
 };

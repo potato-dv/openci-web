@@ -5,6 +5,7 @@ import { WorkspaceSelect } from "@/components/ui/WorkspaceSelect";
 import { Button, InlineAlert, Skeleton } from "@/components/ui/Primitives";
 import { getUsers } from "@/features/users/api";
 import { PermissionFeatureRow } from "@/features/agent-permissions/components/PermissionFeatureRow";
+import { useRealtimeContext } from "@/realtime/RealtimeContext";
 import {
   getAgentPermissionCatalog,
   getAgentPermissionState,
@@ -67,6 +68,7 @@ function draftMatchesState(
 }
 
 export function AccessControlPage() {
+  const { subscribeResources } = useRealtimeContext();
   const { token } = useSession();
   const [agents, setAgents] = useState<User[]>([]);
   const [catalog, setCatalog] = useState<PermissionCatalog | null>(null);
@@ -171,10 +173,22 @@ export function AccessControlPage() {
       ) return;
       revalidationInFlightRef.current = true;
       const agentId = selectedId;
-      void Promise.all([getUsers(token), getAgentPermissionState(token, agentId)])
-        .then(([allUsers, nextState]) => {
+      void getUsers(token)
+        .then(async (allUsers) => {
           if (cancelled) return;
-          setAgents(allUsers.filter((item) => item.role === "agent"));
+          const agentUsers = allUsers.filter((item) => item.role === "agent");
+          setAgents(agentUsers);
+          if (!agentUsers.some((item) => item.id === agentId)) {
+            setState(null);
+            setDraft(emptyOverrides(catalog.features));
+            setExternalChanges(false);
+            setSelectedId((current) => current === agentId ? (agentUsers[0]?.id ?? null) : current);
+            setError("");
+            lastFreshAtRef.current = Date.now();
+            return;
+          }
+          const nextState = await getAgentPermissionState(token, agentId);
+          if (cancelled) return;
           if (permissionStateSignature(nextState) !== permissionStateSignature(state)) {
             if (hasUnsavedChanges) {
               if (draftMatchesState(draft, nextState, catalog.features)) {
@@ -210,13 +224,21 @@ export function AccessControlPage() {
     window.addEventListener("focus", refreshIfStale);
     document.addEventListener("visibilitychange", refreshIfStale);
     window.addEventListener("online", refreshIfStale);
+    const unsubscribeRealtime = subscribeResources(
+      ["users.list", `agent.permissions:${selectedId}`],
+      () => {
+        lastFreshAtRef.current = 0;
+        refreshIfStale();
+      },
+    );
     return () => {
       cancelled = true;
+      unsubscribeRealtime();
       window.removeEventListener("focus", refreshIfStale);
       document.removeEventListener("visibilitychange", refreshIfStale);
       window.removeEventListener("online", refreshIfStale);
     };
-  }, [catalog, draft, hasUnsavedChanges, saving, selectedId, state, token]);
+  }, [catalog, draft, hasUnsavedChanges, saving, selectedId, state, subscribeResources, token]);
 
   const selectedAgent = useMemo(
     () => agents.find((agent) => agent.id === selectedId),

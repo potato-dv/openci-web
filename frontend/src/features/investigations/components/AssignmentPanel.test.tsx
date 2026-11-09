@@ -121,7 +121,7 @@ describe("AssignmentPanel automatic route refresh", () => {
     vi.useRealTimers();
   });
 
-  it("shows queued then published as assignment history polling completes", async () => {
+  it("shows queued then published when the assignment route refresh completes", async () => {
     const user = userEvent.setup();
     api.getAssignments
       .mockResolvedValueOnce([])
