@@ -79,10 +79,13 @@ class AuthSessionAPITests(unittest.TestCase):
         self.secret_patch.start()
         self.security_patch = patch("app.utils.security.JWT_SECRET_KEY", SECRET)
         self.security_patch.start()
+        self.rate_limit_patch = patch("app.config.settings.RATE_LIMIT_ENABLED", False)
+        self.rate_limit_patch.start()
 
     def tearDown(self):
         self.secret_patch.stop()
         self.security_patch.stop()
+        self.rate_limit_patch.stop()
         self.db.close()
         self.engine.dispose()
         self.tempdir.cleanup()

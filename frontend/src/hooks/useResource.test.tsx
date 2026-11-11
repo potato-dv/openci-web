@@ -1,5 +1,6 @@
 import { act, render, screen } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
+import { ApiError } from "@/services/http";
 import { useResource, type ResourceOptions } from "./useResource";
 
 function ResourceView({
@@ -10,7 +11,13 @@ function ResourceView({
   options: ResourceOptions<string>;
 }) {
   const resource = useResource(load, options);
-  return <div>{resource.data ?? (resource.loading ? "loading" : "empty")}</div>;
+  return (
+    <>
+      <div>{resource.data ?? (resource.loading ? "loading" : "empty")}</div>
+      <div role="alert">{resource.error}</div>
+      <button onClick={resource.refresh}>Refresh</button>
+    </>
+  );
 }
 
 function deferred<T>() {
@@ -72,7 +79,9 @@ describe("useResource", () => {
       configurable: true,
       get: () => visibility,
     });
-    const load = vi.fn<(signal: AbortSignal) => Promise<string>>().mockResolvedValue("fresh");
+    const load = vi
+      .fn<(signal: AbortSignal) => Promise<string>>()
+      .mockResolvedValue("fresh");
     render(
       <ResourceView
         load={load}
@@ -91,6 +100,37 @@ describe("useResource", () => {
     expect(load).toHaveBeenCalledTimes(1);
 
     visibility = "visible";
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(1_000);
+    });
+    expect(load).toHaveBeenCalledTimes(2);
+  });
+
+  it("respects Retry-After for interval and manual refreshes after HTTP 429", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(10_000);
+    const load = vi
+      .fn<(signal: AbortSignal) => Promise<string>>()
+      .mockRejectedValueOnce(
+        new ApiError("Too many requests.", 429, { retryAfterSeconds: 10 }),
+      )
+      .mockResolvedValue("fresh");
+    render(<ResourceView load={load} options={{ refetchInterval: 1_000 }} />);
+
+    await act(async () => {
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+    expect(load).toHaveBeenCalledTimes(1);
+    expect(screen.getByRole("alert")).toHaveTextContent("wait 10 seconds");
+
+    act(() => screen.getByRole("button", { name: "Refresh" }).click());
+    expect(load).toHaveBeenCalledTimes(1);
+
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(9_000);
+    });
+    expect(load).toHaveBeenCalledTimes(1);
     await act(async () => {
       await vi.advanceTimersByTimeAsync(1_000);
     });

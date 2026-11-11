@@ -11,7 +11,8 @@ export function realtimeWebSocketUrl() {
   const apiBase = API_URL.replace(/\/$/, "");
   const address = configured || `${apiBase}/ws`;
   const url = new URL(address, window.location.href);
-  url.protocol = url.protocol === "https:" || url.protocol === "wss:" ? "wss:" : "ws:";
+  url.protocol =
+    url.protocol === "https:" || url.protocol === "wss:" ? "wss:" : "ws:";
   return url.toString();
 }
 
@@ -24,16 +25,22 @@ type AuthMessage = { type: "session-ended"; code?: string };
 export class ApiError extends Error {
   status: number;
   code?: string;
+  retryAfterSeconds?: number;
   blockingReasons: PlanningDependency[];
 
   constructor(
     message: string,
     status: number,
-    details: { code?: string; blockingReasons?: PlanningDependency[] } = {},
+    details: {
+      code?: string;
+      blockingReasons?: PlanningDependency[];
+      retryAfterSeconds?: number;
+    } = {},
   ) {
     super(message);
     this.status = status;
     this.code = details.code;
+    this.retryAfterSeconds = details.retryAfterSeconds;
     this.blockingReasons = details.blockingReasons ?? [];
   }
 }
@@ -52,7 +59,10 @@ function authEvents(): BroadcastChannel | null {
       if (event.data?.type === "session-ended") {
         window.dispatchEvent(
           new CustomEvent("openci:reauth-required", {
-            detail: { code: event.data.code ?? "session_revoked", remote: true },
+            detail: {
+              code: event.data.code ?? "session_revoked",
+              remote: true,
+            },
           }),
         );
       }
@@ -93,8 +103,12 @@ export function subscribeToReauthenticationRequired(
   listener: (detail: { code: string; remote?: boolean }) => void,
 ) {
   const handle = (event: Event) => {
-    const detail = (event as CustomEvent<{ code?: string; remote?: boolean }>).detail;
-    listener({ code: detail?.code ?? "session_revoked", remote: detail?.remote });
+    const detail = (event as CustomEvent<{ code?: string; remote?: boolean }>)
+      .detail;
+    listener({
+      code: detail?.code ?? "session_revoked",
+      remote: detail?.remote,
+    });
   };
   window.addEventListener("openci:reauth-required", handle);
   // Ensure this tab also receives terminal sign-out notifications from peers.
@@ -104,12 +118,16 @@ export function subscribeToReauthenticationRequired(
 
 // Decode only routing claims to detect an account or session change across
 // tabs. The server remains the authority for token validity and permissions.
-function accessTokenClaims(token: string): { sub?: unknown; sid?: unknown } | null {
+function accessTokenClaims(
+  token: string,
+): { sub?: unknown; sid?: unknown } | null {
   try {
     const payload = token.split(".")[1];
     if (!payload) return null;
     const base64 = payload.replaceAll("-", "+").replaceAll("_", "/");
-    return JSON.parse(atob(base64.padEnd(Math.ceil(base64.length / 4) * 4, "="))) as {
+    return JSON.parse(
+      atob(base64.padEnd(Math.ceil(base64.length / 4) * 4, "=")),
+    ) as {
       sub?: unknown;
       sid?: unknown;
     };
@@ -127,21 +145,34 @@ export function accessTokenSubject(token: string): number | null {
 
 export function accessTokenSessionId(token: string): string | null {
   const sessionId = accessTokenClaims(token)?.sid;
-  return typeof sessionId === "string" && sessionId.length > 0 ? sessionId : null;
+  return typeof sessionId === "string" && sessionId.length > 0
+    ? sessionId
+    : null;
 }
 
 function isAuthEndpoint(path: string) {
-  return path === "/users/login" || path === "/users/refresh" || path === "/users/logout";
+  return (
+    path === "/users/login" ||
+    path === "/users/refresh" ||
+    path === "/users/logout"
+  );
 }
 
 function isSessionEndCode(code?: string) {
-  return ["session_idle", "session_expired", "session_revoked", "session_missing"].includes(code ?? "");
+  return [
+    "session_idle",
+    "session_expired",
+    "session_revoked",
+    "session_missing",
+  ].includes(code ?? "");
 }
 
 function canReplayRequest(options: RequestOptions) {
   const body = options.body;
-  if (body === undefined || body === null || typeof body === "string") return true;
-  if (typeof URLSearchParams !== "undefined" && body instanceof URLSearchParams) return true;
+  if (body === undefined || body === null || typeof body === "string")
+    return true;
+  if (typeof URLSearchParams !== "undefined" && body instanceof URLSearchParams)
+    return true;
   if (typeof FormData !== "undefined" && body instanceof FormData) return true;
   if (typeof Blob !== "undefined" && body instanceof Blob) return true;
   return false;
@@ -183,6 +214,12 @@ async function parseResponse<T>(response: Response): Promise<T> {
       blockingReasons: Array.isArray(structuredDetail?.blocking_reasons)
         ? structuredDetail.blocking_reasons
         : [],
+      retryAfterSeconds:
+        (typeof structuredDetail?.retry_after_seconds === "number"
+          ? structuredDetail.retry_after_seconds
+          : undefined) ??
+        (Number.parseInt(response.headers.get("Retry-After") ?? "", 10) ||
+          undefined),
     });
   }
 
@@ -258,9 +295,15 @@ export function refreshAccessToken(): Promise<string> {
         try {
           return await postRefreshOnce();
         } catch (retryError) {
-          if (retryError instanceof ApiError && isSessionEndCode(retryError.code)) {
+          if (
+            retryError instanceof ApiError &&
+            isSessionEndCode(retryError.code)
+          ) {
             requireReauthentication(retryError.code ?? "session_revoked", true);
-          } else if (retryError instanceof ApiError && retryError.code === "refresh_conflict") {
+          } else if (
+            retryError instanceof ApiError &&
+            retryError.code === "refresh_conflict"
+          ) {
             requireReauthentication("refresh_conflict");
           }
           throw retryError;
@@ -310,7 +353,10 @@ export async function requestJson<T>(
 export async function logoutRemoteSession() {
   notifyOtherTabsOfLogout();
   try {
-    await rawRequest<void>("/users/logout", { method: "POST", keepalive: true });
+    await rawRequest<void>("/users/logout", {
+      method: "POST",
+      keepalive: true,
+    });
   } catch {
     // Local logout still completes if the server cannot be reached.
   }

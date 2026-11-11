@@ -1,13 +1,14 @@
 from fastapi import APIRouter, Depends, Response
 from sqlalchemy.orm import Session
 
+from app.dependencies.rate_limit import general_api_rate_limit
 from app.database.session import get_db
 from app.models.user import User
 from app.services.agent_permissions import AGENT_FEATURES, MANDATORY_AGENT_WORKFLOWS
 from app.utils.auth import require_roles
 
 
-router = APIRouter(prefix="/agent-permissions", tags=["Agent Permissions"])
+router = APIRouter(prefix="/agent-permissions", tags=["Agent Permissions"], dependencies=[Depends(general_api_rate_limit)])
 
 
 @router.get("/catalog")

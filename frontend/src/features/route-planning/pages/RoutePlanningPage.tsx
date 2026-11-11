@@ -1,8 +1,7 @@
 import { useCallback, useMemo, useState } from "react";
-import { Link, useLocation, useSearchParams } from "react-router";
+import { useLocation, useSearchParams } from "react-router";
 import {
   CalendarDays,
-  ChevronRight,
   MapPinned,
   PanelLeftClose,
   PanelLeftOpen,
@@ -40,44 +39,16 @@ import { manilaToday } from "@/utils/format";
 import { routeRefreshErrorCopy } from "@/utils/routeRefresh";
 
 const routePlanningClasses = {
-  canvas: [
-    "route-planning-page relative min-h-0 min-w-0 bg-[#e8ecea]",
-    "min-[1440px]:h-[calc(100dvh_-_var(--height-header))]! min-[1440px]:overflow-hidden!",
-  ].join(" "),
-  header: [
-    "route-planning-header z-[1400] flex flex-col gap-3 border-b border-openci-border bg-white px-4 py-3",
-    "xl:flex-row xl:flex-wrap xl:items-end xl:justify-between xl:gap-4",
-    "min-[1440px]:absolute! min-[1440px]:left-3! min-[1440px]:right-auto! min-[1440px]:top-3! min-[1440px]:w-max! min-[1440px]:max-w-[calc(100%-1.5rem)]! min-[1440px]:min-h-14! min-[1440px]:flex-nowrap! min-[1440px]:items-center! min-[1440px]:justify-start! min-[1440px]:rounded-xl! min-[1440px]:border-0! min-[1440px]:px-3! min-[1440px]:py-2! min-[1440px]:shadow-md!",
-  ].join(" "),
-  toolbar: [
-    "route-planning-toolbar-controls flex w-full min-w-0 flex-wrap items-end gap-2 md:flex-none xl:flex-[2_1_480px]",
-    "min-[1440px]:w-auto! min-[1440px]:flex-nowrap! min-[1440px]:flex-none!",
-  ].join(" "),
-  stats: [
-    "route-planning-stats grid grid-cols-2 gap-2 px-3 py-2 sm:grid-cols-3 xl:grid-cols-4",
-    "min-[1440px]:absolute! min-[1440px]:inset-x-3.5! min-[1440px]:top-24! min-[1440px]:z-[1350]! min-[1440px]:grid-cols-7! min-[1440px]:gap-1.5! min-[1440px]:min-h-0! min-[1440px]:border-0! min-[1440px]:bg-transparent! min-[1440px]:p-0!",
-  ].join(" "),
-  statCard: [
-    "flex min-h-11 min-w-0 items-center gap-2 rounded-lg border border-openci-border bg-white px-2.5 py-2",
-    "min-[1440px]:min-h-[50px]!",
-  ].join(" "),
-  statValue: "shrink-0 text-sm font-semibold tabular-nums",
-  statLabel: "min-w-0 text-xs leading-tight text-openci-text-muted",
-  viewSwitch: "planning-view-switch min-[1440px]:hidden!",
-  workspace: [
-    "relative min-[1440px]:absolute! min-[1440px]:inset-0! min-[1440px]:z-[1]! min-[1440px]:block! min-[1440px]:h-auto! min-[1440px]:min-h-0! min-[1440px]:w-full! min-[1440px]:overflow-hidden! min-[1440px]:bg-transparent!",
-  ].join(" "),
-  widePanel: [
-    "min-[1440px]:absolute! min-[1440px]:top-[208px]! min-[1440px]:bottom-[76px]! min-[1440px]:z-[1200]! min-[1440px]:block! min-[1440px]:overflow-x-hidden! min-[1440px]:overflow-y-auto! min-[1440px]:rounded-xl! min-[1440px]:border-0! min-[1440px]:bg-white! min-[1440px]:shadow-md!",
-  ].join(" "),
-  map: [
-    "planning-map-region relative isolate min-[1440px]:absolute! min-[1440px]:inset-0! min-[1440px]:z-0! min-[1440px]:block! min-[1440px]:h-full! min-[1440px]:w-full! min-[1440px]:min-w-0!",
-    "min-[1440px]:[&_.operations-map]:absolute! min-[1440px]:[&_.operations-map]:inset-0! min-[1440px]:[&_.operations-map]:h-full! min-[1440px]:[&_.operations-map]:w-full! min-[1440px]:[&_.operations-map]:min-h-0! min-[1440px]:[&_.operations-map]:flex-none!",
-    "min-[1440px]:[&_.map-zoom-controls]:top-auto! min-[1440px]:[&_.map-zoom-controls]:bottom-3! min-[1440px]:[&_.map-zoom-controls]:left-3! min-[1440px]:[&_.map-zoom-controls]:z-[1000]!",
-    "min-[1440px]:[&_.map-fit-controls]:top-auto! min-[1440px]:[&_.map-fit-controls]:bottom-3! min-[1440px]:[&_.map-fit-controls]:left-16! min-[1440px]:[&_.map-fit-controls]:z-[1000]! min-[1440px]:[&_.map-fit-controls]:flex!",
-    "min-[1440px]:[&_.map-layer-control]:top-auto! min-[1440px]:[&_.map-layer-control]:right-auto! min-[1440px]:[&_.map-layer-control]:bottom-3! min-[1440px]:[&_.map-layer-control]:left-[200px]! min-[1440px]:[&_.map-layer-control]:z-[1000]!",
-    "min-[1440px]:[&_.layer-menu]:top-auto! min-[1440px]:[&_.layer-menu]:right-auto! min-[1440px]:[&_.layer-menu]:bottom-11! min-[1440px]:[&_.layer-menu]:left-0!",
-  ].join(" "),
+  canvas: "route-planning-page",
+  header: "route-planning-header",
+  toolbar: "route-planning-toolbar-controls",
+  stats: "route-planning-stats",
+  statCard: "route-planning-stat-card",
+  statValue: "route-planning-stat-value",
+  statLabel: "route-planning-stat-label",
+  viewSwitch: "planning-view-switch route-planning-view-switch",
+  workspace: "planning-workspace route-planning-workspace",
+  map: "planning-map-region route-planning-map",
 };
 
 export function RoutePlanningPage() {
@@ -401,86 +372,57 @@ export function RoutePlanningPage() {
       Icon: Route,
     },
   ];
-  const leftPanelClass = [
-    "planning-left",
-    routePlanningClasses.widePanel,
-    "min-[1440px]:left-3.5!",
-    leftCollapsed
-      ? "min-[1440px]:top-[208px]! min-[1440px]:bottom-auto! min-[1440px]:h-11! min-[1440px]:w-11! min-[1440px]:overflow-hidden!"
-      : "min-[1440px]:w-[304px]!",
-  ]
-    .filter(Boolean)
-    .join(" ");
-  const rightPanelClass = [
-    "planning-right",
-    routePlanningClasses.widePanel,
-    "min-[1440px]:right-3.5!",
-    rightCollapsed
-      ? "min-[1440px]:top-[208px]! min-[1440px]:bottom-auto! min-[1440px]:h-11! min-[1440px]:w-11! min-[1440px]:overflow-hidden!"
-      : "min-[1440px]:w-[344px]!",
-  ]
-    .filter(Boolean)
-    .join(" ");
+  const leftPanelClass = `planning-left route-planning-panel route-planning-left ${leftCollapsed ? "is-collapsed" : ""}`;
+  const rightPanelClass = `planning-right route-planning-panel route-planning-right ${rightCollapsed ? "is-collapsed" : ""}`;
 
   return (
     <div className={routePlanningClasses.canvas}>
       <header className={routePlanningClasses.header}>
-        <IconButton
-          className="hidden! h-9! w-9! shrink-0 min-[1200px]:grid!"
-          label={
-            leftCollapsed
-              ? "Expand agent and investigation list"
-              : "Collapse agent and investigation list"
-          }
-          aria-expanded={!leftCollapsed}
-          onClick={() => setLeftCollapsed((value) => !value)}
-        >
-          {leftCollapsed ? (
-            <PanelLeftOpen size={18} />
-          ) : (
-            <PanelLeftClose size={18} />
-          )}
-        </IconButton>
-        <div className="route-planning-heading flex min-w-0 flex-col gap-1 md:w-full md:flex-none xl:w-auto xl:min-w-max xl:flex-none min-[1440px]:min-w-[220px]! min-[1440px]:flex-none!">
-          <nav
-            className="route-planning-breadcrumb flex items-center gap-1.5 whitespace-nowrap text-xs text-openci-text-muted"
-            aria-label="Breadcrumb"
+        <div className="route-planning-heading">
+          <IconButton
+            className="route-planning-panel-toggle route-planning-left-toggle"
+            label={
+              leftCollapsed
+                ? "Expand agent and investigation list"
+                : "Collapse agent and investigation list"
+            }
+            aria-expanded={!leftCollapsed}
+            onClick={() => setLeftCollapsed((value) => !value)}
           >
-            <Link
-              className="text-openci-accent-strong no-underline"
-              to="/dashboard"
-            >
-              Collector
-            </Link>
-            <ChevronRight size={14} aria-hidden="true" />
-            <span aria-current="page">Route Planning</span>
-          </nav>
-          <h1 className="m-0! text-[24px]! font-semibold! leading-tight! tracking-[-0.025em]!">
-            Route Planning
-          </h1>
+            {leftCollapsed ? (
+              <PanelLeftOpen size={18} />
+            ) : (
+              <PanelLeftClose size={18} />
+            )}
+          </IconButton>
+          <div className="route-planning-title">
+            <h1>Route Planning</h1>
+          </div>
         </div>
-        <div className={routePlanningClasses.toolbar}>
-          <label className="route-scope-field flex min-w-[150px] flex-1 flex-col gap-1 text-[13px] font-medium text-openci-text-muted min-[1440px]:flex-none!">
+        <div
+          className={routePlanningClasses.toolbar}
+          role="group"
+          aria-label="Planning controls"
+        >
+          <label className="route-scope-field">
             <span className="inline-flex items-center gap-1.5">
               <CalendarDays size={15} aria-hidden="true" /> Work date
             </span>
             <input
-              className="h-9 min-h-9! w-full rounded-md px-2.5 py-1.5 text-sm min-[1440px]:w-40!"
+              className="route-scope-control"
               type="date"
               aria-label="Work date"
               value={workDate}
               onChange={(event) => updateScope("date", event.target.value)}
             />
           </label>
-          <label className="route-scope-field region-scope-field flex min-w-[180px] flex-[1.25] flex-col gap-1 text-[13px] font-medium text-openci-text-muted min-[1440px]:flex-none!">
+          <label className="route-scope-field region-scope-field">
             <span className="inline-flex items-center gap-1.5">
               <MapPinned size={15} aria-hidden="true" /> Service region{" "}
-              <em className="font-normal not-italic text-openci-text-subtle">
-                Optional
-              </em>
+              <em>Optional</em>
             </span>
             <select
-              className="h-9 min-h-9! w-full px-2.5 py-1.5 text-sm min-[1440px]:w-52!"
+              className="route-scope-control"
               aria-label="Service region (optional)"
               value={regionCode}
               onChange={(event) => updateScope("region", event.target.value)}
@@ -494,7 +436,7 @@ export function RoutePlanningPage() {
             </select>
           </label>
           <Button
-            className="route-visibility-button min-h-9! shrink-0 whitespace-nowrap"
+            className="route-visibility-button"
             variant="secondary"
             aria-pressed={routesVisible}
             onClick={toggleRoutes}
@@ -503,17 +445,14 @@ export function RoutePlanningPage() {
             {routesVisible ? "Hide All Routes" : "Show All Routes"}
           </Button>
           <Button
-            className="route-refresh-button min-h-9! shrink-0 whitespace-nowrap"
+            className="route-refresh-button"
             onClick={refreshAll}
             disabled={mapInventory.loading || routeOverview.loading}
           >
             <RefreshCw size={15} aria-hidden="true" />
             Refresh view
           </Button>
-          <div
-            ref={setMapSearchSlot}
-            className="route-planning-search-slot w-full min-w-0 xl:max-w-[320px] min-[1440px]:w-[300px]! min-[1440px]:flex-none! min-[1600px]:w-[340px]!"
-          />
+          <div ref={setMapSearchSlot} className="route-planning-search-slot" />
         </div>
       </header>
 
@@ -522,7 +461,7 @@ export function RoutePlanningPage() {
         dashboard.error ||
         regions.error ||
         retryError) && (
-        <div className="route-planning-error mx-3 my-2 rounded-lg border border-openci-danger-border bg-openci-danger-surface px-3 py-2 min-[1440px]:absolute! min-[1440px]:left-1/2! min-[1440px]:top-44! min-[1440px]:z-[1600]! min-[1440px]:w-[min(560px,calc(100%-2rem))]! min-[1440px]:-translate-x-1/2!">
+        <div className="route-planning-error">
           <InlineAlert onRetry={refreshAll}>
             {retryError ||
               mapInventory.error ||
@@ -541,7 +480,7 @@ export function RoutePlanningPage() {
         {statItems.map(({ label, value, Icon }) => (
           <div className={routePlanningClasses.statCard} key={label}>
             <Icon
-              className="shrink-0 text-openci-accent"
+              className="route-planning-stat-icon"
               size={16}
               aria-hidden="true"
             />
@@ -550,10 +489,7 @@ export function RoutePlanningPage() {
           </div>
         ))}
         {overviewMessage && (
-          <span
-            className="route-planning-live-status col-span-full min-h-6 justify-self-start rounded-full border border-openci-border bg-white px-2.5 py-1 text-xs text-openci-text-muted min-[1440px]:mx-0!"
-            role="status"
-          >
+          <span className="route-planning-live-status" role="status">
             {overviewMessage}
           </span>
         )}
@@ -570,15 +506,13 @@ export function RoutePlanningPage() {
             { value: "routes", label: "Routes" },
           ]}
         />
-        <div className="tablet-panel-actions min-[1440px]:hidden!">
-          <Button className="min-h-11!" onClick={() => setDrawer("records")}>
-            Open record list
-          </Button>
+        <div className="tablet-panel-actions">
+          <Button onClick={() => setDrawer("records")}>Open record list</Button>
           <Button className="min-h-11!" onClick={() => setDrawer("routes")}>
             Route details
           </Button>
         </div>
-        <div className="planning-desktop-drawer min-[1440px]:hidden!">
+        <div className="planning-desktop-drawer">
           <Button onClick={() => setDrawer("routes")}>
             Open route details
           </Button>

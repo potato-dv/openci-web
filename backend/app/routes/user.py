@@ -1,3 +1,4 @@
+from time import time
 from urllib.parse import urlsplit
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response, status
@@ -22,6 +23,8 @@ from app.controllers.user import (
     update_role,
 )
 from app.database.session import get_db
+from app.config import settings
+from app.dependencies.rate_limit import general_api_rate_limit
 from app.schemas.user import UserActivationUpdate, UserCreate, UserResponse, UserLogin, UserRoleUpdate
 from app.models.user import User
 from app.models.activity import ActivityLog
@@ -33,6 +36,15 @@ from app.services.auth_sessions import (
     record_interactive_activity,
     revoke_session,
     rotate_refresh_token,
+)
+from app.services.rate_limit import (
+    AUTH_SESSION_POLICY,
+    LOGIN_IP_POLICY,
+    apply_rate_headers,
+    client_ip,
+    clear_login_failures,
+    enforce,
+    limit_login_failure,
 )
 from app.utils.auth import (
     AuthContext,
@@ -105,11 +117,21 @@ def _mark_auth_response_private(response: Response) -> None:
     response.headers["Pragma"] = "no-cache"
 
 
+def _limit_session_action(request: Request, response: Response) -> None:
+    if not settings.RATE_LIMIT_ENABLED:
+        return
+    peer_ip = client_ip(request)
+    enforce(request, response, AUTH_SESSION_POLICY, f"ip:{peer_ip}")
+    session_id = parse_session_id(request.cookies.get(_refresh_cookie_name(request)))
+    if session_id is not None:
+        enforce(request, response, AUTH_SESSION_POLICY, f"session:{session_id}")
+
+
 # Admin only: Create a user
 @router.post(
     "/",
     response_model=UserResponse,
-    dependencies=[Depends(require_roles("admin"))],
+    dependencies=[Depends(require_roles("admin")), Depends(general_api_rate_limit)],
 )
 def create_user(
     data: UserCreate,
@@ -120,7 +142,7 @@ def create_user(
 
 
 # Authenticated users: View their own profile
-@router.get("/me", response_model=UserResponse)
+@router.get("/me", response_model=UserResponse, dependencies=[Depends(general_api_rate_limit)])
 def get_current_user_profile(
     current_user: User = Depends(get_current_user),
 ):
@@ -131,7 +153,7 @@ def get_current_user_profile(
 @router.get(
     "/",
     response_model=list[UserResponse],
-    dependencies=[Depends(require_roles("admin"))],
+    dependencies=[Depends(require_roles("admin")), Depends(general_api_rate_limit)],
 )
 def get_users(
     db: Session = Depends(get_db),
@@ -142,7 +164,7 @@ def get_users(
 @router.get(
     "/agents",
     response_model=list[UserResponse],
-    dependencies=[Depends(require_roles("admin", "supervisor"))],
+    dependencies=[Depends(require_roles("admin", "supervisor")), Depends(general_api_rate_limit)],
 )
 def get_agents(
     db: Session = Depends(get_db),
@@ -150,7 +172,7 @@ def get_agents(
     return get_all_agents(db)
 
 
-@router.get("/me/agent-permissions")
+@router.get("/me/agent-permissions", dependencies=[Depends(general_api_rate_limit)])
 def get_my_agent_permissions(
     response: Response,
     db: Session = Depends(get_db),
@@ -169,7 +191,7 @@ def _get_agent_for_permissions(db: Session, agent_id: int) -> User:
     return agent
 
 
-@router.get("/{agent_id}/agent-permissions", response_model=AgentPermissionState)
+@router.get("/{agent_id}/agent-permissions", response_model=AgentPermissionState, dependencies=[Depends(general_api_rate_limit)])
 def get_agent_permissions(
     agent_id: int,
     response: Response,
@@ -180,7 +202,7 @@ def get_agent_permissions(
     return permission_state(db, _get_agent_for_permissions(db, agent_id))
 
 
-@router.put("/{agent_id}/agent-permissions", response_model=AgentPermissionState)
+@router.put("/{agent_id}/agent-permissions", response_model=AgentPermissionState, dependencies=[Depends(general_api_rate_limit)])
 def set_agent_permissions(
     agent_id: int,
     data: AgentPermissionOverrideMap,
@@ -235,7 +257,7 @@ def set_agent_permissions(
     return permission_state(db, agent)
 
 
-@router.get("/{agent_id}/agent-permissions/history", response_model=AgentPermissionHistoryResponse)
+@router.get("/{agent_id}/agent-permissions/history", response_model=AgentPermissionHistoryResponse, dependencies=[Depends(general_api_rate_limit)])
 def get_agent_permission_history(
     agent_id: int,
     response: Response,
@@ -276,7 +298,7 @@ def get_agent_permission_history(
 @router.get(
     "/{user_id}",
     response_model=UserResponse,
-    dependencies=[Depends(require_roles("admin"))],
+    dependencies=[Depends(require_roles("admin")), Depends(general_api_rate_limit)],
 )
 def get_user(
     user_id: int,
@@ -289,7 +311,7 @@ def get_user(
 @router.patch(
     "/{user_id}/activation",
     response_model=UserResponse,
-    dependencies=[Depends(require_roles("admin"))],
+    dependencies=[Depends(require_roles("admin")), Depends(general_api_rate_limit)],
 )
 def set_user_activation(
     user_id: int,
@@ -303,7 +325,7 @@ def set_user_activation(
 @router.patch(
     "/{user_id}/role",
     response_model=UserResponse,
-    dependencies=[Depends(require_roles("admin"))],
+    dependencies=[Depends(require_roles("admin")), Depends(general_api_rate_limit)],
 )
 def set_user_role(
     user_id: int,
@@ -323,7 +345,62 @@ def login_user(
     db: Session = Depends(get_db),
 ):
     require_browser_csrf(request)
-    issued = login(db, data)
+    ip_result = enforce(
+        request,
+        response,
+        LOGIN_IP_POLICY,
+        f"ip:{client_ip(request)}",
+    )
+    try:
+        issued = login(db, data)
+    except HTTPException as error:
+        if error.status_code == status.HTTP_401_UNAUTHORIZED:
+            if not settings.RATE_LIMIT_ENABLED:
+                raise
+            redis = getattr(request.app.state, "rate_limit_redis", None)
+            if redis is None:
+                raise HTTPException(
+                    status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                    detail={
+                        "code": "RATE_LIMIT_UNAVAILABLE",
+                        "message": "Request protection is temporarily unavailable. Please try again shortly.",
+                        "retry_after_seconds": 5,
+                    },
+                    headers={"Retry-After": "5"},
+                ) from error
+            failure_result = limit_login_failure(redis, data.email)
+            apply_rate_headers(response, failure_result)
+            if not failure_result.allowed:
+                raise HTTPException(
+                    status_code=status.HTTP_429_TOO_MANY_REQUESTS,
+                    detail={
+                        "code": "RATE_LIMIT_EXCEEDED",
+                        "message": "Too many requests. Please try again later.",
+                        "retry_after_seconds": max(1, failure_result.retry_after_seconds),
+                    },
+                    headers={
+                        "Retry-After": str(max(1, failure_result.retry_after_seconds)),
+                        "X-RateLimit-Limit": str(failure_result.limit),
+                        "X-RateLimit-Remaining": "0",
+                        "X-RateLimit-Reset": str(int(time()) + failure_result.reset_after_seconds),
+                    },
+                ) from error
+        raise
+    if settings.RATE_LIMIT_ENABLED:
+        redis = getattr(request.app.state, "rate_limit_redis", None)
+        if redis is None:
+            raise HTTPException(
+                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                detail={
+                    "code": "RATE_LIMIT_UNAVAILABLE",
+                    "message": "Request protection is temporarily unavailable. Please try again shortly.",
+                    "retry_after_seconds": 5,
+                },
+                headers={"Retry-After": "5"},
+            )
+        clear_login_failures(redis, data.email)
+        if ip_result is not None:
+            apply_rate_headers(response, ip_result)
     _set_refresh_cookie(
         response, issued.refresh_cookie, issued.refresh_max_age, request
     )
@@ -338,6 +415,7 @@ def refresh_user_session(
     db: Session = Depends(get_db),
 ):
     require_browser_csrf(request)
+    _limit_session_action(request, response)
     try:
         cookie_name = _refresh_cookie_name(request)
         issued = rotate_refresh_token(db, request.cookies.get(cookie_name))
@@ -368,6 +446,7 @@ def logout_user(
     db: Session = Depends(get_db),
 ):
     require_browser_csrf(request)
+    _limit_session_action(request, response)
     cookie_name = _refresh_cookie_name(request)
     revoke_session(db, parse_session_id(request.cookies.get(cookie_name)))
     _clear_refresh_cookie(response, request)
@@ -375,7 +454,7 @@ def logout_user(
     return response
 
 
-@router.post("/activity", status_code=status.HTTP_204_NO_CONTENT)
+@router.post("/activity", status_code=status.HTTP_204_NO_CONTENT, dependencies=[Depends(general_api_rate_limit)])
 def record_user_activity(
     response: Response,
     context: AuthContext = Depends(get_current_auth_context),

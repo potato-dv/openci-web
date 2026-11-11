@@ -3,7 +3,13 @@ import { X } from "lucide-react";
 import type { PlanningRouteOverviewAgent } from "@/types/api";
 import type { MapInvestigation, MapSelection } from "@/components/map/mapTypes";
 import { Button, EmptyState, InlineAlert } from "@/components/ui/Primitives";
-import { distance, duration, plannedWait, time, timeAfter } from "@/utils/format";
+import {
+  distance,
+  duration,
+  plannedWait,
+  time,
+  timeAfter,
+} from "@/utils/format";
 import { routeRefreshErrorCopy } from "@/utils/routeRefresh";
 import {
   planningReasonCopy,
@@ -245,11 +251,12 @@ export function PublishedRoutePanel({
               {planningReasonCopy(selectedCase.planning_reason)}
             </p>
           )}
-          {selectedCase.routing_status === "unscheduled" && selectedCase.routing_reason && (
-            <p className="planning-reason-detail mt-3 rounded-md border border-openci-border bg-openci-surface-muted px-3 py-2 text-xs leading-relaxed text-openci-text-muted">
-              {planningReasonCopy(selectedCase.routing_reason)}
-            </p>
-          )}
+          {selectedCase.routing_status === "unscheduled" &&
+            selectedCase.routing_reason && (
+              <p className="planning-reason-detail mt-3 rounded-md border border-openci-border bg-openci-surface-muted px-3 py-2 text-xs leading-relaxed text-openci-text-muted">
+                {planningReasonCopy(selectedCase.routing_reason)}
+              </p>
+            )}
           {!selectedCase.agent_name && (
             <p className="planning-current-assignment">
               No official assignment has been saved.
@@ -352,9 +359,7 @@ export function PublishedRoutePanel({
               </div>
               <div>
                 <dt>Route origin</dt>
-                <dd>
-                  {routeOrigin?.label ?? "Unavailable"}
-                </dd>
+                <dd>{routeOrigin?.label ?? "Unavailable"}</dd>
               </div>
               {shift && (
                 <div>
@@ -377,40 +382,49 @@ export function PublishedRoutePanel({
               )}
             </dl>
             {route && (
-              <dl className="route-metrics">
-                <div>
-                  <dt>Assigned stops</dt>
-                  <dd>{agent.stops.length}</dd>
-                </div>
-              <div>
-                <dt>Planned departure</dt>
-                <dd>
-                  {route.planned_departure_at
-                    ? time(route.planned_departure_at)
-                    : "Not available"}
-                </dd>
+              <div
+                className="planning-route-metrics-group"
+                role="group"
+                aria-label="Route timing and metrics"
+              >
+                <h4>Route timing and metrics</h4>
+                <dl className="route-metrics">
+                  <div>
+                    <dt>Assigned stops</dt>
+                    <dd>{agent.stops.length}</dd>
+                  </div>
+                  <div>
+                    <dt>Planned departure</dt>
+                    <dd>
+                      {route.planned_departure_at
+                        ? time(route.planned_departure_at)
+                        : "Not available"}
+                    </dd>
+                  </div>
+                  <div>
+                    <dt>Driving time</dt>
+                    <dd>{duration(route.total_travel_seconds)}</dd>
+                  </div>
+                  <div>
+                    <dt>Road distance</dt>
+                    <dd>{distance(route.total_distance_metres)}</dd>
+                  </div>
+                  <div>
+                    <dt>Investigation service time</dt>
+                    <dd>
+                      {duration(route.total_service_seconds ?? serviceSeconds)}
+                    </dd>
+                  </div>
+                  <div>
+                    <dt>Wait at stops</dt>
+                    <dd>{plannedWait(route.total_planned_waiting_seconds)}</dd>
+                  </div>
+                  <div>
+                    <dt>Scheduled break</dt>
+                    <dd>{duration(route.total_break_seconds)}</dd>
+                  </div>
+                </dl>
               </div>
-                <div>
-                  <dt>Driving time</dt>
-                  <dd>{duration(route.total_travel_seconds)}</dd>
-                </div>
-                <div>
-                  <dt>Road distance</dt>
-                  <dd>{distance(route.total_distance_metres)}</dd>
-                </div>
-                <div>
-                  <dt>Investigation service time</dt>
-                  <dd>{duration(route.total_service_seconds ?? serviceSeconds)}</dd>
-                </div>
-                <div>
-                <dt>Wait at stops</dt>
-                <dd>{plannedWait(route.total_planned_waiting_seconds)}</dd>
-                </div>
-                <div>
-                  <dt>Scheduled break</dt>
-                  <dd>{duration(route.total_break_seconds)}</dd>
-                </div>
-              </dl>
             )}
             {route?.geometry_status === "ready" && route.geometry && (
               <p className="route-geometry-label">
@@ -458,10 +472,19 @@ export function PublishedRoutePanel({
                           "The bounded priority optimization could not confirm a fully prioritized order. This feasible route is kept; review its stop order."
                         ) : warning.reason === "assignment_time_constraint" ? (
                           <>
-                            {warning.investigation_id != null && warning.reference_number ? (
-                              <Link to={`/investigations/${warning.investigation_id}`}>{warning.reference_number}</Link>
-                            ) : "An earlier assignment"}
-                            {" with the same priority stays first because visit windows, shift hours, or a break prevent the assignment-time order."}
+                            {warning.investigation_id != null &&
+                            warning.reference_number ? (
+                              <Link
+                                to={`/investigations/${warning.investigation_id}`}
+                              >
+                                {warning.reference_number}
+                              </Link>
+                            ) : (
+                              "An earlier assignment"
+                            )}
+                            {
+                              " with the same priority stays first because visit windows, shift hours, or a break prevent the assignment-time order."
+                            }
                           </>
                         ) : (
                           <>
@@ -486,7 +509,9 @@ export function PublishedRoutePanel({
                             ) : (
                               "work"
                             )}
-                            {". Visit windows, shift hours, or a break require this order."}
+                            {
+                              ". Visit windows, shift hours, or a break require this order."
+                            }
                           </>
                         )}
                       </li>
@@ -602,7 +627,8 @@ export function PublishedRoutePanel({
                       <span className="planning-stop-metrics">
                         <span>
                           <small>
-                            Earliest arrival estimate · depart as soon as possible
+                            Earliest arrival estimate · depart as soon as
+                            possible
                           </small>
                           <strong>
                             {time(
@@ -621,7 +647,9 @@ export function PublishedRoutePanel({
                         </span>
                         <span>
                           <small>Wait at stop</small>
-                          <strong>{plannedWait(stop.planned_waiting_seconds)}</strong>
+                          <strong>
+                            {plannedWait(stop.planned_waiting_seconds)}
+                          </strong>
                         </span>
                         <span>
                           <small>Service starts</small>

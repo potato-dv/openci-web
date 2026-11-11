@@ -6,6 +6,7 @@ from sqlalchemy import func, or_, text
 from sqlalchemy.orm import Session
 
 from app.database.session import get_db
+from app.dependencies.rate_limit import general_api_rate_limit, planning_enqueue_rate_limit
 from app.models.activity import ActivityLog
 from app.models.assignment import InvestigationAssignment
 from app.models.investigation import Investigation
@@ -72,7 +73,7 @@ from app.utils.features import require_planning_enabled
 router = APIRouter(
     prefix="/planning",
     tags=["Planning"],
-    dependencies=[Depends(require_planning_enabled)],
+    dependencies=[Depends(require_planning_enabled), Depends(general_api_rate_limit)],
 )
 
 
@@ -340,7 +341,11 @@ def get_planning_run(
     return run_response(db, run)
 
 
-@router.post("/investigations/{investigation_id}/retry", response_model=PlanningRunResponse)
+@router.post(
+    "/investigations/{investigation_id}/retry",
+    response_model=PlanningRunResponse,
+    dependencies=[Depends(planning_enqueue_rate_limit)],
+)
 def retry_automatic_planning(
     investigation_id: int,
     work_date: date,

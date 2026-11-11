@@ -25,6 +25,7 @@ packaging==26.3
 prompt_toolkit==3.0.53
 psycopg==3.3.6
 psycopg-binary==3.3.6
+pytest==9.0.2
 pwdlib==0.3.1
 pycparser==3.1
 pydantic==2.13.5

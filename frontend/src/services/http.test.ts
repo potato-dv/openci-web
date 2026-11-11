@@ -31,7 +31,9 @@ function jwtFor(subject: number, sessionId = "test-session-id") {
 
 describe("shared API request handling", () => {
   it("keeps bearer auth, JSON payloads, and abort signals on the request", async () => {
-    const fetchMock = vi.fn().mockResolvedValue(jsonResponse(200, { saved: true }));
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValue(jsonResponse(200, { saved: true }));
     vi.stubGlobal("fetch", fetchMock);
     const controller = new AbortController();
 
@@ -66,8 +68,9 @@ describe("shared API request handling", () => {
       ),
     );
 
-    const error = await requestJson("/planning/runs", { token: "session-token" })
-      .catch((cause: unknown) => cause);
+    const error = await requestJson("/planning/runs", {
+      token: "session-token",
+    }).catch((cause: unknown) => cause);
 
     expect(error).toBeInstanceOf(ApiError);
     expect(error).toMatchObject({
@@ -78,10 +81,15 @@ describe("shared API request handling", () => {
   });
 
   it("sends login requests with credentials and the CSRF request header", async () => {
-    const fetchMock = vi.fn().mockResolvedValue(jsonResponse(200, { access_token: "jwt" }));
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValue(jsonResponse(200, { access_token: "jwt" }));
     vi.stubGlobal("fetch", fetchMock);
 
-    await requestJson("/users/login", { method: "POST", body: JSON.stringify({}) });
+    await requestJson("/users/login", {
+      method: "POST",
+      body: JSON.stringify({}),
+    });
 
     const [, options] = fetchMock.mock.calls[0] as [string, RequestInit];
     expect(options.credentials).toBe("include");
@@ -93,33 +101,53 @@ describe("shared API request handling", () => {
     const refreshedToken = jwtFor(7);
     const fetchMock = vi
       .fn()
-      .mockResolvedValueOnce(jsonResponse(401, { detail: { code: "access_token_expired" } }))
-      .mockResolvedValueOnce(jsonResponse(200, { access_token: refreshedToken, token_type: "bearer" }))
+      .mockResolvedValueOnce(
+        jsonResponse(401, { detail: { code: "access_token_expired" } }),
+      )
+      .mockResolvedValueOnce(
+        jsonResponse(200, {
+          access_token: refreshedToken,
+          token_type: "bearer",
+        }),
+      )
       .mockResolvedValueOnce(jsonResponse(200, { ok: true }));
     vi.stubGlobal("fetch", fetchMock);
     setCurrentAccessToken("expired-token", 7);
 
-    await expect(requestJson("/protected", { token: "stale-prop-token" })).resolves.toEqual({ ok: true });
+    await expect(
+      requestJson("/protected", { token: "stale-prop-token" }),
+    ).resolves.toEqual({ ok: true });
     expect(fetchMock).toHaveBeenCalledTimes(3);
     const [, refreshOptions] = fetchMock.mock.calls[1] as [string, RequestInit];
     expect(refreshOptions.credentials).toBe("include");
     expect(new Headers(refreshOptions.headers).get("X-CSRF-Token")).toBe("1");
     const [, retryOptions] = fetchMock.mock.calls[2] as [string, RequestInit];
-    expect(new Headers(retryOptions.headers).get("Authorization")).toBe(`Bearer ${refreshedToken}`);
+    expect(new Headers(retryOptions.headers).get("Authorization")).toBe(
+      `Bearer ${refreshedToken}`,
+    );
   });
 
   it("does not require reauthentication when a successful refresh retries the request", async () => {
     const refreshedToken = jwtFor(7);
     const fetchMock = vi
       .fn()
-      .mockResolvedValueOnce(jsonResponse(401, { detail: { code: "access_token_expired" } }))
-      .mockResolvedValueOnce(jsonResponse(200, { access_token: refreshedToken, token_type: "bearer" }))
+      .mockResolvedValueOnce(
+        jsonResponse(401, { detail: { code: "access_token_expired" } }),
+      )
+      .mockResolvedValueOnce(
+        jsonResponse(200, {
+          access_token: refreshedToken,
+          token_type: "bearer",
+        }),
+      )
       .mockResolvedValueOnce(jsonResponse(200, { ok: true }));
     vi.stubGlobal("fetch", fetchMock);
     vi.stubGlobal("BroadcastChannel", undefined);
     setCurrentAccessToken("expired-token", 7);
     const onReauthenticationRequired = vi.fn();
-    const unsubscribe = subscribeToReauthenticationRequired(onReauthenticationRequired);
+    const unsubscribe = subscribeToReauthenticationRequired(
+      onReauthenticationRequired,
+    );
 
     await expect(requestJson("/protected")).resolves.toEqual({ ok: true });
 
@@ -133,7 +161,10 @@ describe("shared API request handling", () => {
     const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
       const url = String(input);
       if (url.endsWith("/users/refresh")) {
-        return jsonResponse(200, { access_token: refreshedToken, token_type: "bearer" });
+        return jsonResponse(200, {
+          access_token: refreshedToken,
+          token_type: "bearer",
+        });
       }
       protectedRequestCount += 1;
       return protectedRequestCount <= 2
@@ -144,7 +175,10 @@ describe("shared API request handling", () => {
     setCurrentAccessToken("expired-token", 7);
 
     await expect(
-      Promise.all([requestJson("/protected/one"), requestJson("/protected/two")]),
+      Promise.all([
+        requestJson("/protected/one"),
+        requestJson("/protected/two"),
+      ]),
     ).resolves.toEqual([{ ok: true }, { ok: true }]);
 
     const refreshRequests = fetchMock.mock.calls.filter(([input]) =>
@@ -157,13 +191,19 @@ describe("shared API request handling", () => {
   it("requires reauthentication when the refresh session has genuinely expired", async () => {
     const fetchMock = vi
       .fn()
-      .mockResolvedValueOnce(jsonResponse(401, { detail: { code: "access_token_expired" } }))
-      .mockResolvedValueOnce(jsonResponse(401, { detail: { code: "session_idle" } }));
+      .mockResolvedValueOnce(
+        jsonResponse(401, { detail: { code: "access_token_expired" } }),
+      )
+      .mockResolvedValueOnce(
+        jsonResponse(401, { detail: { code: "session_idle" } }),
+      );
     vi.stubGlobal("fetch", fetchMock);
     vi.stubGlobal("BroadcastChannel", undefined);
     setCurrentAccessToken("expired-token", 7);
     const onReauthenticationRequired = vi.fn();
-    const unsubscribe = subscribeToReauthenticationRequired(onReauthenticationRequired);
+    const unsubscribe = subscribeToReauthenticationRequired(
+      onReauthenticationRequired,
+    );
 
     await expect(requestJson("/protected")).rejects.toMatchObject({
       status: 401,
@@ -178,21 +218,60 @@ describe("shared API request handling", () => {
   });
 
   it("does not refresh for unrelated 401 responses", async () => {
-    const fetchMock = vi.fn().mockResolvedValue(
-      jsonResponse(401, { detail: { code: "invalid_credentials" } }),
-    );
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValue(
+        jsonResponse(401, { detail: { code: "invalid_credentials" } }),
+      );
     vi.stubGlobal("fetch", fetchMock);
     setCurrentAccessToken("current-token", 7);
 
-    await expect(requestJson("/protected")).rejects.toMatchObject({ code: "invalid_credentials" });
+    await expect(requestJson("/protected")).rejects.toMatchObject({
+      code: "invalid_credentials",
+    });
     expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
+
+  it("preserves 429 retry metadata without refreshing or ending the session", async () => {
+    const fetchMock = vi.fn().mockResolvedValue({
+      ...jsonResponse(429, {
+        detail: {
+          code: "RATE_LIMIT_EXCEEDED",
+          message: "Too many requests. Please try again later.",
+          retry_after_seconds: 12,
+        },
+      }),
+      headers: {
+        get: (name: string) =>
+          name.toLowerCase() === "retry-after" ? "12" : "application/json",
+      },
+    } as Response);
+    vi.stubGlobal("fetch", fetchMock);
+    setCurrentAccessToken("valid-token", 7);
+    const onReauthenticationRequired = vi.fn();
+    const unsubscribe = subscribeToReauthenticationRequired(
+      onReauthenticationRequired,
+    );
+
+    await expect(requestJson("/protected")).rejects.toMatchObject({
+      status: 429,
+      code: "RATE_LIMIT_EXCEEDED",
+      retryAfterSeconds: 12,
+    });
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    expect(onReauthenticationRequired).not.toHaveBeenCalled();
+    unsubscribe();
   });
 
   it("requires sign-in instead of switching to a different account from another tab", async () => {
     const fetchMock = vi
       .fn()
-      .mockResolvedValueOnce(jsonResponse(401, { detail: { code: "access_token_expired" } }))
-      .mockResolvedValueOnce(jsonResponse(200, { access_token: jwtFor(8), token_type: "bearer" }));
+      .mockResolvedValueOnce(
+        jsonResponse(401, { detail: { code: "access_token_expired" } }),
+      )
+      .mockResolvedValueOnce(
+        jsonResponse(200, { access_token: jwtFor(8), token_type: "bearer" }),
+      );
     vi.stubGlobal("fetch", fetchMock);
     setCurrentAccessToken("expired-token", 7);
 
@@ -206,8 +285,15 @@ describe("shared API request handling", () => {
   it("does not silently adopt a different session for the same account", async () => {
     const fetchMock = vi
       .fn()
-      .mockResolvedValueOnce(jsonResponse(401, { detail: { code: "access_token_expired" } }))
-      .mockResolvedValueOnce(jsonResponse(200, { access_token: jwtFor(7, "other-session"), token_type: "bearer" }));
+      .mockResolvedValueOnce(
+        jsonResponse(401, { detail: { code: "access_token_expired" } }),
+      )
+      .mockResolvedValueOnce(
+        jsonResponse(200, {
+          access_token: jwtFor(7, "other-session"),
+          token_type: "bearer",
+        }),
+      );
     vi.stubGlobal("fetch", fetchMock);
     setCurrentAccessToken(jwtFor(7, "current-session"), 7);
 

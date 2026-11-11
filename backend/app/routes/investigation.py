@@ -26,6 +26,7 @@ from app.controllers.investigation import (
     update,
 )
 from app.database.session import get_db
+from app.dependencies.rate_limit import general_api_rate_limit, planning_enqueue_rate_limit
 from app.models.assignment import InvestigationAssignment
 from app.models.activity import ActivityLog
 from app.models.investigation import Investigation
@@ -64,6 +65,7 @@ from app.utils.features import require_planning_enabled
 router = APIRouter(
     prefix="/investigations",
     tags=["Investigations"],
+    dependencies=[Depends(general_api_rate_limit)],
     )
 
 
@@ -122,7 +124,7 @@ def get_investigation_location(
 @router.put(
     "/{investigation_id}/location",
     response_model=InvestigationResponse,
-    dependencies=[Depends(require_planning_enabled)],
+    dependencies=[Depends(require_planning_enabled), Depends(planning_enqueue_rate_limit)],
 )
 def confirm_investigation_location(
     investigation_id: int,
@@ -483,7 +485,7 @@ def unassign_investigation_from_agent(
 @router.post(
     "/{investigation_id}/automatic-assignment",
     response_model=InvestigationResponse,
-    dependencies=[Depends(require_planning_enabled)],
+    dependencies=[Depends(require_planning_enabled), Depends(planning_enqueue_rate_limit)],
 )
 def submit_investigation_for_automatic_assignment(
     investigation_id: int,
@@ -518,7 +520,7 @@ def list_investigation_assignments(
 @router.post(
     "/{investigation_id}/route-refresh",
     response_model=AssignmentResponse,
-    dependencies=[Depends(require_planning_enabled)],
+    dependencies=[Depends(require_planning_enabled), Depends(planning_enqueue_rate_limit)],
 )
 def retry_investigation_route_refresh(
     investigation_id: int,

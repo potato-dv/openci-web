@@ -17,6 +17,7 @@ from sqlalchemy.orm import Session
 from sqlalchemy.pool import StaticPool
 from app.database import Base
 from app.database.session import get_db
+from app.dependencies.rate_limit import general_api_rate_limit, planning_enqueue_rate_limit
 from app.main import app
 from app.models import AgentShift, Investigation, InvestigationAssignment, PlanningItem, PlanningRoute, PlanningRun, User
 from app.models.report import InvestigationReport
@@ -94,6 +95,8 @@ class WorkspaceAPITests(unittest.TestCase):
         app.dependency_overrides[get_db] = lambda: self.db
         app.dependency_overrides[get_current_user] = lambda: self.actor
         app.dependency_overrides[require_planning_enabled] = lambda: None
+        app.dependency_overrides[general_api_rate_limit] = lambda: None
+        app.dependency_overrides[planning_enqueue_rate_limit] = lambda: None
         self.client = TestClient(app)
 
     def tearDown(self):

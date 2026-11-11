@@ -1,5 +1,6 @@
 from typing import Literal
 from fastapi import APIRouter, Depends, Query
+from app.dependencies.rate_limit import general_api_rate_limit
 from sqlalchemy import func
 from sqlalchemy.orm import Session, joinedload
 from app.database.session import get_db
@@ -10,7 +11,7 @@ from app.schemas.report import ReportQueueResponse
 from app.services.search import investigation_search
 from app.utils.auth import require_roles
 
-router = APIRouter(prefix="/reports", tags=["Reports"])
+router = APIRouter(prefix="/reports", tags=["Reports"], dependencies=[Depends(general_api_rate_limit)])
 
 
 @router.get("/review-queue", response_model=ReportQueueResponse)

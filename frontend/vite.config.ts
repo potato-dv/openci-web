@@ -25,6 +25,12 @@ export default defineConfig(({ mode }) => {
       },
     },
     server: {
+      // Windows bind mounts can miss native filesystem events inside Docker.
+      // Enable polling only for the Compose dev server to keep local native runs light.
+      watch: {
+        usePolling: process.env.DEV_SERVER_USE_POLLING === 'true',
+        interval: 500,
+      },
       proxy: Object.fromEntries(
         [...apiPrefixes, '/ws'].map((prefix) => [
           prefix,

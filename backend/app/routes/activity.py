@@ -6,6 +6,7 @@ from sqlalchemy import String, cast, func, or_
 from sqlalchemy.orm import Session, joinedload
 
 from app.database.session import get_db
+from app.dependencies.rate_limit import general_api_rate_limit
 from app.models.activity import ActivityLog
 from app.models.investigation import Investigation
 from app.models.user import User
@@ -24,7 +25,7 @@ from app.services.activity_presentation import (
 )
 from app.utils.auth import require_roles
 
-router = APIRouter(prefix="/activity-logs", tags=["Activity"])
+router = APIRouter(prefix="/activity-logs", tags=["Activity"], dependencies=[Depends(general_api_rate_limit)])
 
 
 SORT_COLUMNS = {

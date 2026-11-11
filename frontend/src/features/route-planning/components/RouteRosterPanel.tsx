@@ -32,7 +32,7 @@ type Props = {
 };
 
 const rosterClasses = {
-  root: "route-roster min-w-0 pb-4! [&>.tabs]:mb-0! [&>.tabs]:grid! [&>.tabs]:w-full! [&>.tabs]:grid-cols-3! [&>.tabs]:gap-0! [&>.tabs]:px-4! [&>.tabs>button]:min-h-14! [&>.tabs>button]:min-w-0! [&>.tabs>button]:w-full! [&>.tabs>button]:px-1! [&>.tabs>button]:py-2! [&>.tabs>button]:text-center! [&>.tabs>button]:text-[11px]! [&>.tabs>button]:leading-tight!",
+  root: "route-roster min-w-0",
   heading:
     "route-roster-heading sticky top-0 z-10 flex items-start justify-between gap-3 border-b border-openci-border bg-white px-4 py-3",
   headingCopy: "grid min-w-0 flex-1 gap-1",
@@ -57,7 +57,7 @@ const rosterClasses = {
   confirmationTopline:
     "route-roster-item-topline grid min-w-0 justify-items-start gap-1",
   itemTitle:
-    "min-w-0 break-all text-xs font-semibold text-openci-accent-strong",
+    "route-roster-item-title min-w-0 break-all text-xs font-semibold text-openci-accent-strong",
   address:
     "route-roster-address break-words text-xs leading-snug text-openci-text-muted",
   metadata:
@@ -144,9 +144,9 @@ export function RouteRosterPanel({
     <div className={rosterClasses.root}>
       <div className={rosterClasses.heading}>
         <div className={rosterClasses.headingCopy}>
-          <h2 className={rosterClasses.headingTitle}>Work on the map</h2>
+          <h2 className={rosterClasses.headingTitle}>Planning records</h2>
           <span className={rosterClasses.headingDescription}>
-            Choose a record to inspect its assignment and route.
+            Search investigations, agents, and locations that need confirmation.
           </span>
         </div>
         {headerAction}
@@ -301,14 +301,17 @@ export function RouteRosterPanel({
                         </span>
                         {item.estimated_service_start_at && (
                           <span>
-                            Service starts · {time(item.estimated_service_start_at)}
+                            Service starts ·{" "}
+                            {time(item.estimated_service_start_at)}
                           </span>
                         )}
-                        {!item.estimated_service_start_at && item.estimated_arrival_at && (
-                          <span>
-                            Earliest arrival estimate (depart as soon as possible) · {time(item.estimated_arrival_at)}
-                          </span>
-                        )}
+                        {!item.estimated_service_start_at &&
+                          item.estimated_arrival_at && (
+                            <span>
+                              Earliest arrival estimate (depart as soon as
+                              possible) · {time(item.estimated_arrival_at)}
+                            </span>
+                          )}
                         <span>{item.status.replaceAll("_", " ")}</span>
                       </span>
                       {item.planning_reason && (
@@ -537,7 +540,9 @@ export function RouteRosterPanel({
                               <MapPinOff size={16} />
                             </span>
                             <span className={rosterClasses.itemMain}>
-                              <span className={rosterClasses.confirmationTopline}>
+                              <span
+                                className={rosterClasses.confirmationTopline}
+                              >
                                 <strong className={rosterClasses.itemTitle}>
                                   {item.reference_number}
                                 </strong>

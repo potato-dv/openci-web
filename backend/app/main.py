@@ -3,9 +3,15 @@ from contextlib import asynccontextmanager
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
+from redis import Redis as SyncRedis
 from redis.asyncio import Redis
 
-from app.config.settings import CORS_ALLOWED_ORIGINS, REALTIME_REDIS_URL
+from app.config.settings import (
+    CORS_ALLOWED_ORIGINS,
+    RATE_LIMIT_REDIS_TIMEOUT_SECONDS,
+    RATE_LIMIT_REDIS_URL,
+    REALTIME_REDIS_URL,
+)
 from app.routes.investigation import router as investigation_router
 from app.routes.user import router as user_router
 from app.routes.location import router as location_router
@@ -19,6 +25,14 @@ from app.realtime.websocket import manager, router as realtime_router, run_outbo
 
 @asynccontextmanager
 async def lifespan(_app: FastAPI):
+    rate_limit_redis = SyncRedis.from_url(
+        RATE_LIMIT_REDIS_URL,
+        decode_responses=True,
+        socket_connect_timeout=RATE_LIMIT_REDIS_TIMEOUT_SECONDS,
+        socket_timeout=RATE_LIMIT_REDIS_TIMEOUT_SECONDS,
+        health_check_interval=30,
+    )
+    _app.state.rate_limit_redis = rate_limit_redis
     redis = Redis.from_url(
         REALTIME_REDIS_URL,
         decode_responses=True,
@@ -40,6 +54,7 @@ async def lifespan(_app: FastAPI):
         await asyncio.gather(*tasks, return_exceptions=True)
         await manager.close_all(1001)
         await redis.aclose()
+        rate_limit_redis.close()
 
 
 app = FastAPI(lifespan=lifespan)
@@ -50,6 +65,12 @@ app.add_middleware(
     allow_credentials=True,
     allow_methods=["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
     allow_headers=["Authorization", "Content-Type", "X-CSRF-Token"],
+    expose_headers=[
+        "Retry-After",
+        "X-RateLimit-Limit",
+        "X-RateLimit-Remaining",
+        "X-RateLimit-Reset",
+    ],
 )
 
 app.include_router(investigation_router)

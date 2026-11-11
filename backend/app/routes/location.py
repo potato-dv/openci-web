@@ -1,5 +1,6 @@
 from fastapi import APIRouter, Depends, Query
 
+from app.dependencies.rate_limit import general_api_rate_limit
 from app.models.user import User
 from app.services.locations import get_barangays, get_cities, get_provinces, get_regions
 from app.utils.auth import get_current_user, require_roles
@@ -8,7 +9,7 @@ from app.services.geocoding import search_locations
 from app.schemas.planning import GeocodeCandidate
 from fastapi import HTTPException
 
-router = APIRouter(prefix="/locations", tags=["Locations"])
+router = APIRouter(prefix="/locations", tags=["Locations"], dependencies=[Depends(general_api_rate_limit)])
 
 
 @router.get("/regions")
