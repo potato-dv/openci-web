@@ -6,7 +6,7 @@ Collector uses one Redis-backed sliding-window limiter shared by FastAPI workers
 
 Authenticated API routers use a shared per-user general counter (240 requests/60 seconds) and a shared write counter (120/60 seconds). `POST`, `PUT`, `PATCH`, and `DELETE` operations consume both. Planning generation, location confirmation, automatic assignment requests, and route-refresh retries also consume a distinct per-user planning counter (3/minute); saved route reads stay on the general policy. Existing database job state/deduplication remains authoritative for concurrent planning work.
 
-Login requests consume a per-IP counter (30/15 minutes). Invalid credentials additionally consume a per-submitted-account HMAC counter (5/15 minutes). That account counter is checked only after credential verification fails, so a correct password is never denied because of previous failures. A successful login clears that account’s failure counter. The public auth error stays generic, and no permanent lockout is added. Refresh and logout use per-IP and, when present, per-session counters (30/minute).
+Login requests consume a per-IP counter (30/15 minutes). Invalid credentials additionally consume a per-submitted-account HMAC counter (5/15 minutes). Once the account limit is reached, login is blocked for 30 seconds; each later lockout escalates to 1 minute and then 10 minutes, capped at 10 minutes. Lockout attempts do not extend or escalate an active cooldown. The escalation level expires after 24 hours without another lockout, and a successful login after cooldown clears the account failure and escalation state. The public auth error stays generic apart from the retry duration. Refresh and logout use per-IP and, when present, per-session counters (30/minute).
 
 Sensitive auth, session, and planning actions fail closed with HTTP 503 if Redis cannot enforce the policy. Routine authenticated reads fail open. Authenticated writes use a separate fail-closed 120/minute counter because they can mutate assignments, reports, schedules, or account state. Redis errors are logged by category with per-process cooldown; raw Redis keys and identity values are not logged. Rate-limit denial logs aggregate counts by policy category. Client IP uses `request.client.host`; forwarded headers are only usable in production when Uvicorn is explicitly configured with `FORWARDED_ALLOW_IPS` for the actual trusted proxy addresses. The production default trusts loopback only; operators behind a different proxy must set the exact proxy IP/CIDR list rather than `*`.
 
@@ -22,6 +22,7 @@ Normal/default policy values:
 | Authenticated writes | 120 | 60 seconds |
 | Login requests per IP | 30 | 900 seconds |
 | Invalid attempts per account identifier | 5 | 900 seconds |
+| Login cooldown after account limit | 30 seconds, then 60 seconds, then 600 seconds | Escalates per lockout; capped at 600 seconds |
 | Refresh/logout per IP or session | 30 | 60 seconds |
 | Planning enqueue/retry | 3 | 60 seconds |
 
@@ -124,7 +125,7 @@ $env:RATE_LIMIT_TEST_BAD_PASSWORD = "IntentionallyWrong-RateLimit-Test-2026!"
 docker compose -f compose.yaml -f compose.ratelimit-test.yaml exec -T -e "RATE_LIMIT_TEST_EMAIL=$env:RATE_LIMIT_TEST_EMAIL" -e "RATE_LIMIT_TEST_BAD_PASSWORD=$env:RATE_LIMIT_TEST_BAD_PASSWORD" backend python /workspace/scripts/test_rate_limits.py --base-url http://localhost:8000 --endpoint /users/login --method POST --count 6 --duration 3 --concurrency 1 --mode login --expected-allowed 0 --expected-auth-failures 5 --expected-429 1
 ```
 
-Expected: five generic `401` authentication failures, followed by one account-throttled `429`. The test IP ceiling is 200/15 minutes, so it does not mask the account counter. A valid login is tested separately in pytest after accumulated failures and must succeed and clear that account counter. Remove the temporary values afterward:
+Expected: five generic `401` authentication failures, followed by one account-throttled `429` with `Retry-After: 30`. The test IP ceiling is 200/15 minutes, so it does not mask the account counter. A valid login is blocked while the cooldown is active; after the cooldown expires, a successful login clears the account failure and escalation state. Remove the temporary values afterward:
 
 ```powershell
 Remove-Item Env:RATE_LIMIT_TEST_EMAIL, Env:RATE_LIMIT_TEST_BAD_PASSWORD -ErrorAction SilentlyContinue

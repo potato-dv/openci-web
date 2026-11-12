@@ -1,5 +1,10 @@
 import { useCallback, useEffect, useState } from "react";
-import { Link, useLocation, useNavigate, useParams } from "react-router";
+import {
+  useLocation,
+  useNavigate,
+  useOutletContext,
+  useParams,
+} from "react-router";
 import { useSession } from "@/app/session";
 import {
   getInvestigation,
@@ -13,6 +18,7 @@ export function InvestigationDetailRoute() {
   const { token, user, agentPermissions } = useSession();
   const navigate = useNavigate();
   const location = useLocation();
+  const setHeaderReference = useOutletContext<(reference: string) => void>();
   const resource = useResource(
     useCallback(
       (signal) => getInvestigation(token, Number(id), signal),
@@ -31,6 +37,14 @@ export function InvestigationDetailRoute() {
     if (resource.data && location.hash)
       document.getElementById(location.hash.slice(1))?.scrollIntoView();
   }, [resource.data, location.hash]);
+  useEffect(() => {
+    const reference =
+      resource.data?.id === Number(id)
+        ? resource.data.reference_number
+        : "";
+    setHeaderReference(reference);
+    return () => setHeaderReference("");
+  }, [id, resource.data?.id, resource.data?.reference_number, setHeaderReference]);
   return (
     <>
       {location.state?.locationError && (
@@ -78,10 +92,6 @@ export function InvestigationDetailRoute() {
             {resource.error && (
               <InlineAlert onRetry={resource.refresh}>{resource.error}</InlineAlert>
             )}
-            <nav className="detail-breadcrumb" aria-label="Breadcrumb">
-              <Link to="/investigations">Investigations</Link>
-              <span> / {resource.data.reference_number}</span>
-            </nav>
             <InvestigationDetailsPage
               token={token}
               user={user}

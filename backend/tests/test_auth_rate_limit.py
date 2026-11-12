@@ -54,7 +54,7 @@ def make_request(app: FastAPI, email: str, peer_ip: str) -> Request:
     })
 
 
-def test_failed_login_throttle_is_account_scoped_but_does_not_block_valid_password(
+def test_failed_login_throttle_blocks_until_cooldown_expires(
     redis_client, monkeypatch,
 ):
     app = FastAPI()
@@ -80,15 +80,34 @@ def test_failed_login_throttle_is_account_scoped_but_does_not_block_valid_passwo
         user_routes.login_user(payload, make_request(app, email, "192.0.2.20"), Response(), None)
     assert limited.value.status_code == 429
     assert limited.value.detail["code"] == "RATE_LIMIT_EXCEEDED"
+    assert limited.value.detail["retry_after_seconds"] == 30
 
     def valid_login(_db, _data):
         return SimpleNamespace(access_token="test-access-token", refresh_cookie="test-cookie", refresh_max_age=60)
 
     monkeypatch.setattr(user_routes, "login", valid_login)
+    with pytest.raises(HTTPException) as still_limited:
+        user_routes.login_user(
+            UserLogin(email=email, password="correct-password"),
+            make_request(app, email, "192.0.2.21"),
+            Response(),
+            None,
+        )
+    assert still_limited.value.status_code == 429
+    assert 1 <= still_limited.value.detail["retry_after_seconds"] <= 30
+
+    lockout_keys = list(
+        redis_client.scan_iter(
+            match=f"{settings.RATE_LIMIT_NAMESPACE}:*:login:lockout:*"
+        )
+    )
+    assert lockout_keys
+    redis_client.delete(*lockout_keys)
+
     response = Response()
     result = user_routes.login_user(
         UserLogin(email=email, password="correct-password"),
-        make_request(app, email, "192.0.2.21"),
+        make_request(app, email, "192.0.2.22"),
         response,
         None,
     )

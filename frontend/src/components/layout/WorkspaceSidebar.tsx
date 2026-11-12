@@ -63,7 +63,7 @@ export function WorkspaceSidebar({
     >
       <div className={`flex items-center ${collapsed ? "justify-between gap-0 px-0" : "justify-between gap-2 px-3"}`}>
         {!collapsed ? (
-          <NavLink to="/dashboard" onClick={onNavigate} className="flex min-w-0 items-center rounded-lg text-[#1f3554] no-underline focus-visible:outline-[#315eb8]" aria-label="Collector field operations home">
+          <NavLink to="/dashboard" onClick={onNavigate} className="flex min-w-0 items-center rounded-lg text-[#1f3554] no-underline focus-visible:outline-[#315eb8] md:translate-y-2" aria-label="Collector field operations home">
             <CollectorBrand variant="workspace-sidebar" />
           </NavLink>
         ) : (

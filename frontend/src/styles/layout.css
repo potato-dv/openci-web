@@ -56,12 +56,12 @@
   gap: 0;
 }
 .collector-brand--workspace-sidebar strong {
-  font-size: 16px;
+  font-size: 17px;
   gap: 2px;
 }
 .collector-brand--workspace-sidebar .collector-brand-mark {
-  width: 20px;
-  height: 20px;
+  width: 24px;
+  height: 24px;
 }
 .collector-brand--workspace-sidebar small {
   font-size: 12px;
@@ -199,11 +199,6 @@
 }
 .main-content:focus {
   outline: none;
-}
-.detail-breadcrumb {
-  color: var(--color-text-muted);
-  font-size: 12px;
-  margin-bottom: 12px;
 }
 .mobile-menu,
 .mobile-route-tabs {

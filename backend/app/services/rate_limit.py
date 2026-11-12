@@ -16,6 +16,8 @@ from app.config import settings
 
 
 logger = logging.getLogger("app.rate_limit")
+_LOGIN_LOCKOUT_DURATIONS_SECONDS = (30, 60, 600)
+_LOGIN_LOCKOUT_ESCALATION_TTL_SECONDS = 24 * 60 * 60
 
 _SLIDING_WINDOW = """
 local key = KEYS[1]
@@ -36,6 +38,53 @@ redis.call('ZADD', key, now, member)
 redis.call('PEXPIRE', key, window)
 local remaining = limit - count - 1
 local oldest = redis.call('ZRANGE', key, 0, 0, 'WITHSCORES')
+local reset = math.max(1, math.ceil((tonumber(oldest[2]) + window - now) / 1000))
+return {1, remaining, 0, reset}
+"""
+
+_LOGIN_FAILURE_WINDOW = """
+local attempts_key = KEYS[1]
+local lockout_key = KEYS[2]
+local escalation_key = KEYS[3]
+local now_parts = redis.call('TIME')
+local now = (tonumber(now_parts[1]) * 1000) + math.floor(tonumber(now_parts[2]) / 1000)
+local window = tonumber(ARGV[1])
+local limit = tonumber(ARGV[2])
+local member = ARGV[3]
+local escalation_ttl = tonumber(ARGV[4])
+
+local lockout_ttl = redis.call('PTTL', lockout_key)
+if lockout_ttl > 0 then
+  local retry = math.max(1, math.ceil(lockout_ttl / 1000))
+  return {0, 0, retry, retry}
+end
+if lockout_ttl == -1 then
+  local retry = tonumber(ARGV[7])
+  redis.call('PEXPIRE', lockout_key, retry * 1000)
+  return {0, 0, retry, retry}
+end
+
+redis.call('ZREMRANGEBYSCORE', attempts_key, '-inf', now - window)
+local count = redis.call('ZCARD', attempts_key)
+if count >= limit then
+  local escalation = tonumber(redis.call('GET', escalation_key) or '0')
+  if escalation < 3 then escalation = escalation + 1 end
+  redis.call('SET', escalation_key, escalation, 'PX', escalation_ttl)
+  local durations = {
+    tonumber(ARGV[5]),
+    tonumber(ARGV[6]),
+    tonumber(ARGV[7])
+  }
+  local retry = durations[escalation]
+  redis.call('SET', lockout_key, '1', 'PX', retry * 1000)
+  redis.call('DEL', attempts_key)
+  return {0, 0, retry, retry}
+end
+
+redis.call('ZADD', attempts_key, now, member)
+redis.call('PEXPIRE', attempts_key, window)
+local remaining = limit - count - 1
+local oldest = redis.call('ZRANGE', attempts_key, 0, 0, 'WITHSCORES')
 local reset = math.max(1, math.ceil((tonumber(oldest[2]) + window - now) / 1000))
 return {1, remaining, 0, reset}
 """
@@ -102,8 +151,12 @@ def account_identifier_key(email: str) -> str:
 
 def _key(policy: RateLimitPolicy, identifier: str) -> str:
     # Hash arbitrary identifiers so Redis keys never expose IPs or account data.
+    return _named_key(policy.name, identifier)
+
+
+def _named_key(name: str, identifier: str) -> str:
     digest = hashlib.sha256(identifier.encode("utf-8")).hexdigest()
-    return f"{settings.RATE_LIMIT_NAMESPACE}:{{{settings.RATE_LIMIT_NAMESPACE}}}:{policy.name}:{digest}"
+    return f"{settings.RATE_LIMIT_NAMESPACE}:{{{settings.RATE_LIMIT_NAMESPACE}}}:{name}:{digest}"
 
 
 def _log_redis_failure(category: str, error: Exception) -> None:
@@ -220,10 +273,59 @@ def enforce(
     return result
 
 
+def check_login_lockout(redis: Redis | None, email: str) -> RateLimitResult | None:
+    if not settings.RATE_LIMIT_ENABLED:
+        return None
+    if redis is None:
+        error = RuntimeError("Rate-limit Redis client is not initialized")
+        _log_redis_failure(LOGIN_FAILURE_POLICY.name, error)
+        raise _unavailable()
+
+    identifier = account_identifier_key(email)
+    lockout_key = _named_key("login:lockout", identifier)
+    try:
+        remaining_ms = int(redis.pttl(lockout_key))
+        if remaining_ms == -1:
+            # Recover a malformed non-expiring key with the longest configured
+            # cooldown so a bad Redis value cannot create a permanent lockout.
+            remaining_ms = _LOGIN_LOCKOUT_DURATIONS_SECONDS[-1] * 1000
+            redis.pexpire(lockout_key, remaining_ms)
+    except (RedisError, OSError, TimeoutError) as error:
+        _log_redis_failure(LOGIN_FAILURE_POLICY.name, error)
+        raise _unavailable() from error
+
+    retry_after = max(1, (remaining_ms + 999) // 1000) if remaining_ms > 0 else 0
+    return RateLimitResult(
+        allowed=retry_after == 0,
+        limit=LOGIN_FAILURE_POLICY.limit,
+        remaining=LOGIN_FAILURE_POLICY.limit if retry_after == 0 else 0,
+        retry_after_seconds=retry_after,
+        reset_after_seconds=retry_after,
+    )
+
+
 def limit_login_failure(redis: Redis, email: str) -> RateLimitResult:
     identifier = account_identifier_key(email)
     try:
-        return consume(redis, LOGIN_FAILURE_POLICY, identifier)
+        result = redis.eval(
+            _LOGIN_FAILURE_WINDOW,
+            3,
+            _key(LOGIN_FAILURE_POLICY, identifier),
+            _named_key("login:lockout", identifier),
+            _named_key("login:lockout-level", identifier),
+            LOGIN_FAILURE_POLICY.window_seconds * 1000,
+            LOGIN_FAILURE_POLICY.limit,
+            uuid4().hex,
+            _LOGIN_LOCKOUT_ESCALATION_TTL_SECONDS * 1000,
+            *_LOGIN_LOCKOUT_DURATIONS_SECONDS,
+        )
+        return RateLimitResult(
+            allowed=bool(int(result[0])),
+            limit=LOGIN_FAILURE_POLICY.limit,
+            remaining=int(result[1]),
+            retry_after_seconds=int(result[2]),
+            reset_after_seconds=int(result[3]),
+        )
     except (RedisError, OSError, TimeoutError) as error:
         _log_redis_failure(LOGIN_FAILURE_POLICY.name, error)
         raise _unavailable() from error
@@ -232,7 +334,11 @@ def limit_login_failure(redis: Redis, email: str) -> RateLimitResult:
 def clear_login_failures(redis: Redis, email: str) -> None:
     identifier = account_identifier_key(email)
     try:
-        clear_counter(redis, LOGIN_FAILURE_POLICY, identifier)
+        redis.delete(
+            _key(LOGIN_FAILURE_POLICY, identifier),
+            _named_key("login:lockout", identifier),
+            _named_key("login:lockout-level", identifier),
+        )
     except (RedisError, OSError, TimeoutError) as error:
         _log_redis_failure(LOGIN_FAILURE_POLICY.name, error)
         # The login request already passed the fail-closed IP check and the

@@ -1,5 +1,5 @@
 import { Suspense, useEffect, useState } from "react";
-import { Outlet, useLocation } from "react-router";
+import { Link, Outlet, useLocation } from "react-router";
 import { Menu, PanelLeft } from "lucide-react";
 import { useSession } from "../../app/session";
 import { Drawer, Skeleton } from "../ui/Primitives";
@@ -25,6 +25,7 @@ export function AppShell() {
   const { user, logout, refreshAgentPermissions } = useSession();
   const [navigationOpen, setNavigationOpen] = useState(false);
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
+  const [headerReference, setHeaderReference] = useState("");
   const location = useLocation();
   const keepPlanningSurface = location.pathname === "/route-planning";
   useEffect(() => {
@@ -57,13 +58,31 @@ export function AppShell() {
               <button type="button" className="grid size-10 shrink-0 place-items-center rounded-lg border border-[#dce4ef] bg-white text-[#1d3557] md:hidden" aria-label="Open navigation" aria-expanded={navigationOpen} onClick={() => setNavigationOpen(true)}><Menu size={19} /></button>
               <button type="button" className="hidden size-9 shrink-0 place-items-center rounded-md border-0 bg-transparent text-[#596579] hover:bg-[#f2f4f7] focus-visible:outline-[#315eb8] md:grid" aria-label={sidebarCollapsed ? "Expand navigation" : "Collapse navigation"} aria-expanded={!sidebarCollapsed} onClick={() => setSidebarCollapsed((value) => !value)}><PanelLeft size={17} aria-hidden="true" /></button>
               <span className="hidden h-5 w-px bg-[#e2e5e9] md:block" aria-hidden="true" />
-              <span className="hidden text-[13px] text-[#7888a0] sm:inline">Collector</span>
-              <span className="hidden text-[#b4bfd0] sm:inline" aria-hidden="true">/</span>
-              <span className="truncate text-[13px] font-semibold text-[#203656]">{section}</span>
+              <nav className="flex min-w-0 items-center gap-2" aria-label="Breadcrumb">
+                <span className="hidden text-[13px] text-[#7888a0] sm:inline">Collector</span>
+                <span className="hidden text-[#b4bfd0] sm:inline" aria-hidden="true">/</span>
+                {headerReference ? (
+                  <Link to="/investigations" className="min-w-0 truncate text-[13px] font-normal text-[#7888a0] no-underline hover:text-[#315db4]">
+                    {section}
+                  </Link>
+                ) : (
+                  <span className="min-w-0 truncate text-[13px] font-semibold text-[#203656]" aria-current="page">
+                    {section}
+                  </span>
+                )}
+                {headerReference && (
+                  <>
+                    <span className="shrink-0 text-[#b4bfd0]" aria-hidden="true">/</span>
+                    <span className="min-w-0 truncate text-[12px] font-semibold text-[#203656]" aria-current="page" title={headerReference}>
+                      {headerReference}
+                    </span>
+                  </>
+                )}
+              </nav>
             </div>
           </header>
           <main id="main-content" tabIndex={-1} className="mx-auto min-h-[calc(100dvh-64px)] max-w-[1680px] min-w-0 px-4 py-6 outline-none sm:px-6 md:min-h-[calc(100dvh-80px)] md:px-7 md:py-7 lg:px-8">
-            <Suspense fallback={<Skeleton rows={6} />}><Outlet /></Suspense>
+            <Suspense fallback={<Skeleton rows={6} />}><Outlet context={setHeaderReference} /></Suspense>
           </main>
         </div>
         <Drawer title="Navigation" open={navigationOpen} onClose={() => setNavigationOpen(false)}>

@@ -40,7 +40,9 @@ from app.services.auth_sessions import (
 from app.services.rate_limit import (
     AUTH_SESSION_POLICY,
     LOGIN_IP_POLICY,
+    RateLimitResult,
     apply_rate_headers,
+    check_login_lockout,
     client_ip,
     clear_login_failures,
     enforce,
@@ -337,6 +339,25 @@ def set_user_role(
 
 
 # Public: Login
+def _login_rate_limit_error(result: RateLimitResult) -> HTTPException:
+    retry_after = max(1, result.retry_after_seconds)
+    reset_after = max(1, result.reset_after_seconds)
+    return HTTPException(
+        status_code=status.HTTP_429_TOO_MANY_REQUESTS,
+        detail={
+            "code": "RATE_LIMIT_EXCEEDED",
+            "message": f"Too many failed login attempts. Please try again in {retry_after} seconds.",
+            "retry_after_seconds": retry_after,
+        },
+        headers={
+            "Retry-After": str(retry_after),
+            "X-RateLimit-Limit": str(result.limit),
+            "X-RateLimit-Remaining": "0",
+            "X-RateLimit-Reset": str(int(time()) + reset_after),
+        },
+    )
+
+
 @router.post("/login")
 def login_user(
     data: UserLogin,
@@ -345,6 +366,12 @@ def login_user(
     db: Session = Depends(get_db),
 ):
     require_browser_csrf(request)
+    rate_limit_redis = getattr(request.app.state, "rate_limit_redis", None)
+    lockout_result = check_login_lockout(rate_limit_redis, data.email)
+    if lockout_result is not None and not lockout_result.allowed:
+        apply_rate_headers(response, lockout_result)
+        raise _login_rate_limit_error(lockout_result)
+
     ip_result = enforce(
         request,
         response,
@@ -357,7 +384,7 @@ def login_user(
         if error.status_code == status.HTTP_401_UNAUTHORIZED:
             if not settings.RATE_LIMIT_ENABLED:
                 raise
-            redis = getattr(request.app.state, "rate_limit_redis", None)
+            redis = rate_limit_redis
             if redis is None:
                 raise HTTPException(
                     status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
@@ -371,23 +398,10 @@ def login_user(
             failure_result = limit_login_failure(redis, data.email)
             apply_rate_headers(response, failure_result)
             if not failure_result.allowed:
-                raise HTTPException(
-                    status_code=status.HTTP_429_TOO_MANY_REQUESTS,
-                    detail={
-                        "code": "RATE_LIMIT_EXCEEDED",
-                        "message": "Too many requests. Please try again later.",
-                        "retry_after_seconds": max(1, failure_result.retry_after_seconds),
-                    },
-                    headers={
-                        "Retry-After": str(max(1, failure_result.retry_after_seconds)),
-                        "X-RateLimit-Limit": str(failure_result.limit),
-                        "X-RateLimit-Remaining": "0",
-                        "X-RateLimit-Reset": str(int(time()) + failure_result.reset_after_seconds),
-                    },
-                ) from error
+                raise _login_rate_limit_error(failure_result) from error
         raise
     if settings.RATE_LIMIT_ENABLED:
-        redis = getattr(request.app.state, "rate_limit_redis", None)
+        redis = rate_limit_redis
         if redis is None:
             raise HTTPException(
                 status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
